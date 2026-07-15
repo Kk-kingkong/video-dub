@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+pause_on_error() {
+  local status=$?
+  trap - EXIT
+  if [[ $status -ne 0 ]]; then
+    echo
+    echo "本地无字幕转写安装失败。请保留上面的错误信息并联系支持。"
+    read -r -p "按回车键关闭窗口..." _
+  fi
+  exit "$status"
+}
+trap pause_on_error EXIT
+
+"$ROOT_DIR/scripts/install_local_whisper_macos.sh"
+
+trap - EXIT
+echo
+echo "本地 Whisper 已准备完成。无字幕视频现在可以使用本地转写。"
+read -r -p "按回车键关闭窗口..." _

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>安装 LocalTube Dub Engine</title>
+    <link rel="stylesheet" href="install.css">
+  </head>
+  <body data-release-channel="loading">
+    <main>
+      <header>
+        <img src="assets/icon-128.png" alt="">
+        <div>
+          <h1>安装 LocalTube Dub Engine</h1>
+          <p data-audience="customer">优先使用视频已有的目标语言字幕直接配音；没有目标字幕时，再按你的设置翻译或转写。</p>
+          <p data-audience="developer">优先读取目标语言字幕直接配音；没有目标字幕时，Engine 可用 yt-dlp 只提取 YouTube 字幕文本，再交给你的 API Key 或本地模型翻译。</p>
+        </div>
+      </header>
+
+      <section data-audience="customer">
+        <h2>安装客户版 Engine</h2>
+        <p id="releaseSummary">正在读取当前发布信息...</p>
+        <a class="copy-button link-button" id="engineDownloadLink" href="#" target="_blank" rel="noopener" hidden>下载 macOS Engine</a>
+        <p>匹配安装包：<code id="engineBundleName">读取中...</code></p>
+        <p id="releaseSupportText">安装包与扩展 ZIP 应来自同一个发布版本。</p>
+      </section>
+
+      <section>
+        <h2>第一次使用要准备什么</h2>
+        <p data-audience="customer">下载与扩展版本一致的 macOS Engine ZIP，解压后双击“Install LocalTube Dub Engine.command”。安装程序会自动准备字幕读取、本地系统配音、可选自然在线配音和开机启动；日常使用不需要打开终端。有字幕视频完成这一步即可，无字幕视频再按需安装下面的本地转写组件。</p>
+        <p data-audience="customer">当前私测包尚未签名和公证。如果 macOS 阻止首次打开，请右键安装文件并选择“打开”。</p>
+        <p data-audience="developer">需要 Python 3.10+、yt-dlp 和正在运行的 LocalTube Dub Engine。macOS 一键依赖脚本会检查 Python 版本；如果只有苹果自带的 Python 3.9 且已经安装 Homebrew，会自动安装新版 Python，并为本项目创建独立环境。首次使用默认选择无需 API Key 的 Microsoft 自然在线语音，只发送待朗读字幕；需要完全本地配音时可改选系统自带 say。只看有字幕视频时不需要 Whisper；没有字幕的视频可一键安装本地 whisper.cpp 免费转写，也可以改用 Groq / Deepgram / OpenAI 转写 Key。</p>
+      </section>
+
+      <section data-audience="developer">
+        <h2>当前扩展 ID</h2>
+        <code id="extensionId">读取中...</code>
+      </section>
+
+      <section data-audience="developer">
+        <h2>开发版 macOS 安装</h2>
+        <p>首次使用需要安装字幕提取库 yt-dlp。下面的命令会准备 Python 3.10+ 和本项目独立环境，只安装运行依赖，不会下载 YouTube 视频。</p>
+        <button class="copy-button" data-copy="#dependencyCommand" type="button">复制一键安装依赖命令</button>
+        <pre><code id="dependencyCommand">生成中...</code></pre>
+      </section>
+
+      <section>
+        <h2>启动本地 Engine</h2>
+        <p data-audience="customer">完成安装后，Engine 会在登录 macOS 时自动运行。下面的按钮用于立即启动、重启或修复开机启动；正常使用通常不需要重复安装。</p>
+        <p data-audience="customer">如果刚安装后仍显示未连接，请完全退出并重新打开 Chrome，再点“一键启动 Engine”。</p>
+        <p data-audience="developer">Engine 会监听 127.0.0.1:8787。插件会优先使用页面已有目标语言字幕；页面读取失败或只有原文字幕时，再用 Engine 调用 yt-dlp 提取字幕文本。同步配音会先调用本地 TTS 生成音频片段并按视频进度播放，失败时再退回浏览器朗读。</p>
+        <p data-audience="developer">首次 Native Host 安装会同时注册 macOS 登录自启动。以后重启电脑，系统会自动启动并守护 Engine；“修复开机自启”可以重新生成配置。如果终端看到 Address already in use，新版启动脚本和“一键重启 Engine”会自动清理确认属于 LocalTube Dub 的旧进程。如果刚安装 Native Host 后仍提示不可用，请完全退出并重启 Chrome。</p>
+        <button class="copy-button" id="startEngineButton" type="button">一键启动 Engine</button>
+        <button class="copy-button" id="restartEngineButton" type="button">一键重启 Engine</button>
+        <button class="copy-button" id="installAutostartButton" type="button">修复开机自启</button>
+        <p id="restartStatus" class="inline-status">等待操作</p>
+        <button class="copy-button" data-audience="developer" data-copy="#startCommand" type="button">复制启动命令</button>
+        <pre data-audience="developer"><code id="startCommand">生成中...</code></pre>
+        <button class="copy-button" data-audience="developer" data-copy="#autostartCommand" type="button">复制开机自启命令</button>
+        <pre data-audience="developer"><code id="autostartCommand">生成中...</code></pre>
+      </section>
+
+      <section>
+        <h2>无字幕视频免费本地转写</h2>
+        <p data-audience="customer">只有无字幕视频才需要这一步。它会下载约 142 MB 的多语言模型并保存在本机，不需要转写 API Key。先完成上方 Engine 安装，再点“一键安装本地转写”；完成后会自动启动或重启。</p>
+        <p data-audience="developer">它会安装 whisper.cpp、ffmpeg，并下载约 142 MB 的多语言 base 模型。可在“免费 / 自带 Key”模式中同时选择 Chrome 本地翻译和本地 Engine 转写。Engine 会先准备首段音频，并在播放过程中提前滚动转写后续片段。先完成 Native Host 安装，再点击一键安装；安装完成后会自动启动或重启 Engine。</p>
+        <button class="copy-button" id="installWhisperButton" type="button">一键安装本地转写</button>
+        <p id="whisperInstallStatus" class="inline-status">尚未安装</p>
+        <button class="copy-button" data-audience="developer" data-copy="#whisperInstallCommand" type="button">复制手动安装命令</button>
+        <pre data-audience="developer"><code id="whisperInstallCommand">生成中...</code></pre>
+      </section>
+
+      <section data-audience="developer">
+        <h2>Native Messaging 安装</h2>
+        <p>macOS 私测安装包会自动写入与正式扩展 ID 匹配的 Native Host，并安装登录自启动；客户不需要复制命令。下面的命令只用于从源码加载的开发版，它会记录项目虚拟环境的 Python、注册 launcher，并同时安装 Engine 登录自启动。</p>
+        <button class="copy-button" data-copy="#macCommand" type="button">复制 Native 安装命令</button>
+        <pre><code id="macCommand">生成中...</code></pre>
+      </section>
+
+      <section>
+        <h2 data-audience="customer">启动失败怎么办</h2>
+        <h2 data-audience="developer">Native Host 诊断</h2>
+        <p data-audience="customer">如果“一键启动”仍失败，请重新双击同版本 Engine 安装包完成修复，然后完全退出并重新打开 Chrome。</p>
+        <p data-audience="developer">如果“一键启动”提示 Native host has exited，请重新执行 Native 安装命令，然后完全退出并重启 Chrome。</p>
+        <button class="copy-button" data-audience="developer" data-copy="#nativeDiagnoseCommand" type="button">复制 Native 诊断命令</button>
+        <pre data-audience="developer"><code id="nativeDiagnoseCommand">生成中...</code></pre>
+      </section>
+
+      <section>
+        <h2>本地 Engine 体检</h2>
+        <p data-audience="customer">安装并重新打开 Chrome 后，回到扩展弹窗点“检查当前模式”。显示 Engine 已就绪即可开始使用。</p>
+        <p data-audience="developer">字幕读取统一走本地 Engine 和 yt-dlp，只提取字幕文本，不下载视频或音频。开发者可使用下面的体检命令。</p>
+        <button class="copy-button" data-audience="developer" data-copy="#diagnoseCommand" type="button">复制体检命令</button>
+        <pre data-audience="developer"><code id="diagnoseCommand">生成中...</code></pre>
+      </section>
+
+      <section data-audience="developer">
+        <h2>升级开发版后要刷新</h2>
+        <p>如果改了插件代码，先在 chrome://extensions 点 LocalTube Dub 的“重新加载”，再刷新已经打开的 YouTube 视频页。视频页右侧面板标题里的版本号必须和当前 manifest 版本一致，否则页面还在运行旧内容脚本。</p>
+      </section>
+
+      <section data-audience="developer">
+        <h2>429 限流处理</h2>
+        <p>YouTube 返回 429 表示当前网络或 cookies 被临时限流。先等待几分钟，不要反复点击开始。Engine 默认读取 Chrome cookies；如果读取 cookies 失败，可以关闭 Chrome 后重启 Engine，或临时禁用 cookies。</p>
+        <button class="copy-button" data-audience="developer" data-copy="#rateLimitCommand" type="button">复制 429 处理命令</button>
+        <pre data-audience="developer"><code id="rateLimitCommand">生成中...</code></pre>
+      </section>
+
+      <section data-audience="developer">
+        <h2>正式商店发布准备</h2>
+        <p>当前构建已经能生成可上传 Chrome Web Store 的扩展 ZIP，以及绑定指定扩展 ID、可双击安装和卸载的 macOS Engine 私测包。正式公开下载前仍需要 Apple Developer ID 签名与公证、固定下载地址、隐私政策和支持页面；Windows 安装器仍在后续计划中。</p>
+      </section>
+    </main>
+    <script src="install_helpers.js"></script>
+    <script src="install.js"></script>
+  </body>
+</html>

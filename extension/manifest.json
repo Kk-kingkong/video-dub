@@ -1,0 +1,84 @@
+{
+  "manifest_version": 3,
+  "name": "LocalTube Dub",
+  "version": "0.1.95",
+  "minimum_chrome_version": "116",
+  "description": "Translate and dub YouTube videos with free Chrome translation, your own AI key, or a local engine.",
+  "permissions": [
+    "activeTab",
+    "nativeMessaging",
+    "storage"
+  ],
+  "optional_permissions": [
+    "offscreen",
+    "tabCapture"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://youtube.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "icons": {
+    "16": "assets/icon-16.png",
+    "32": "assets/icon-32.png",
+    "48": "assets/icon-48.png",
+    "128": "assets/icon-128.png"
+  },
+  "action": {
+    "default_title": "LocalTube Dub",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "assets/toolbar-icon-16.png",
+      "32": "assets/toolbar-icon-32.png",
+      "48": "assets/toolbar-icon-48.png",
+      "128": "assets/toolbar-icon-128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+      ],
+      "js": [
+        "page_probe_helpers.js",
+        "page_probe.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "js": [
+        "voice_helpers.js",
+        "content_helpers.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/icon-128.png"
+      ],
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+      ]
+    }
+  ]
+}

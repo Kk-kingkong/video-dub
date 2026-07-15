@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXTENSION_ID="__EXTENSION_ID__"
+VERSION="__VERSION__"
+
+pause_on_error() {
+  local status=$?
+  trap - EXIT
+  if [[ $status -ne 0 ]]; then
+    echo
+    echo "安装失败。请保留上面的错误信息并联系支持。"
+    read -r -p "按回车键关闭窗口..." _
+  fi
+  exit "$status"
+}
+trap pause_on_error EXIT
+
+echo "LocalTube Dub Engine $VERSION"
+echo "将为 Chrome 扩展 $EXTENSION_ID 安装本地字幕、配音和开机自启服务。"
+echo
+
+"$ROOT_DIR/scripts/install_engine_deps_macos.sh"
+"$ROOT_DIR/companion/install_native_host_macos.sh" "$EXTENSION_ID"
+
+trap - EXIT
+echo
+echo "安装完成。请完全退出并重新打开 Chrome，然后在 LocalTube Dub 中点击“检查 Engine”。"
+read -r -p "按回车键关闭窗口..." _

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LocalTube Dub Full Track Harness</title>
+    <style>
+      body { margin: 0; padding: 24px; background: #15181e; color: #eef4ff; font: 16px/1.5 system-ui, sans-serif; }
+      main { max-width: 720px; margin: 0 auto; }
+      .controls { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+      button { min-height: 40px; padding: 0 16px; border: 1px solid #6d8db8; background: #202a38; color: inherit; border-radius: 6px; }
+      output { display: block; min-height: 120px; padding: 16px; background: #0d1117; white-space: pre-wrap; }
+      audio { width: 100%; margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>完整音轨媒体同步测试</h1>
+      <div class="controls">
+        <button data-action="start" type="button">开始</button>
+        <button data-action="pause" type="button">暂停视频</button>
+        <button data-action="resume" type="button">继续视频</button>
+        <button data-action="seek" type="button">跳到 4 秒</button>
+        <button data-action="rate" type="button">切换 1.5 倍速</button>
+        <button data-action="end" type="button">跳到结尾</button>
+      </div>
+      <audio data-media="video" controls muted></audio>
+      <audio data-media="dub" controls muted></audio>
+      <output data-status>正在准备测试媒体...</output>
+    </main>
+    <script src="../extension/content_helpers.js"></script>
+    <script src="./full_track_media_harness.js"></script>
+  </body>
+</html>

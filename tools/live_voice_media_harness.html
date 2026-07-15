@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LocalTube Dub Live Voice Harness</title>
+    <style>
+      body { margin: 0; padding: 24px; background: #15181e; color: #eef4ff; font: 16px/1.5 system-ui, sans-serif; }
+      main { max-width: 760px; margin: 0 auto; }
+      .controls { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+      button { min-height: 40px; padding: 0 16px; border: 1px solid #6d8db8; background: #202a38; color: inherit; border-radius: 6px; }
+      output { display: block; min-height: 180px; padding: 16px; background: #0d1117; white-space: pre-wrap; }
+      audio { width: 100%; margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>实时分段配音同步测试</h1>
+      <p>测试片段：视频 1.0 至 5.0 秒，配音 3.4 秒。晚启动时可借用尾部静音，实时追赶不超过 1.2 倍。</p>
+      <div class="controls">
+        <button data-action="start" type="button">正常开始</button>
+        <button data-action="late" type="button">模拟晚 1 秒开始</button>
+        <button data-action="pause" type="button">暂停视频</button>
+        <button data-action="resume" type="button">继续视频</button>
+        <button data-action="seek" type="button">跳到 3.5 秒</button>
+        <button data-action="rate" type="button">切换 1.5 倍速</button>
+        <button data-action="self-test" type="button">运行媒体自检</button>
+      </div>
+      <audio data-media="video" controls muted></audio>
+      <audio data-media="dub" controls muted></audio>
+      <output data-status>正在准备测试媒体...</output>
+    </main>
+    <script src="../extension/content_helpers.js?v=0.1.95"></script>
+    <script src="./live_voice_media_harness.js?v=0.1.95"></script>
+  </body>
+</html>

@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an improvement within LocalTube Dub's single purpose
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the translation, transcription, or dubbing problem to solve.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and permissions
+      description: Note any new data, host, permission, dependency, or external service involved.
+    validations:
+      required: true

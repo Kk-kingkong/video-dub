@@ -1,0 +1,24 @@
+# LocalTube Dub Engine __VERSION__
+
+这个配套安装包对应 Chrome 扩展 ID：`__EXTENSION_ID__`。
+
+## 第一次安装
+
+1. 先安装 LocalTube Dub Chrome 扩展。
+2. 双击 `Install LocalTube Dub Engine.command`。
+3. 安装完成后完全退出并重新打开 Chrome。
+4. 在扩展弹窗或 YouTube 面板中点击“检查 Engine”。
+
+安装器会准备 Python 3.10+、私有虚拟环境、yt-dlp、可选的 Microsoft 自然在线语音、Native Messaging Host 和登录自动启动服务。首次安装需要联网。没有 Homebrew 且系统没有 Python 3.10+ 时，安装器会显示 Python 安装提示。只有用户在扩展中主动选择“自然在线”时，待朗读字幕才会发送给 Microsoft；默认本地系统配音不会发送。
+
+## 无字幕视频
+
+字幕视频只需要主 Engine。需要翻译没有公开字幕的视频时，再双击 `Install No-Caption Whisper.command`；它会通过 Homebrew 安装 whisper.cpp 和 ffmpeg，并下载多语言模型。
+
+## 卸载
+
+双击 `Uninstall LocalTube Dub Engine.command`。卸载器移除 Engine、Native Host 和开机自启，但保留已下载的 Whisper 模型，避免以后重新安装时再次下载。
+
+## 当前发布状态
+
+这是未签名、未公证的私测安装包。macOS 如果阻止首次打开，请右键该 `.command` 文件并选择“打开”。公开发布前仍需要 Apple Developer ID 签名、公证和正式支持地址。
