@@ -5,7 +5,7 @@
 - A version already synchronized across `extension/manifest.json`, popup fallback text, tests, and `CHANGELOG.md`.
 - The final 32-character Chrome Web Store extension ID. Chrome IDs contain only letters `a` through `p`.
 - A macOS build machine with `python3`, `zip`, `unzip`, `ditto`, and `shasum`.
-- Public HTTPS URLs for the source/homepage, privacy policy, support page, and signed Engine download.
+- Public HTTPS URLs for the [source repository](https://github.com/Kk-kingkong/video-dub), [project homepage](https://kk-kingkong.github.io/video-dub/), [privacy policy](https://kk-kingkong.github.io/video-dub/privacy-policy.html), [support page](https://kk-kingkong.github.io/video-dub/support.html), and signed Engine download.
 - A Chrome Web Store developer account with two-step verification enabled.
 
 The Engine package must be rebuilt whenever the Web Store extension ID changes because Native Messaging `allowed_origins` is bound to that ID.
@@ -24,7 +24,7 @@ For a customer-facing build, inject the hosted Engine and support pages at build
 
 ```bash
 LOCAL_DUB_ENGINE_DOWNLOAD_URL=https://downloads.example.com/LocalTube-Dub-Engine.zip \
-LOCAL_DUB_SUPPORT_URL=https://support.example.com/localtube-dub \
+LOCAL_DUB_SUPPORT_URL=https://kk-kingkong.github.io/video-dub/support.html \
 ./scripts/build_release_macos.sh FINAL_CHROME_EXTENSION_ID
 ```
 

@@ -1267,7 +1267,7 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
   assert.equal(manifest.content_scripts[0].world, "MAIN");
   assert.deepEqual(manifest.content_scripts[1].js, ["voice_helpers.js", "content_helpers.js", "content.js"]);
-  assert.equal(manifest.version, "0.1.96");
+  assert.equal(manifest.version, "0.1.97");
   assert.equal(manifest.permissions.includes("downloads"), false);
   assert.deepEqual(manifest.permissions, ["activeTab", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.optional_permissions, ["offscreen", "tabCapture"]);
@@ -1811,7 +1811,7 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /localtube\.clearTranslationCache/);
   assert.match(popupHtml, /id="cacheTranslations"/);
   assert.match(popupHtml, /id="clearTranslationCache"/);
-  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.1\.96<\/span>/);
+  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.1\.97<\/span>/);
   assert.match(popupHtml, /id="testProvider"[^>]*>验证翻译 Key<\/button>/);
   assert.match(popup, /saveAndValidateApiKey/);
   assert.match(popupHtml, /免费 \/ 自带 Key/);
@@ -2133,7 +2133,7 @@ function testManifestAndFlowGuards() {
   assert.match(changelog, /Native Host/);
   assert.match(changelog, /0\.1\.91/);
   assert.match(changelog, /single customer workflow/);
-  assert.match(developmentAudit, /Current reviewed version: 0\.1\.96/);
+  assert.match(developmentAudit, /Current reviewed version: 0\.1\.97/);
   assert.match(developmentAudit, /Dubbed voice-track export/);
   assert.match(developmentAudit, /Subtitle export/);
   assert.match(developmentAudit, /starts Engine at login/);

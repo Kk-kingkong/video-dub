@@ -1,5 +1,11 @@
 # LocalTube Dub Changelog
 
+## 0.1.97 - 2026-07-15
+
+- Added a bilingual GitHub Pages homepage and support page, and prepared the complete privacy policy for publication from the repository's `docs/` directory.
+- Replaced Chrome Web Store publisher-link placeholders with stable public project, source, privacy, and support URLs. The public support flow links directly to GitHub Issues and private security reporting while warning users not to publish secrets.
+- Added deterministic checks for the hosted-site source files and public URLs, and synchronized release-facing version metadata without changing caption extraction, translation, TTS, or playback behavior.
+
 ## 0.1.96 - 2026-07-15
 
 - Replaced the 253-line repository landing page with a concise English README focused on the Chinese translation and dubbing workflow, quick source installation, privacy, current limitations, and links to detailed documentation.

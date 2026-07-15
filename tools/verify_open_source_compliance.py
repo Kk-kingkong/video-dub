@@ -9,7 +9,11 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.1.96"
+EXPECTED_VERSION = "0.1.97"
+PUBLIC_SITE = "https://kk-kingkong.github.io/video-dub/"
+PUBLIC_PRIVACY = f"{PUBLIC_SITE}privacy-policy.html"
+PUBLIC_SUPPORT = f"{PUBLIC_SITE}support.html"
+PUBLIC_REPOSITORY = "https://github.com/Kk-kingkong/video-dub"
 
 
 def require(condition: bool, message: str) -> None:
@@ -35,7 +39,10 @@ def verify_repository_files() -> None:
         ".github/ISSUE_TEMPLATE/bug_report.yml",
         ".github/ISSUE_TEMPLATE/feature_request.yml",
         ".github/PULL_REQUEST_TEMPLATE.md",
+        "docs/_config.yml",
+        "docs/index.md",
         "docs/privacy-policy.md",
+        "docs/support.md",
         "docs/store-listing-draft.md",
         "docs/chrome-web-store-permissions.md",
         "docs/release-process.md",
@@ -73,15 +80,25 @@ def verify_public_claims() -> None:
         "no LocalTube Dub account system",
     ):
         require(phrase.casefold() in privacy.casefold(), f"privacy disclosure missing: {phrase}")
+    for link in (PUBLIC_REPOSITORY, "issues/new/choose", "security/policy"):
+        require(link in privacy, f"privacy policy public link missing: {link}")
+
+    homepage = read("docs/index.md")
+    support_page = read("docs/support.md")
+    require("no account system" in homepage.casefold(), "public homepage account disclosure missing")
+    require("issues/new/choose" in support_page, "public support issue link missing")
+    require("API keys" in support_page, "public support secret warning missing")
 
     listing = read("docs/store-listing-draft.md")
     require("single purpose" in listing.casefold(), "single-purpose listing text missing")
     require("managed service entry reserved" not in listing.casefold(), "undeveloped managed-service claim remains")
     require("1280 x 800" in listing and "440 x 280" in listing, "required listing assets missing")
     require("reviewer instructions" in listing.casefold(), "reviewer instructions missing")
+    for link in (PUBLIC_SITE, PUBLIC_PRIVACY, PUBLIC_SUPPORT, PUBLIC_REPOSITORY):
+        require(link in listing, f"store listing public link missing: {link}")
 
     readme = read("README.md")
-    for link in ("README.zh-CN.md", "docs/privacy-policy.md", "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"):
+    for link in ("README.zh-CN.md", PUBLIC_PRIVACY, PUBLIC_SUPPORT, "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"):
         require(link in readme, f"README link missing: {link}")
     require("not affiliated" in readme.casefold(), "README non-affiliation disclosure missing")
 

@@ -6,7 +6,7 @@
 
 LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕时，再使用 Chrome 免费本地翻译或用户自己选择的翻译服务。没有字幕的视频可以使用可选的本地 Whisper Engine 转写。
 
-> **当前版本：** `0.1.96` 开发预览版。Chrome 插件商店版本和已签名的桌面 Engine 安装包正在准备中。
+> **当前版本：** `0.1.97` 开发预览版。Chrome 插件商店版本和已签名的桌面 Engine 安装包正在准备中。
 
 ## 主要功能
 
@@ -43,7 +43,7 @@ LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕
 - Microsoft 自然在线语音只接收合成语音所需的翻译文本和音色设置。
 - 本地系统语音和本地 Whisper 转写在用户电脑上处理。
 
-完整说明请阅读 [隐私政策](docs/privacy-policy.md) 和 [Chrome 权限说明](docs/chrome-web-store-permissions.md)。
+完整说明请阅读公开的 [隐私政策](https://kk-kingkong.github.io/video-dub/privacy-policy.html) 和 [Chrome 权限说明](docs/chrome-web-store-permissions.md)。
 
 ## 开发验证
 
@@ -58,6 +58,8 @@ python3 tools/verify_open_source_compliance.py
 ## 项目文档
 
 - [English README](README.md)
+- [项目主页](https://kk-kingkong.github.io/video-dub/)
+- [使用支持](https://kk-kingkong.github.io/video-dub/support.html)
 - [Engine 安装说明](companion/README.md)
 - [隐私政策](docs/privacy-policy.md)
 - [Chrome 商店权限说明](docs/chrome-web-store-permissions.md)

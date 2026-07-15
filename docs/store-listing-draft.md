@@ -61,15 +61,14 @@ Chinese (Simplified) for the first listing, followed by an English localization.
 - Optional 1400 x 560 marquee tile.
 - Optional public YouTube demonstration video.
 
-Screenshots must show the shipping `0.1.96` UI and must not contain API keys, private videos, account information, or unavailable features.
+Screenshots must show the shipping `0.1.97` UI and must not contain API keys, private videos, account information, or unavailable features.
 
 ## Publisher URLs
 
-Set these to final public HTTPS pages before submission:
-
-- Homepage/source repository.
-- Privacy policy: the hosted version of `docs/privacy-policy.md`.
-- Support page: the hosted version of `SUPPORT.md` or a dedicated support site.
+- Homepage: `https://kk-kingkong.github.io/video-dub/`
+- Source repository: `https://github.com/Kk-kingkong/video-dub`
+- Privacy policy: `https://kk-kingkong.github.io/video-dub/privacy-policy.html`
+- Support page: `https://kk-kingkong.github.io/video-dub/support.html`
 - Matching signed Engine download page and checksum, when the Engine is publicly distributed.
 
 ## Reviewer instructions

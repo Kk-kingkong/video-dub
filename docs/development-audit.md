@@ -1,7 +1,14 @@
 # LocalTube Dub Development Audit
 
 Last reviewed: 2026-07-15  
-Current reviewed version: 0.1.96
+Current reviewed version: 0.1.97
+
+## 0.1.97 Verification Evidence
+
+- The `docs/` publishing source contains a bilingual public homepage, a privacy-safe bilingual support page, a complete privacy policy, and a minimal GitHub Pages configuration.
+- README, support, release-process, and Chrome Web Store listing documents use the stable `kk-kingkong.github.io/video-dub` homepage, privacy, and support URLs plus the public `Kk-kingkong/video-dub` source repository.
+- Compliance verification requires the Pages source files, direct support/security links, public Store publisher URLs, and matching `0.1.97` release metadata. Caption extraction, translation, transcription, TTS, and synchronization implementation files are unchanged from `0.1.96`.
+- Open-source compliance, extension-flow, Provider-registry, local Engine, Native Messaging, JavaScript syntax, Python compilation, release-package, isolated installer, and SHA-256 checks pass for `0.1.97`.
 
 ## 0.1.96 Verification Evidence
 

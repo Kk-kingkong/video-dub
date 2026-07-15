@@ -1,6 +1,13 @@
+---
+layout: default
+title: LocalTube Dub Privacy Policy
+---
+
 # LocalTube Dub Privacy Policy
 
-**Effective date:** July 14, 2026
+**Effective date:** July 15, 2026
+
+[Home](index.html) | [Support](support.html) | [Source code](https://github.com/Kk-kingkong/video-dub)
 
 LocalTube Dub is an open-source Chrome extension that translates, transcribes, and dubs the active YouTube video. It has no LocalTube Dub account system, advertising, analytics, payment processing, or hosted translation service.
 
@@ -70,6 +77,8 @@ The Chrome extension communicates with the optional Engine through Chrome Native
 
 LocalTube Dub does not sell user data. Data is transferred only as necessary to provide the feature and mode explicitly selected by the user, to comply with law, or to address a security issue. LocalTube Dub does not retain a server-side copy because it does not operate a hosted backend.
 
+The public project, privacy, and support pages are hosted by GitHub Pages. GitHub may process visitor information, including IP-address logs, under the [GitHub Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement). LocalTube Dub does not add analytics or advertising trackers to these pages.
+
 Third-party Providers and platforms may retain requests under their own policies. Users should review the terms of YouTube, Chrome, Microsoft text-to-speech, and any API Provider they select.
 
 ## User controls
@@ -95,4 +104,4 @@ Material privacy changes will be documented in `CHANGELOG.md`, reflected in this
 
 ## Contact
 
-Open a support or privacy issue in the public source repository where this policy is published. For a vulnerability or a report containing sensitive information, use the repository's private vulnerability-reporting channel described in `SECURITY.md`.
+Open a [support or privacy issue](https://github.com/Kk-kingkong/video-dub/issues/new/choose) in the public source repository. For a vulnerability or a report containing sensitive information, use the repository's [private vulnerability-reporting process](https://github.com/Kk-kingkong/video-dub/security/policy).
