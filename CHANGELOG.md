@@ -1,5 +1,11 @@
 # LocalTube Dub Changelog
 
+## 0.1.96 - 2026-07-15
+
+- Replaced the 253-line repository landing page with a concise English README focused on the Chinese translation and dubbing workflow, quick source installation, privacy, current limitations, and links to detailed documentation.
+- Added a matching Simplified Chinese `README.zh-CN.md` and visible language links at the top of both README files.
+- Added deterministic compliance checks for the Chinese README and synchronized release-facing version metadata without changing caption, translation, TTS, or playback behavior.
+
 ## 0.1.95 - 2026-07-14
 
 - Prepared the project for open-source publication under Apache-2.0. Added contribution, security, support, conduct, third-party dependency, issue, and pull-request documentation without changing caption, translation, TTS, or synchronization behavior.

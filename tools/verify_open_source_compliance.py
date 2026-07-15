@@ -9,7 +9,7 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.1.95"
+EXPECTED_VERSION = "0.1.96"
 
 
 def require(condition: bool, message: str) -> None:
@@ -26,6 +26,7 @@ def read(relative_path: str) -> str:
 def verify_repository_files() -> None:
     required = (
         "LICENSE",
+        "README.zh-CN.md",
         "CONTRIBUTING.md",
         "SECURITY.md",
         "CODE_OF_CONDUCT.md",
@@ -80,9 +81,13 @@ def verify_public_claims() -> None:
     require("reviewer instructions" in listing.casefold(), "reviewer instructions missing")
 
     readme = read("README.md")
-    for link in ("docs/privacy-policy.md", "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"):
+    for link in ("README.zh-CN.md", "docs/privacy-policy.md", "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"):
         require(link in readme, f"README link missing: {link}")
     require("not affiliated" in readme.casefold(), "README non-affiliation disclosure missing")
+
+    chinese_readme = read("README.zh-CN.md")
+    for phrase in ("YouTube 中文翻译与配音", "隐私政策", "当前限制", EXPECTED_VERSION):
+        require(phrase in chinese_readme, f"Chinese README content missing: {phrase}")
 
 
 def verify_no_obvious_secrets() -> None:

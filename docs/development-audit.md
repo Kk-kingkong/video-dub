@@ -1,7 +1,14 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-07-14  
-Current reviewed version: 0.1.95
+Last reviewed: 2026-07-15  
+Current reviewed version: 0.1.96
+
+## 0.1.96 Verification Evidence
+
+- The repository landing page is now a concise English overview with a first-line Simplified Chinese link. `README.zh-CN.md` provides the same product, setup, privacy, limitation, documentation, and license information in Chinese.
+- Detailed Engine, privacy, permission, release, contribution, and security material remains in focused linked documents instead of being repeated on the landing page.
+- Compliance verification requires both README languages and matching `0.1.96` release metadata. Caption extraction, translation, transcription, TTS, and synchronization implementation files are unchanged from `0.1.95`.
+- Open-source compliance, extension-flow, Provider-registry, local Engine, Native Messaging, Python compilation, release-package, isolated installer, and runtime byte-identity checks pass for `0.1.96`.
 
 ## 0.1.95 Verification Evidence
 
