@@ -9,7 +9,8 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.1.97"
+EXPECTED_VERSION = "0.1.98"
+CHROME_WEB_STORE_ITEM_ID = "ikoenamldegccnhmjjnlkffocdkbbbmo"
 PUBLIC_SITE = "https://kk-kingkong.github.io/video-dub/"
 PUBLIC_PRIVACY = f"{PUBLIC_SITE}privacy-policy.html"
 PUBLIC_SUPPORT = f"{PUBLIC_SITE}support.html"
@@ -96,6 +97,10 @@ def verify_public_claims() -> None:
     require("reviewer instructions" in listing.casefold(), "reviewer instructions missing")
     for link in (PUBLIC_SITE, PUBLIC_PRIVACY, PUBLIC_SUPPORT, PUBLIC_REPOSITORY):
         require(link in listing, f"store listing public link missing: {link}")
+    require(CHROME_WEB_STORE_ITEM_ID in listing, "Chrome Web Store item ID missing from listing draft")
+
+    release_process = read("docs/release-process.md")
+    require(CHROME_WEB_STORE_ITEM_ID in release_process, "Chrome Web Store item ID missing from release process")
 
     readme = read("README.md")
     for link in ("README.zh-CN.md", PUBLIC_PRIVACY, PUBLIC_SUPPORT, "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"):

@@ -1,5 +1,11 @@
 # LocalTube Dub Changelog
 
+## 0.1.98 - 2026-07-23
+
+- Recorded the permanent Chrome Web Store Item ID `ikoenamldegccnhmjjnlkffocdkbbbmo` after the first draft upload.
+- Locked release documentation and automated compliance checks to the Store ID so future extension and Native Messaging Engine packages cannot silently use the former development ID.
+- Prepared matching Store-candidate extension and macOS Engine package metadata without changing caption extraction, translation, TTS, or playback behavior.
+
 ## 0.1.97 - 2026-07-15
 
 - Added a bilingual GitHub Pages homepage and support page, and prepared the complete privacy policy for publication from the repository's `docs/` directory.

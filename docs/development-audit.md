@@ -1,7 +1,14 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-07-15  
-Current reviewed version: 0.1.97
+Last reviewed: 2026-07-23
+Current reviewed version: 0.1.98
+
+## 0.1.98 Verification Evidence
+
+- The first Chrome Web Store draft established permanent Item ID `ikoenamldegccnhmjjnlkffocdkbbbmo`. Release documentation and compliance checks now reject a missing or different Store ID.
+- Release assembly binds both the Store-candidate extension metadata and macOS Native Messaging `allowed_origins` to that exact ID while leaving the source checkout in development mode.
+- Caption extraction, translation, transcription, TTS, and synchronization implementation files are unchanged from `0.1.97`.
+- Open-source compliance, extension-flow, Provider-registry, local Engine, Native Messaging, JavaScript syntax, Python compilation, release-package, isolated installer, exact package-ID metadata, and SHA-256 checks pass for `0.1.98`.
 
 ## 0.1.97 Verification Evidence
 
@@ -330,7 +337,7 @@ These are not complete and must not be represented as finished:
 
 1. Source separation and final media muxing. The product exports synchronized pure-voice or full-original-audio-mixed M4A/WAV tracks, but it does not separate source speech from background audio or mux a new downloadable video file.
 2. Production-quality TTS. macOS `say` and browser speech are functional fallbacks, not a cross-platform natural voice engine.
-3. Store-ready desktop packaging. Versioned extension and ID-bound macOS private-beta ZIPs now exist, but there is still no signed/notarized macOS app/pkg, reliable Windows executable host, auto-update mechanism, hosted download page, or final Web Store extension ID.
+3. Store-ready desktop packaging. The final Web Store Item ID is known and versioned extension and ID-bound macOS private-beta ZIPs exist, but there is still no signed/notarized macOS app/pkg, reliable Windows executable host, auto-update mechanism, or hosted Engine download page.
 4. Browser end-to-end automation. Static and Engine tests exist, but Chrome-based regression coverage for real YouTube navigation, Translator language-pack download, audio playback, and seeking is still missing.
 5. Release operations. Source documents and reviewer instructions now exist, but the repository URL, support contact, hosted privacy-policy URL, final Engine URL, final screenshots, and Store item still need publisher-owned values.
 

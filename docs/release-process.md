@@ -1,5 +1,7 @@
 # LocalTube Dub Release Process
 
+Chrome Web Store Item ID: `ikoenamldegccnhmjjnlkffocdkbbbmo`
+
 ## Inputs
 
 - A version already synchronized across `extension/manifest.json`, popup fallback text, tests, and `CHANGELOG.md`.

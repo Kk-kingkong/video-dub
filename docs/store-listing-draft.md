@@ -4,6 +4,8 @@
 
 LocalTube Dub
 
+Chrome Web Store Item ID: `ikoenamldegccnhmjjnlkffocdkbbbmo`
+
 ## Short description
 
 Translate YouTube captions and play synchronized dubbing with free local tools or your own AI key.
@@ -61,7 +63,7 @@ Chinese (Simplified) for the first listing, followed by an English localization.
 - Optional 1400 x 560 marquee tile.
 - Optional public YouTube demonstration video.
 
-Screenshots must show the shipping `0.1.97` UI and must not contain API keys, private videos, account information, or unavailable features.
+Screenshots must show the shipping `0.1.98` UI and must not contain API keys, private videos, account information, or unavailable features.
 
 ## Publisher URLs
 

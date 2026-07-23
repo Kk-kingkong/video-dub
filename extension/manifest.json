@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LocalTube Dub",
-  "version": "0.1.97",
+  "version": "0.1.98",
   "minimum_chrome_version": "116",
   "description": "Translate and dub YouTube videos with free Chrome translation, your own AI key, or a local engine.",
   "permissions": [
