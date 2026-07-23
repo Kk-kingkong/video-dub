@@ -5,13 +5,17 @@ title: LocalTube Dub Privacy Policy
 
 # LocalTube Dub Privacy Policy
 
-**Effective date:** July 15, 2026
+**Effective date:** July 23, 2026
 
 [Home](index.html) | [Support](support.html) | [Source code](https://github.com/Kk-kingkong/video-dub)
 
 LocalTube Dub is an open-source Chrome extension that translates, transcribes, and dubs the active YouTube video. It has no LocalTube Dub account system, advertising, analytics, payment processing, or hosted translation service.
 
 This policy covers the Chrome extension and the optional LocalTube Dub Engine installed on the same computer.
+
+## Chrome Web Store Limited Use
+
+LocalTube Dub's use and transfer of information received from Google APIs and Chrome extension permissions adheres to the Chrome Web Store User Data Policy, including the Limited Use requirements. LocalTube Dub uses this information only to provide or improve its disclosed single purpose, does not sell it, does not use it for advertising or creditworthiness, and does not allow humans to read it except where permitted by that policy.
 
 ## Data the extension handles
 

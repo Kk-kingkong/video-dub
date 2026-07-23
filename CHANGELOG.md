@@ -5,6 +5,7 @@
 - Recorded the permanent Chrome Web Store Item ID `ikoenamldegccnhmjjnlkffocdkbbbmo` after the first draft upload.
 - Locked release documentation and automated compliance checks to the Store ID so future extension and Native Messaging Engine packages cannot silently use the former development ID.
 - Prepared matching Store-candidate extension and macOS Engine package metadata without changing caption extraction, translation, TTS, or playback behavior.
+- Added the explicit Chrome Web Store User Data Policy and Limited Use compliance statement required by the July 2026 policy update. This documentation-only change does not alter the submitted extension package or runtime behavior.
 
 ## 0.1.97 - 2026-07-15
 
