@@ -10,6 +10,8 @@ import struct
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -19,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SERVER_DIR = PROJECT_ROOT / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
-from local_dub_server import ENGINE_PROTOCOL_VERSION, build_captions_payload, build_dub_payload, build_health_payload, build_kokoro_model_payload, build_transcribe_payload, build_tts_payload, build_video_transcribe_payload, build_voices_payload  # noqa: E402
+from local_dub_server import ENGINE_PROTOCOL_VERSION, PORT as DEFAULT_ENGINE_PORT, build_captions_payload, build_dub_payload, build_health_payload, build_transcribe_payload, build_tts_payload, build_video_transcribe_payload, build_voices_payload  # noqa: E402
 
 
 MAX_CHROME_MESSAGE_BYTES = 64 * 1024 * 1024
@@ -28,6 +30,30 @@ NATIVE_LOG_PATH = Path(tempfile.gettempdir()) / "localtube-dub-native-host.log"
 WHISPER_INSTALL_LOG_PATH = Path(tempfile.gettempdir()) / "localtube-dub-whisper-install.log"
 AUTOSTART_INSTALL_LOG_PATH = Path(tempfile.gettempdir()) / "localtube-dub-autostart-install.log"
 ENGINE_START_WAIT_SECONDS = float(os.environ.get("LOCAL_DUB_ENGINE_START_WAIT_SECONDS", "10"))
+MODEL_FORWARD_TIMEOUT_SECONDS = float(os.environ.get("LOCAL_DUB_MODEL_FORWARD_TIMEOUT_SECONDS", "5"))
+
+
+def configured_engine_endpoint() -> tuple[str, int]:
+    configured_port = int(os.environ.get("LOCAL_DUB_PORT", str(DEFAULT_ENGINE_PORT)))
+    raw_base_url = os.environ.get("LOCAL_DUB_ENGINE_BASE_URL", "").strip()
+    if not raw_base_url:
+        return f"http://127.0.0.1:{configured_port}", configured_port
+    parsed = urllib.parse.urlsplit(raw_base_url)
+    if parsed.scheme.lower() != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("LOCAL_DUB_ENGINE_BASE_URL must be an HTTP loopback URL")
+    if parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("LOCAL_DUB_ENGINE_BASE_URL contains unsupported components")
+    port = int(parsed.port or configured_port)
+    return raw_base_url.rstrip("/"), port
+
+
+ENGINE_BASE_URL, ENGINE_PORT = configured_engine_endpoint()
+KOKORO_MODEL_ENDPOINTS = {
+    "status": ("GET", "/api/tts-model/kokoro/status"),
+    "install": ("POST", "/api/tts-model/kokoro/install"),
+    "cancel": ("POST", "/api/tts-model/kokoro/cancel"),
+    "uninstall": ("POST", "/api/tts-model/kokoro/uninstall"),
+}
 
 
 def native_log(message: str) -> None:
@@ -84,10 +110,7 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any]:
     }
     model_operation = model_operations.get(message_type)
     if model_operation:
-        if set(message).difference({"type", "payload"}):
-            return build_kokoro_model_payload(model_operation, {"invalid": True}, transport="native")
-        payload = {} if "payload" not in message else message.get("payload")
-        return build_kokoro_model_payload(model_operation, payload, transport="native")
+        return handle_kokoro_model_message(model_operation, message)
 
     if message_type in ("start-http", "start"):
         return start_http_engine()
@@ -134,6 +157,94 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any]:
     return {"ok": False, "error": f"Unsupported Native Messaging request: {message_type}"}
 
 
+def empty_model_status(error: str = "") -> dict[str, Any]:
+    return {
+        "state": "not-installed",
+        "version": "",
+        "downloadedBytes": 0,
+        "totalBytes": 0,
+        "progress": 0.0,
+        "installedBytes": 0,
+        "error": error,
+    }
+
+
+def invalid_model_request() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "code": "INVALID_MODEL_REQUEST",
+        "error": "Kokoro model requests must use an empty object.",
+        "transport": "native",
+        "model": empty_model_status(),
+    }
+
+
+def handle_kokoro_model_message(operation: str, message: dict[str, Any]) -> dict[str, Any]:
+    if set(message).difference({"type", "payload"}):
+        return invalid_model_request()
+    if "payload" in message and (not isinstance(message.get("payload"), dict) or message.get("payload")):
+        return invalid_model_request()
+    return forward_kokoro_model_operation(operation)
+
+
+def forward_kokoro_model_operation(operation: str) -> dict[str, Any]:
+    endpoint = KOKORO_MODEL_ENDPOINTS.get(operation)
+    if endpoint is None:
+        return invalid_model_request()
+    engine = start_http_engine()
+    if not engine.get("ok"):
+        error = str(engine.get("error") or "Persistent HTTP Engine is unavailable")
+        return {
+            "ok": False,
+            "code": "KOKORO_MODEL_ENGINE_UNAVAILABLE",
+            "error": error,
+            "transport": "native",
+            "model": empty_model_status(error),
+        }
+
+    method, path = endpoint
+    request = urllib.request.Request(
+        f"{ENGINE_BASE_URL}{path}",
+        data=None if method == "GET" else b"{}",
+        method=method,
+        headers={} if method == "GET" else {"content-type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=MODEL_FORWARD_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = {"ok": False, "error": f"HTTP Engine returned HTTP {error.code}"}
+    except Exception as error:
+        message = f"Persistent HTTP Engine model request failed: {error}"
+        return {
+            "ok": False,
+            "code": "KOKORO_MODEL_ENGINE_UNAVAILABLE",
+            "error": message,
+            "transport": "native",
+            "model": empty_model_status(message),
+        }
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("model"), dict):
+        message = "Persistent HTTP Engine returned an invalid model response"
+        return {
+            "ok": False,
+            "code": "KOKORO_MODEL_ENGINE_INVALID_RESPONSE",
+            "error": message,
+            "transport": "native",
+            "model": empty_model_status(message),
+        }
+    owner_transport = str(payload.get("transport") or "http")
+    return {
+        **payload,
+        "transport": "native",
+        "ownerTransport": owner_transport,
+        "model": payload["model"],
+    }
+
+
 def start_http_engine() -> dict[str, Any]:
     if http_engine_running():
         return {"ok": True, "transport": "native", "alreadyRunning": True}
@@ -175,6 +286,7 @@ def launch_http_engine() -> dict[str, Any]:
     output = open(ENGINE_LOG_PATH, "ab", buffering=0)
     command = [sys.executable or "python3", str(SERVER_DIR / "local_dub_server.py")]
     env = os.environ.copy()
+    env["LOCAL_DUB_PORT"] = str(ENGINE_PORT)
     env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
     native_log(f"launch-http command={command!r} cwd={PROJECT_ROOT}")
     try:
@@ -212,7 +324,7 @@ def launch_http_engine() -> dict[str, Any]:
     native_log("launch-http timed out waiting for health")
     return {
         "ok": False,
-        "error": f"Engine 已尝试启动，但 127.0.0.1:8787 暂未响应。Engine 日志：{ENGINE_LOG_PATH}；Native 日志：{NATIVE_LOG_PATH}",
+        "error": f"Engine 已尝试启动，但 {ENGINE_BASE_URL} 暂未响应。Engine 日志：{ENGINE_LOG_PATH}；Native 日志：{NATIVE_LOG_PATH}",
         "logPath": str(ENGINE_LOG_PATH),
         "nativeLogPath": str(NATIVE_LOG_PATH),
     }
@@ -325,7 +437,7 @@ def local_whisper_install_running() -> bool:
 def stop_http_engine(force: bool = False) -> dict[str, Any]:
     try:
         completed = subprocess.run(
-            ["lsof", "-tiTCP:8787", "-sTCP:LISTEN"],
+            ["lsof", f"-tiTCP:{ENGINE_PORT}", "-sTCP:LISTEN"],
             capture_output=True,
             text=True,
             timeout=2,
@@ -343,7 +455,7 @@ def stop_http_engine(force: bool = False) -> dict[str, Any]:
         if "local_dub_server.py" not in command:
             return {
                 "ok": False,
-                "error": f"127.0.0.1:8787 被其他进程占用（PID {pid}）。请关闭它后再启动 Engine。{command}",
+                "error": f"127.0.0.1:{ENGINE_PORT} 被其他进程占用（PID {pid}）。请关闭它后再启动 Engine。{command}",
             }
         if not force and http_engine_running():
             return {"ok": True}
@@ -359,7 +471,7 @@ def wait_for_port_release() -> None:
     for _ in range(20):
         try:
             completed = subprocess.run(
-                ["lsof", "-tiTCP:8787", "-sTCP:LISTEN"],
+                ["lsof", f"-tiTCP:{ENGINE_PORT}", "-sTCP:LISTEN"],
                 capture_output=True,
                 text=True,
                 timeout=1,
@@ -381,7 +493,7 @@ def process_command(pid: str) -> str:
 
 def http_engine_running() -> bool:
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8787/api/health", timeout=0.8) as response:
+        with urllib.request.urlopen(f"{ENGINE_BASE_URL}/api/health", timeout=0.8) as response:
             payload = json.loads(response.read().decode("utf-8"))
             return response.status == 200 and int(payload.get("protocolVersion") or 0) >= ENGINE_PROTOCOL_VERSION
     except Exception:
