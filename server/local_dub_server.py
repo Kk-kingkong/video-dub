@@ -17,6 +17,7 @@ import base64
 import functools
 import hashlib
 import importlib.util
+import platform
 import re
 import secrets
 import shlex
@@ -36,10 +37,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .kokoro_tts import KokoroModelManager
+    from .kokoro_tts import KokoroModelManager, KokoroRuntime, kokoro_voice_catalog
 except ImportError:  # pragma: no cover - supports direct Engine execution.
     try:
-        from kokoro_tts import KokoroModelManager
+        from kokoro_tts import KokoroModelManager, KokoroRuntime, kokoro_voice_catalog
     except ImportError:
         _kokoro_spec = importlib.util.spec_from_file_location(
             "localtube_kokoro_tts", Path(__file__).with_name("kokoro_tts.py")
@@ -50,6 +51,8 @@ except ImportError:  # pragma: no cover - supports direct Engine execution.
         sys.modules.setdefault(_kokoro_spec.name, _kokoro_module)
         _kokoro_spec.loader.exec_module(_kokoro_module)
         KokoroModelManager = _kokoro_module.KokoroModelManager
+        KokoroRuntime = _kokoro_module.KokoroRuntime
+        kokoro_voice_catalog = _kokoro_module.kokoro_voice_catalog
 
 
 HOST = os.environ.get("LOCAL_DUB_HOST", "127.0.0.1")
@@ -200,6 +203,25 @@ def default_kokoro_model_root() -> Path:
     return base / "localtube-dub" / "models" / "kokoro"
 
 
+def normalized_platform() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if os.name == "nt":
+        return "windows"
+    return "linux"
+
+
+def normalized_architecture() -> str:
+    raw = platform.machine().strip().lower()
+    if raw in {"arm64", "aarch64"}:
+        return "arm64"
+    if raw in {"x86_64", "amd64", "x64"}:
+        return "x64"
+    if raw in {"x86", "i386", "i686"}:
+        return "x86"
+    return raw or "unknown"
+
+
 class KokoroModelService:
     """Expose one fixed-model installation job without blocking Engine requests."""
 
@@ -282,6 +304,7 @@ class KokoroModelService:
 
 
 KOKORO_MODEL_SERVICE = KokoroModelService(KokoroModelManager(default_kokoro_model_root()))
+KOKORO_RUNTIME = KokoroRuntime(KOKORO_MODEL_SERVICE.manager)
 
 
 def build_kokoro_model_payload(operation: str, payload: Any, transport: str) -> dict[str, Any]:
@@ -618,6 +641,8 @@ def normalize_cues(raw_cues: Any) -> list[dict[str, Any]]:
 
 def build_health_payload(transport: str) -> dict[str, Any]:
     health = get_runtime_health()
+    model = KOKORO_MODEL_SERVICE.status(transport).get("model") or {}
+    runtime = KOKORO_RUNTIME.status()
     return {
         "ok": True,
         "service": "localtube-dub",
@@ -625,6 +650,13 @@ def build_health_payload(transport: str) -> dict[str, Any]:
         "protocolVersion": ENGINE_PROTOCOL_VERSION,
         "transport": transport,
         "model": OLLAMA_MODEL,
+        "platform": normalized_platform(),
+        "architecture": normalized_architecture(),
+        "kokoroRuntime": runtime,
+        "kokoroModel": str(model.get("state") or "not-installed"),
+        "kokoroModelVersion": str(model.get("version") or ""),
+        "kokoroModelBytes": max(0, int(model.get("installedBytes") or 0)),
+        "kokoroInstallProgress": max(0.0, min(1.0, float(model.get("progress") or 0))),
         **health,
         "time": int(time.time()),
     }
@@ -1192,7 +1224,7 @@ def start_dub_track_job(payload: dict[str, Any]) -> dict[str, Any]:
             "code": "INVALID_DUB_TRACK_VIDEO_URL",
             "error": "混合音轨只能读取当前 YouTube 视频的原音频。",
         }
-    tts_ready = edge_tts_available() if tts_engine == "edge" else check_tts()
+    tts_ready = tts_engine_ready(tts_engine)
     if not tts_ready or not find_ffmpeg_command():
         return {
             "ok": False,
@@ -2016,7 +2048,7 @@ def build_tts_payload(payload: dict[str, Any], transport: str) -> dict[str, Any]
             max_fit_rate,
             tts_engine=tts_engine,
         )
-        return {
+        result = {
             "ok": True,
             "engine": audio["engine"],
             "ttsEngine": audio.get("ttsEngine", tts_engine),
@@ -2028,6 +2060,10 @@ def build_tts_payload(payload: dict[str, Any], transport: str) -> dict[str, Any]
             "fitRate": audio.get("fitRate", 1),
             "leadingTrimSeconds": audio.get("leadingTrimSeconds", 0),
         }
+        for key in ("requestedVoice", "actualVoice", "voiceFallback", "voiceFallbackMessage"):
+            if key in audio:
+                result[key] = audio[key]
+        return result
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -2999,7 +3035,7 @@ def synthesize_speech_with_system(
             tts_engine=tts_engine,
         )
         encoded = base64.b64encode(Path(audio["path"]).read_bytes()).decode("ascii")
-        return {
+        result = {
             "engine": audio["engine"],
             "mimeType": "audio/wav",
             "dataUrl": f"data:audio/wav;base64,{encoded}",
@@ -3008,6 +3044,10 @@ def synthesize_speech_with_system(
             "ttsEngine": audio.get("ttsEngine", sanitize_tts_engine(tts_engine)),
             "leadingTrimSeconds": audio.get("leadingTrimSeconds", 0),
         }
+        for key in ("requestedVoice", "actualVoice", "voiceFallback", "voiceFallbackMessage"):
+            if key in audio:
+                result[key] = audio[key]
+        return result
 
 
 def synthesize_speech_to_wav_file(
@@ -3021,8 +3061,20 @@ def synthesize_speech_to_wav_file(
     cancel_event: threading.Event | None = None,
     tts_engine: str = "system",
 ) -> dict[str, Any]:
-    if sanitize_tts_engine(tts_engine) == "edge":
+    normalized_engine = sanitize_tts_engine(tts_engine)
+    if normalized_engine == "edge":
         return synthesize_edge_speech_to_wav_file(
+            text,
+            language,
+            rate,
+            voice_id,
+            target_duration,
+            output_dir,
+            max_fit_rate=max_fit_rate,
+            cancel_event=cancel_event,
+        )
+    if normalized_engine == "kokoro":
+        return synthesize_kokoro_speech_to_wav_file(
             text,
             language,
             rate,
@@ -3083,6 +3135,56 @@ def synthesize_speech_to_wav_file(
         "fitRate": fit_rate,
         "ttsEngine": "system",
         "leadingTrimSeconds": 0,
+    }
+
+
+def synthesize_kokoro_speech_to_wav_file(
+    text: str,
+    language: str,
+    rate: float,
+    voice_id: str,
+    target_duration: float,
+    output_dir: Path,
+    max_fit_rate: float = 3.0,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Generate only local Kokoro speech, then use the normal WAV fitting path."""
+
+    if cancel_event and cancel_event.is_set():
+        raise FullTranscriptCancelled("任务已取消")
+    if not tts_engine_ready("kokoro"):
+        runtime = KOKORO_RUNTIME.status()
+        detail = str(runtime.get("error") or runtime.get("state") or "unavailable")
+        raise RuntimeError(f"Kokoro 本地配音不可用：{detail}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "voice-kokoro.wav"
+    result = KOKORO_RUNTIME.synthesize(text, language, voice_id, rate, output_path)
+    if cancel_event and cancel_event.is_set():
+        raise FullTranscriptCancelled("任务已取消")
+    original_duration = validate_wav_duration(output_path)
+    final_path = output_path
+    fit_rate = 1.0
+    if target_duration > 0.3 and original_duration > target_duration * 1.04:
+        fitted = fit_wav_to_target_duration(
+            output_path,
+            output_dir,
+            target_duration,
+            max_fit_rate=max_fit_rate,
+            cancel_event=cancel_event,
+        )
+        if fitted:
+            final_path, fit_rate = fitted
+    return {
+        "engine": f"kokoro:{result['actualVoice']}",
+        "path": final_path,
+        "duration": validate_wav_duration(final_path),
+        "fitRate": fit_rate,
+        "ttsEngine": "kokoro",
+        "leadingTrimSeconds": 0,
+        "requestedVoice": result["requestedVoice"],
+        "actualVoice": result["actualVoice"],
+        "voiceFallback": bool(result["voiceFallback"]),
+        "voiceFallbackMessage": str(result["voiceFallbackMessage"]),
     }
 
 
@@ -3310,7 +3412,19 @@ def build_atempo_filter(rate: float) -> str:
 
 
 def sanitize_tts_engine(value: Any) -> str:
-    return "edge" if str(value or "").strip().lower() in ("edge", "edge-tts", "natural-online") else "system"
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"edge", "kokoro", "system"} else "system"
+
+
+def tts_engine_ready(tts_engine: str) -> bool:
+    """Check one requested provider only; local Kokoro never crosses providers."""
+
+    normalized = sanitize_tts_engine(tts_engine)
+    if normalized == "edge":
+        return edge_tts_available()
+    if normalized == "kokoro":
+        return bool(KOKORO_RUNTIME.status().get("available"))
+    return check_tts()
 
 
 def find_edge_tts_command() -> list[str] | None:
@@ -3413,12 +3527,18 @@ def build_voices_payload(transport: str) -> dict[str, Any]:
         {**voice, "provider": "edge", "localService": False, "available": edge_ready}
         for voice in EDGE_TTS_VOICES
     ]
+    kokoro_status = KOKORO_RUNTIME.status()
+    kokoro_voices = [
+        {**voice, "localService": True}
+        for voice in kokoro_voice_catalog(available=bool(kokoro_status.get("available")))
+    ]
     return {
         "ok": True,
         "transport": transport,
         "engine": "say" if shutil.which("say") else "unavailable",
         "edgeTts": edge_ready,
-        "voices": [*system_voices, *edge_voices],
+        "kokoro": kokoro_status,
+        "voices": [*system_voices, *edge_voices, *kokoro_voices],
     }
 
 

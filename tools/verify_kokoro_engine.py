@@ -4,10 +4,13 @@ from __future__ import annotations
 import io
 import hashlib
 import importlib
+import math
 import sys
 import tarfile
 import tempfile
 import threading
+import time
+import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -433,6 +436,288 @@ def test_http_model_routes_allow_only_empty_objects() -> None:
         local_server.KOKORO_MODEL_SERVICE = original_service
 
 
+class FakeKokoroModelManager:
+    """Ready local model data without downloading a production model in tests."""
+
+    def __init__(self, root: Path) -> None:
+        self.active_path = root / "active"
+        self.active_path.mkdir(parents=True)
+        for name in (
+            "model.int8.onnx",
+            "voices.bin",
+            "tokens.txt",
+            "lexicon-us-en.txt",
+            "lexicon-zh.txt",
+        ):
+            (self.active_path / name).write_bytes(b"fixture")
+        (self.active_path / "espeak-ng-data").mkdir()
+        self.state = "ready"
+
+    def status(self) -> dict:
+        return {
+            "state": self.state,
+            "version": "1.1-int8",
+            "installedBytes": 1,
+            "downloadedBytes": 1,
+            "totalBytes": 1,
+            "progress": 1,
+            "error": "",
+        }
+
+
+class FakeKokoroAudio:
+    def __init__(self, samples, sample_rate=24000) -> None:
+        self.samples = samples
+        self.sample_rate = sample_rate
+
+
+class FakeSherpaRuntime:
+    """Minimal sherpa-onnx shape which records the requested runtime config."""
+
+    def __init__(self, voice_samples: dict[str, list[object]] | None = None) -> None:
+        self.voice_samples = voice_samples or {}
+        self.configs = []
+        self.generate_calls = []
+
+        outer = self
+
+        class OfflineTtsKokoroModelConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class OfflineTtsModelConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class OfflineTtsConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+                outer.configs.append(self)
+
+            def validate(self):
+                return True
+
+        class OfflineTts:
+            def __init__(self, config):
+                self.config = config
+
+            def generate(self, *, text, sid, speed):
+                outer.generate_calls.append({"text": text, "sid": sid, "speed": speed})
+                voice_id = kokoro.KOKORO_VOICE_BY_SID[sid]["id"]
+                samples = outer.voice_samples.get(voice_id, [0.0, 0.25, -0.25, 0.5])
+                if isinstance(samples, Exception):
+                    raise samples
+                return FakeKokoroAudio(samples)
+
+        self.OfflineTtsKokoroModelConfig = OfflineTtsKokoroModelConfig
+        self.OfflineTtsModelConfig = OfflineTtsModelConfig
+        self.OfflineTtsConfig = OfflineTtsConfig
+        self.OfflineTts = OfflineTts
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+def test_complete_kokoro_voice_catalog_has_stable_provider_ids() -> None:
+    catalog = kokoro.kokoro_voice_catalog(available=True)
+    assert len(catalog) == 103
+    assert len({voice["id"] for voice in catalog}) == 103
+    assert {voice["provider"] for voice in catalog} == {"kokoro"}
+    assert [voice["id"] for voice in catalog[:3]] == ["zf_002", "zf_001", "zf_003"]
+    assert all(voice["available"] is True for voice in catalog)
+    assert all(voice["locale"] == voice["language"] for voice in catalog)
+    assert {voice["sid"] for voice in catalog} == set(range(103))
+    for voice in catalog:
+        if voice["id"].startswith("zf_"):
+            assert voice["language"] == "zh-CN"
+            assert voice["gender"] == "female"
+            assert 3 <= voice["sid"] <= 57
+        elif voice["id"].startswith("zm_"):
+            assert voice["language"] == "zh-CN"
+            assert voice["gender"] == "male"
+            assert 58 <= voice["sid"] <= 102
+        else:
+            assert voice["id"] in {"af_maple", "af_sol", "bf_vale"}
+
+
+def test_kokoro_runtime_is_lazy_uses_two_threads_and_releases_after_idle() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        clock = FakeClock()
+        fake_sherpa = FakeSherpaRuntime()
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            clock=clock,
+            sherpa_loader=lambda: fake_sherpa,
+            schedule_idle_release=False,
+        )
+        assert runtime.loaded is False
+        assert runtime.status()["state"] == "ready"
+        output = Path(temp_dir_name) / "voice.wav"
+        result = runtime.synthesize("你好", "zh-CN", "auto", 1.0, output)
+        assert runtime.loaded is True
+        assert result["requestedVoice"] == "zf_002"
+        assert result["actualVoice"] == "zf_002"
+        assert result["voiceFallback"] is False
+        assert fake_sherpa.configs[0].model.num_threads == 2
+        assert fake_sherpa.configs[0].model.provider == "cpu"
+        assert fake_sherpa.configs[0].max_num_sentences == 1
+        assert fake_sherpa.configs[0].silence_scale == 0.2
+        assert runtime.max_concurrent_jobs == 1
+        assert runtime.num_threads == 2
+        with wave.open(str(output), "rb") as audio:
+            assert audio.getnchannels() == 1
+            assert audio.getsampwidth() == 2
+            assert audio.getframerate() == 24000
+            assert audio.getnframes() == 4
+        clock.advance(301)
+        assert runtime.release_if_idle() is True
+        assert runtime.loaded is False
+
+
+def test_kokoro_voice_failure_retries_once_then_uses_one_same_provider_fallback() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        fake_sherpa = FakeSherpaRuntime(
+            {
+                "zf_001": RuntimeError("selected voice failed"),
+                "zf_002": [0.1, -0.1, 0.2],
+            }
+        )
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            sherpa_loader=lambda: fake_sherpa,
+            schedule_idle_release=False,
+        )
+        result = runtime.synthesize("测试", "zh-CN", "zf_001", 1.0, Path(temp_dir_name) / "voice.wav")
+        assert result["requestedVoice"] == "zf_001"
+        assert result["actualVoice"] == "zf_002"
+        assert result["voiceFallback"] is True
+        assert "zf_002" in result["voiceFallbackMessage"]
+        assert [call["sid"] for call in fake_sherpa.generate_calls] == [3, 3, 4]
+        assert all(call["sid"] in {3, 4} for call in fake_sherpa.generate_calls)
+
+
+def test_kokoro_rejects_empty_or_non_finite_output_without_cross_provider_fallback() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        fake_sherpa = FakeSherpaRuntime({"zf_002": [], "zf_003": [math.inf]})
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            sherpa_loader=lambda: fake_sherpa,
+            schedule_idle_release=False,
+        )
+        try:
+            runtime.synthesize("测试", "zh-CN", "auto", 1.0, Path(temp_dir_name) / "voice.wav")
+        except kokoro.KokoroRuntimeError as error:
+            assert "Kokoro" in str(error)
+        else:
+            raise AssertionError("Kokoro errors must remain explicit when no Kokoro voice works")
+        assert len(fake_sherpa.generate_calls) == 3
+
+
+def test_kokoro_runtime_reports_model_and_runtime_failures_without_loading_inference() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        manager = FakeKokoroModelManager(Path(temp_dir_name))
+        manager.state = "not-installed"
+        loader_calls = 0
+
+        def missing_loader():
+            nonlocal loader_calls
+            loader_calls += 1
+            raise ImportError("missing sherpa")
+
+        runtime = kokoro.KokoroRuntime(manager, sherpa_loader=missing_loader, schedule_idle_release=False)
+        assert runtime.status()["state"] == "model-not-installed"
+        try:
+            runtime.synthesize("测试", "zh-CN", "auto", 1.0, Path(temp_dir_name) / "voice.wav")
+        except kokoro.KokoroRuntimeError as error:
+            assert "model" in str(error).lower()
+        else:
+            raise AssertionError("missing model must remain an explicit Kokoro error")
+        assert loader_calls == 0
+
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        fake_sherpa = FakeSherpaRuntime()
+        fake_sherpa.__version__ = "1.12.0"
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            sherpa_loader=lambda: fake_sherpa,
+            schedule_idle_release=False,
+        )
+        try:
+            runtime.synthesize("测试", "zh-CN", "auto", 1.0, Path(temp_dir_name) / "voice.wav")
+        except kokoro.KokoroRuntimeError as error:
+            assert "requires sherpa-onnx" in str(error)
+        else:
+            raise AssertionError("incompatible runtimes must return a Kokoro error")
+        assert runtime.status()["state"] == "runtime-incompatible"
+
+
+def test_runtime_lock_allows_only_one_kokoro_job() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        started = threading.Event()
+        release = threading.Event()
+        active = 0
+        peak = 0
+        active_lock = threading.Lock()
+
+        class BlockingSherpa(FakeSherpaRuntime):
+            def __init__(self):
+                super().__init__()
+                original_tts = self.OfflineTts
+
+                outer = self
+
+                class OfflineTts(original_tts):
+                    def generate(inner, *, text, sid, speed):
+                        nonlocal active, peak
+                        with active_lock:
+                            active += 1
+                            peak = max(peak, active)
+                        try:
+                            started.set()
+                            release.wait(2)
+                            return super(OfflineTts, inner).generate(text=text, sid=sid, speed=speed)
+                        finally:
+                            with active_lock:
+                                active -= 1
+
+                self.OfflineTts = OfflineTts
+
+        fake_sherpa = BlockingSherpa()
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            sherpa_loader=lambda: fake_sherpa,
+            schedule_idle_release=False,
+        )
+        errors: list[Exception] = []
+
+        def worker(index):
+            try:
+                runtime.synthesize("测试", "zh-CN", "auto", 1.0, Path(temp_dir_name) / f"voice-{index}.wav")
+            except Exception as error:  # pragma: no cover - test assertion below.
+                errors.append(error)
+
+        first = threading.Thread(target=worker, args=(1,))
+        second = threading.Thread(target=worker, args=(2,))
+        first.start()
+        assert started.wait(1)
+        second.start()
+        time.sleep(0.05)
+        assert peak == 1
+        release.set()
+        first.join(2)
+        second.join(2)
+        assert not errors
+        assert peak == 1
+
+
 def main() -> None:
     test_model_manifest_is_immutable()
     with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -461,6 +746,12 @@ def main() -> None:
     test_protocol_status_schema_and_async_install_reuse()
     test_cancel_or_uninstall_cleans_up_late_activation()
     test_http_model_routes_allow_only_empty_objects()
+    test_complete_kokoro_voice_catalog_has_stable_provider_ids()
+    test_kokoro_runtime_is_lazy_uses_two_threads_and_releases_after_idle()
+    test_kokoro_voice_failure_retries_once_then_uses_one_same_provider_fallback()
+    test_kokoro_rejects_empty_or_non_finite_output_without_cross_provider_fallback()
+    test_kokoro_runtime_reports_model_and_runtime_failures_without_loading_inference()
+    test_runtime_lock_allows_only_one_kokoro_job()
     print("kokoro engine checks ok")
 
 

@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.util
+import math
 import json
 import os
 import shutil
+import sys
 import tarfile
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
+import wave
+from array import array
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Set, Union
@@ -61,6 +68,10 @@ class KokoroModelError(RuntimeError):
 
 class KokoroModelCancelled(KokoroModelError):
     """A model installation was cancelled before activation."""
+
+
+class KokoroRuntimeError(RuntimeError):
+    """Kokoro inference could not safely produce local speech."""
 
 
 Fetcher = Callable[[str], Union[Path, bytes, bytearray]]
@@ -448,3 +459,463 @@ class KokoroModelManager:
     def _raise_if_cancelled(self) -> None:
         if self._cancel_event.is_set():
             raise KokoroModelCancelled("model installation cancelled")
+
+
+# sherpa-onnx v1.13.4 documents these exact voice IDs and speaker IDs for
+# kokoro-int8-multi-lang-v1_1. Keep the mapping data here rather than relying
+# on an inference library's private voice table so Engine clients have stable IDs.
+KOKORO_SHERPA_ONNX_VERSION = "1.13.4"
+KOKORO_SAMPLE_RATE = 24000
+KOKORO_IDLE_UNLOAD_SECONDS = 5 * 60
+KOKORO_NUM_THREADS = 2
+KOKORO_SYNTHESIS_LOCK = threading.Lock()
+KOKORO_SPEAKER_NAMES = (
+    "af_maple",
+    "af_sol",
+    "bf_vale",
+    "zf_001",
+    "zf_002",
+    "zf_003",
+    "zf_004",
+    "zf_005",
+    "zf_006",
+    "zf_007",
+    "zf_008",
+    "zf_017",
+    "zf_018",
+    "zf_019",
+    "zf_021",
+    "zf_022",
+    "zf_023",
+    "zf_024",
+    "zf_026",
+    "zf_027",
+    "zf_028",
+    "zf_032",
+    "zf_036",
+    "zf_038",
+    "zf_039",
+    "zf_040",
+    "zf_042",
+    "zf_043",
+    "zf_044",
+    "zf_046",
+    "zf_047",
+    "zf_048",
+    "zf_049",
+    "zf_051",
+    "zf_059",
+    "zf_060",
+    "zf_067",
+    "zf_070",
+    "zf_071",
+    "zf_072",
+    "zf_073",
+    "zf_074",
+    "zf_075",
+    "zf_076",
+    "zf_077",
+    "zf_078",
+    "zf_079",
+    "zf_083",
+    "zf_084",
+    "zf_085",
+    "zf_086",
+    "zf_087",
+    "zf_088",
+    "zf_090",
+    "zf_092",
+    "zf_093",
+    "zf_094",
+    "zf_099",
+    "zm_009",
+    "zm_010",
+    "zm_011",
+    "zm_012",
+    "zm_013",
+    "zm_014",
+    "zm_015",
+    "zm_016",
+    "zm_020",
+    "zm_025",
+    "zm_029",
+    "zm_030",
+    "zm_031",
+    "zm_033",
+    "zm_034",
+    "zm_035",
+    "zm_037",
+    "zm_041",
+    "zm_045",
+    "zm_050",
+    "zm_052",
+    "zm_053",
+    "zm_054",
+    "zm_055",
+    "zm_056",
+    "zm_057",
+    "zm_058",
+    "zm_061",
+    "zm_062",
+    "zm_063",
+    "zm_064",
+    "zm_065",
+    "zm_066",
+    "zm_068",
+    "zm_069",
+    "zm_080",
+    "zm_081",
+    "zm_082",
+    "zm_089",
+    "zm_091",
+    "zm_095",
+    "zm_096",
+    "zm_097",
+    "zm_098",
+    "zm_100",
+)
+
+
+def _kokoro_voice_record(sid: int, voice_id: str) -> dict[str, Any]:
+    if voice_id.startswith("zf_"):
+        language = "zh-CN"
+        gender = "female"
+        name = f"Kokoro 中文女声 {voice_id[3:]}"
+        fallback_id = "zf_003" if voice_id == "zf_002" else "zf_002"
+    elif voice_id.startswith("zm_"):
+        language = "zh-CN"
+        gender = "male"
+        name = f"Kokoro 中文男声 {voice_id[3:]}"
+        fallback_id = "zm_011" if voice_id == "zm_010" else "zm_010"
+    elif voice_id.startswith("bf_"):
+        language = "en-GB"
+        gender = "female"
+        name = "Kokoro British female Vale"
+        fallback_id = "af_maple"
+    else:
+        language = "en-US"
+        gender = "female"
+        name = f"Kokoro American female {voice_id[3:].title()}"
+        fallback_id = "af_sol" if voice_id == "af_maple" else "af_maple"
+    return {
+        "id": voice_id,
+        "name": name,
+        "language": language,
+        "locale": language,
+        "gender": gender,
+        "sid": sid,
+        "fallbackId": fallback_id,
+        "provider": "kokoro",
+    }
+
+
+KOKORO_VOICE_BY_SID = {
+    sid: _kokoro_voice_record(sid, voice_id) for sid, voice_id in enumerate(KOKORO_SPEAKER_NAMES)
+}
+KOKORO_VOICE_BY_ID = {voice["id"]: voice for voice in KOKORO_VOICE_BY_SID.values()}
+KOKORO_CHINESE_CATALOG_ORDER = ("zf_002", "zf_001", "zf_003", "zm_010", "zm_011")
+
+
+def kokoro_voice_catalog(available: bool = False) -> list[dict[str, Any]]:
+    """Return all fixed Kokoro voices with Chinese choices ordered first."""
+
+    ordered_ids = [*KOKORO_CHINESE_CATALOG_ORDER]
+    ordered_ids.extend(voice_id for voice_id in KOKORO_SPEAKER_NAMES if voice_id not in ordered_ids)
+    return [{**KOKORO_VOICE_BY_ID[voice_id], "available": bool(available)} for voice_id in ordered_ids]
+
+
+def _is_chinese_language(language: str) -> bool:
+    return str(language or "").strip().lower().replace("_", "-").startswith("zh")
+
+
+def _select_kokoro_voice(language: str, voice_id: str) -> dict[str, Any]:
+    chinese = _is_chinese_language(language)
+    selected = str(voice_id or "").strip()
+    candidate = KOKORO_VOICE_BY_ID.get(selected)
+    if candidate and (candidate["id"].startswith(("zf_", "zm_")) == chinese):
+        return candidate
+    return KOKORO_VOICE_BY_ID["zf_002" if chinese else "af_maple"]
+
+
+class KokoroRuntime:
+    """Lazy, bounded sherpa-onnx Kokoro inference for the fixed local model."""
+
+    max_concurrent_jobs = 1
+    num_threads = KOKORO_NUM_THREADS
+    provider = "cpu"
+
+    def __init__(
+        self,
+        model_manager: KokoroModelManager,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sherpa_loader: Optional[Callable[[], Any]] = None,
+        runtime_probe: Optional[Callable[[], bool]] = None,
+        schedule_idle_release: bool = True,
+        idle_unload_seconds: float = KOKORO_IDLE_UNLOAD_SECONDS,
+    ) -> None:
+        self.model_manager = model_manager
+        self._clock = clock
+        self._sherpa_loader = sherpa_loader or self._load_sherpa_onnx
+        self._runtime_probe = runtime_probe or (
+            (lambda: True) if sherpa_loader is not None else self._sherpa_runtime_is_installed
+        )
+        self._schedule_idle_release = bool(schedule_idle_release)
+        self._idle_unload_seconds = max(1.0, float(idle_unload_seconds))
+        self._state_lock = threading.RLock()
+        self._tts: Any | None = None
+        self._last_used = 0.0
+        self._active_job = False
+        self._idle_timer: threading.Timer | None = None
+        self._runtime_error = ""
+
+    @property
+    def loaded(self) -> bool:
+        with self._state_lock:
+            return self._tts is not None
+
+    def status(self) -> dict[str, Any]:
+        model = self.model_manager.status()
+        model_state = str(model.get("state") or "not-installed")
+        runtime_installed = self._runtime_is_installed()
+        with self._state_lock:
+            loaded = self._tts is not None
+            runtime_error = self._runtime_error
+        if model_state != "ready":
+            state = "model-not-installed" if model_state == "not-installed" else f"model-{model_state}"
+        elif not runtime_installed:
+            state = "runtime-not-installed"
+        elif runtime_error:
+            state = "runtime-incompatible"
+        else:
+            state = "ready"
+        return {
+            "state": state,
+            "available": state == "ready",
+            "loaded": loaded,
+            "runtimeVersion": KOKORO_SHERPA_ONNX_VERSION,
+            "numThreads": self.num_threads,
+            "provider": self.provider,
+            "error": runtime_error,
+        }
+
+    def synthesize(self, text: str, language: str, voice_id: str, rate: float, output_path: Path) -> dict[str, Any]:
+        value = str(text or "").strip()
+        if not value:
+            raise KokoroRuntimeError("Kokoro requires non-empty text")
+        selected_voice = _select_kokoro_voice(language, voice_id)
+        fallback_voice = KOKORO_VOICE_BY_ID[str(selected_voice["fallbackId"])]
+        if fallback_voice["id"] == selected_voice["id"]:
+            raise KokoroRuntimeError("Kokoro voice fallback configuration is invalid")
+
+        with KOKORO_SYNTHESIS_LOCK:
+            with self._state_lock:
+                self._active_job = True
+            try:
+                tts = self._ensure_loaded()
+                output = Path(output_path)
+                try:
+                    return self._synthesize_voice(tts, value, selected_voice, rate, output, selected_voice)
+                except KokoroRuntimeError as selected_error:
+                    try:
+                        return self._synthesize_voice(
+                            tts,
+                            value,
+                            fallback_voice,
+                            rate,
+                            output,
+                            selected_voice,
+                            selected_error,
+                        )
+                    except KokoroRuntimeError as fallback_error:
+                        raise KokoroRuntimeError(
+                            f"Kokoro cannot generate speech with {selected_voice['id']} or its local fallback "
+                            f"{fallback_voice['id']}: {fallback_error}"
+                        ) from fallback_error
+            finally:
+                with self._state_lock:
+                    self._active_job = False
+                    self._last_used = self._clock()
+                self._schedule_release()
+
+    def release_if_idle(self) -> bool:
+        """Release inference deterministically once no work used it for five minutes."""
+
+        with self._state_lock:
+            if self._tts is None or self._active_job:
+                return False
+            if self._clock() - self._last_used < self._idle_unload_seconds:
+                return False
+            self._tts = None
+            self._runtime_error = ""
+            timer = self._idle_timer
+            self._idle_timer = None
+        if timer:
+            timer.cancel()
+        return True
+
+    def _synthesize_voice(
+        self,
+        tts: Any,
+        text: str,
+        actual_voice: Mapping[str, Any],
+        rate: float,
+        output_path: Path,
+        requested_voice: Mapping[str, Any],
+        prior_error: Optional[BaseException] = None,
+    ) -> dict[str, Any]:
+        try:
+            if prior_error is None:
+                # The selected voice gets one bounded retry. The locale fallback gets
+                # a single attempt so a broken voice cannot hold up later segments.
+                try:
+                    audio = tts.generate(text=text, sid=int(actual_voice["sid"]), speed=self._clamp_rate(rate))
+                    self._write_pcm16_wav(audio, output_path)
+                except Exception:
+                    audio = tts.generate(text=text, sid=int(actual_voice["sid"]), speed=self._clamp_rate(rate))
+                    self._write_pcm16_wav(audio, output_path)
+            else:
+                audio = tts.generate(text=text, sid=int(actual_voice["sid"]), speed=self._clamp_rate(rate))
+                self._write_pcm16_wav(audio, output_path)
+        except KokoroRuntimeError:
+            raise
+        except Exception as error:
+            raise KokoroRuntimeError(f"Kokoro voice {actual_voice['id']} failed: {error}") from error
+
+        duration = self._validate_pcm16_wav(output_path)
+        fallback = actual_voice["id"] != requested_voice["id"]
+        return {
+            "path": Path(output_path),
+            "duration": duration,
+            "sampleRate": KOKORO_SAMPLE_RATE,
+            "requestedVoice": requested_voice["id"],
+            "actualVoice": actual_voice["id"],
+            "voiceFallback": fallback,
+            "voiceFallbackMessage": (
+                f"当前 Kokoro 音色 {requested_voice['id']} 不可用，已切换为 {actual_voice['id']}。" if fallback else ""
+            ),
+        }
+
+    def _ensure_loaded(self) -> Any:
+        with self._state_lock:
+            if self._tts is not None:
+                return self._tts
+        model = self.model_manager.status()
+        if str(model.get("state") or "") != "ready":
+            raise KokoroRuntimeError("Kokoro model is not installed or is not ready")
+        if not self._runtime_is_installed():
+            raise KokoroRuntimeError("Kokoro runtime sherpa-onnx 1.13.4 is not installed")
+        try:
+            sherpa_onnx = self._sherpa_loader()
+            actual_version = str(getattr(sherpa_onnx, "__version__", "") or "")
+            if actual_version and actual_version != KOKORO_SHERPA_ONNX_VERSION:
+                raise KokoroRuntimeError(
+                    f"Kokoro runtime requires sherpa-onnx {KOKORO_SHERPA_ONNX_VERSION}, found {actual_version}"
+                )
+            active_path = Path(self.model_manager.active_path)
+            config = sherpa_onnx.OfflineTtsConfig(
+                model=sherpa_onnx.OfflineTtsModelConfig(
+                    kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
+                        model=str(active_path / "model.int8.onnx"),
+                        voices=str(active_path / "voices.bin"),
+                        tokens=str(active_path / "tokens.txt"),
+                        lexicon=f"{active_path / 'lexicon-us-en.txt'},{active_path / 'lexicon-zh.txt'}",
+                        data_dir=str(active_path / "espeak-ng-data"),
+                    ),
+                    num_threads=self.num_threads,
+                    provider=self.provider,
+                    debug=False,
+                ),
+                max_num_sentences=1,
+                silence_scale=0.2,
+            )
+            validate = getattr(config, "validate", None)
+            if callable(validate) and not validate():
+                raise KokoroRuntimeError("Kokoro runtime configuration is invalid")
+            loaded = sherpa_onnx.OfflineTts(config)
+        except KokoroRuntimeError as error:
+            with self._state_lock:
+                self._runtime_error = str(error)
+            raise
+        except Exception as error:
+            with self._state_lock:
+                self._runtime_error = str(error)
+            raise KokoroRuntimeError(f"Kokoro runtime failed to load: {error}") from error
+        with self._state_lock:
+            self._tts = loaded
+            self._runtime_error = ""
+        return loaded
+
+    def _schedule_release(self) -> None:
+        if not self._schedule_idle_release:
+            return
+        with self._state_lock:
+            previous = self._idle_timer
+            timer = threading.Timer(self._idle_unload_seconds, self.release_if_idle)
+            timer.daemon = True
+            self._idle_timer = timer
+        if previous:
+            previous.cancel()
+        timer.start()
+
+    def _runtime_is_installed(self) -> bool:
+        try:
+            return bool(self._runtime_probe())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _sherpa_runtime_is_installed() -> bool:
+        try:
+            return importlib.util.find_spec("sherpa_onnx") is not None
+        except (ImportError, ValueError):
+            return False
+
+    @staticmethod
+    def _load_sherpa_onnx() -> Any:
+        return importlib.import_module("sherpa_onnx")
+
+    @staticmethod
+    def _clamp_rate(rate: float) -> float:
+        return max(0.6, min(float(rate), 1.8))
+
+    @staticmethod
+    def _write_pcm16_wav(audio: Any, output_path: Path) -> None:
+        samples = list(getattr(audio, "samples", ()) or ())
+        sample_rate = int(getattr(audio, "sample_rate", 0) or 0)
+        if sample_rate != KOKORO_SAMPLE_RATE:
+            raise KokoroRuntimeError(f"Kokoro returned unsupported sample rate {sample_rate}")
+        if not samples:
+            raise KokoroRuntimeError("Kokoro returned empty audio")
+        pcm_samples = array("h")
+        for sample in samples:
+            value = float(sample)
+            if not math.isfinite(value):
+                raise KokoroRuntimeError("Kokoro returned non-finite audio")
+            pcm_samples.append(int(round(max(-1.0, min(1.0, value)) * 32767.0)))
+        if not pcm_samples:
+            raise KokoroRuntimeError("Kokoro returned empty audio")
+        if sys.byteorder != "little":
+            pcm_samples.byteswap()
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(destination), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(KOKORO_SAMPLE_RATE)
+            output.writeframes(pcm_samples.tobytes())
+
+    @staticmethod
+    def _validate_pcm16_wav(path: Path) -> float:
+        try:
+            with wave.open(str(path), "rb") as audio:
+                channels = audio.getnchannels()
+                width = audio.getsampwidth()
+                rate = audio.getframerate()
+                frames = audio.getnframes()
+                compression = audio.getcomptype()
+        except (OSError, EOFError, wave.Error) as error:
+            raise KokoroRuntimeError(f"Kokoro did not write a valid WAV: {error}") from error
+        if channels != 1 or width != 2 or rate != KOKORO_SAMPLE_RATE or frames <= 0 or compression != "NONE":
+            raise KokoroRuntimeError("Kokoro did not write a valid 24 kHz mono PCM16 WAV")
+        return frames / rate

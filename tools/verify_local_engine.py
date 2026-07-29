@@ -477,6 +477,149 @@ def test_system_voice_discovery(server):
     assert server.edge_tts_rate_argument(1.08) == "+8%"
 
 
+class FakeKokoroRuntime:
+    def __init__(self, state="ready"):
+        self.state = state
+        self.synthesis_calls = []
+
+    def status(self):
+        return {
+            "state": self.state,
+            "available": self.state == "ready",
+            "loaded": False,
+            "runtimeVersion": "1.13.4",
+            "numThreads": 2,
+            "provider": "cpu",
+            "error": "" if self.state == "ready" else "runtime unavailable",
+        }
+
+    def synthesize(self, text, language, voice_id, rate, output_path):
+        self.synthesis_calls.append((text, language, voice_id, rate))
+        write_test_wav(output_path, 24000, 1000, 24000)
+        return {
+            "path": output_path,
+            "duration": 0.01,
+            "sampleRate": 24000,
+            "requestedVoice": "zf_001",
+            "actualVoice": "zf_002",
+            "voiceFallback": True,
+            "voiceFallbackMessage": "当前 Kokoro 音色 zf_001 不可用，已切换为 zf_002。",
+        }
+
+
+def test_kokoro_health_platform_voice_and_engine_sanitization(server):
+    original_runtime = server.KOKORO_RUNTIME
+    original_model_service = server.KOKORO_MODEL_SERVICE
+    original_system_voices = server.available_system_voices
+    original_edge_available = server.edge_tts_available
+
+    class FakeModelService:
+        def status(self, transport):
+            return {
+                "ok": True,
+                "transport": transport,
+                "model": {
+                    "state": "ready",
+                    "version": "1.1-int8",
+                    "downloadedBytes": 147031220,
+                    "totalBytes": 147031220,
+                    "installedBytes": 215321602,
+                    "progress": 1,
+                    "error": "",
+                },
+            }
+
+    server.KOKORO_RUNTIME = FakeKokoroRuntime()
+    server.KOKORO_MODEL_SERVICE = FakeModelService()
+    server.available_system_voices = lambda: []
+    server.edge_tts_available = lambda: True
+    server.HEALTH_CACHE = None
+    try:
+        health = server.build_health_payload("test")
+        voices = server.build_voices_payload("test")
+    finally:
+        server.KOKORO_RUNTIME = original_runtime
+        server.KOKORO_MODEL_SERVICE = original_model_service
+        server.available_system_voices = original_system_voices
+        server.edge_tts_available = original_edge_available
+        server.HEALTH_CACHE = None
+
+    assert health["platform"] in {"macos", "windows", "linux"}
+    assert health["architecture"]
+    assert health["kokoroRuntime"]["state"] == "ready"
+    assert health["kokoroModel"] == "ready"
+    assert health["kokoroModelVersion"] == "1.1-int8"
+    assert health["kokoroModelBytes"] == 215321602
+    assert health["kokoroInstallProgress"] == 1
+    assert any(voice["provider"] == "kokoro" and voice["id"] == "zf_002" for voice in voices["voices"])
+    assert server.sanitize_tts_engine("edge") == "edge"
+    assert server.sanitize_tts_engine("kokoro") == "kokoro"
+    assert server.sanitize_tts_engine("system") == "system"
+    assert server.sanitize_tts_engine("natural-online") == "system"
+
+
+def test_kokoro_tts_routes_locally_preserves_fallback_metadata_and_fits_duration(server):
+    original_runtime = server.KOKORO_RUNTIME
+    original_fit = server.fit_wav_to_target_duration
+    fake_runtime = FakeKokoroRuntime()
+    server.KOKORO_RUNTIME = fake_runtime
+    fit_calls = []
+
+    def fake_fit(source_path, output_dir, target_duration, max_fit_rate=3, cancel_event=None):
+        fit_calls.append((source_path, target_duration, max_fit_rate))
+        return source_path, 1.4
+
+    server.fit_wav_to_target_duration = fake_fit
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            result = server.synthesize_speech_to_wav_file(
+                "你好",
+                "zh-CN",
+                1,
+                "zf_001",
+                0.5,
+                Path(temp_dir_name),
+                tts_engine="kokoro",
+            )
+            payload = server.build_tts_payload(
+                {"text": "你好", "language": "zh-CN", "voice": "zf_001", "ttsEngine": "kokoro"},
+                "test",
+            )
+    finally:
+        server.KOKORO_RUNTIME = original_runtime
+        server.fit_wav_to_target_duration = original_fit
+
+    assert fake_runtime.synthesis_calls[0] == ("你好", "zh-CN", "zf_001", 1.0)
+    assert result["ttsEngine"] == "kokoro"
+    assert result["engine"] == "kokoro:zf_002"
+    assert result["requestedVoice"] == "zf_001"
+    assert result["actualVoice"] == "zf_002"
+    assert result["voiceFallback"] is True
+    assert result["voiceFallbackMessage"]
+    assert fit_calls
+    assert payload["ok"] is True
+    assert payload["ttsEngine"] == "kokoro"
+    assert payload["actualVoice"] == "zf_002"
+    assert payload["voiceFallback"] is True
+
+
+def test_kokoro_full_track_readiness_never_uses_edge_or_system(server):
+    original_runtime = server.KOKORO_RUNTIME
+    original_edge = server.edge_tts_available
+    original_system = server.check_tts
+    try:
+        server.KOKORO_RUNTIME = FakeKokoroRuntime("ready")
+        server.edge_tts_available = lambda: (_ for _ in ()).throw(AssertionError("edge must not be used"))
+        server.check_tts = lambda: (_ for _ in ()).throw(AssertionError("system must not be used"))
+        assert server.tts_engine_ready("kokoro") is True
+        server.KOKORO_RUNTIME = FakeKokoroRuntime("runtime-not-installed")
+        assert server.tts_engine_ready("kokoro") is False
+    finally:
+        server.KOKORO_RUNTIME = original_runtime
+        server.edge_tts_available = original_edge
+        server.check_tts = original_system
+
+
 def write_test_wav(path, frame_count, sample_value=1000, sample_rate=1000):
     import struct
     import wave
@@ -1675,6 +1818,9 @@ def main() -> None:
     test_tts_duration_helpers(server)
     test_trim_wav_leading_silence(server)
     test_system_voice_discovery(server)
+    test_kokoro_health_platform_voice_and_engine_sanitization(server)
+    test_kokoro_tts_routes_locally_preserves_fallback_metadata_and_fits_duration(server)
+    test_kokoro_full_track_readiness_never_uses_edge_or_system(server)
     test_dub_track_wav_layout(server)
     test_dub_track_audio_mix(server)
     test_dub_track_m4a_encoding(server)
