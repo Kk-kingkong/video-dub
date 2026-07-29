@@ -132,6 +132,45 @@ function testVoiceOptions() {
   );
   assert.deepEqual(natural.map((voice) => voice.id), ["zh-CN-XiaoxiaoNeural"]);
   assert.equal(natural[0].provider, "edge");
+
+  assert.equal(voiceHelpers.normalizeTtsEngineForPlatform("system", "windows", false), "edge");
+  assert.equal(voiceHelpers.normalizeTtsEngineForPlatform("system", "macos", false), "system");
+  assert.equal(voiceHelpers.normalizeTtsEngineForPlatform("kokoro", "windows", true), "kokoro");
+  assert.equal(voiceHelpers.normalizeTtsEngineForPlatform("kokoro", "windows", false), "kokoro");
+  assert.equal(voiceHelpers.normalizeTtsEngineForPlatform("system", "", false), "edge");
+  assert.deepEqual(
+    voiceHelpers.ttsEngineOptionsForPlatform("windows").map((engine) => [engine.id, engine.label]),
+    [
+      ["edge", "Microsoft 自然在线（默认）"],
+      ["kokoro", "Kokoro 高质量本地"]
+    ]
+  );
+  assert.deepEqual(voiceHelpers.ttsEngineOptionsForPlatform("").map((engine) => engine.id), ["edge", "kokoro"]);
+  assert.deepEqual(voiceHelpers.ttsEngineOptionsForPlatform("linux").map((engine) => engine.id), ["edge", "kokoro"]);
+  assert.deepEqual(
+    voiceHelpers.ttsEngineOptionsForPlatform("macos").map((engine) => engine.id),
+    ["edge", "kokoro", "system"]
+  );
+  assert.match(voiceHelpers.ttsEngineOptionsForPlatform("macos")[2].label, /仅限 macOS/);
+
+  const scopedVoices = voiceHelpers.mergeVoiceOptions([
+    { id: "edge-zh", name: "Edge", language: "zh-CN", provider: "edge" },
+    { id: "kokoro-zh", name: "Kokoro", language: "zh-CN", provider: "kokoro" },
+    { id: "system-zh", name: "System", language: "zh-CN", provider: "system" },
+    { id: "browser-zh", name: "Browser", language: "zh-CN", provider: "browser", localService: false }
+  ]);
+  assert.deepEqual(
+    voiceHelpers.selectVoiceOptions(scopedVoices, "zh-CN", "kokoro-zh", [], { provider: "edge" }).map((voice) => voice.id),
+    ["edge-zh"]
+  );
+  assert.deepEqual(
+    voiceHelpers.selectVoiceOptions(scopedVoices, "zh-CN", "edge-zh", [], { provider: "kokoro" }).map((voice) => voice.id),
+    ["kokoro-zh"]
+  );
+  assert.deepEqual(
+    voiceHelpers.selectVoiceOptions(scopedVoices, "zh-CN", "auto", [], { provider: "system" }).map((voice) => voice.id).sort(),
+    ["browser-zh", "system-zh"]
+  );
 }
 
 function testEngineCompatibility() {
@@ -640,6 +679,7 @@ async function testBackgroundModeNormalization() {
   assert.equal(advancedOllama.provider, "native");
   assert.equal(vm.runInContext("sanitizeSettings({}).ttsEngine", context), "edge");
   assert.equal(vm.runInContext('sanitizeSettings({ ttsEngine: "system" }).ttsEngine', context), "system");
+  assert.equal(vm.runInContext('sanitizeSettings({ ttsEngine: "kokoro" }).ttsEngine', context), "kokoro");
   context.fetch = async (url) => {
     if (String(url).endsWith("/api/tts-model/kokoro/status")) {
       return new Response(JSON.stringify({
@@ -1350,6 +1390,10 @@ function testManifestAndFlowGuards() {
   assert.match(content, /payload\.upgradeRequired/);
   assert.match(content, /localtube\.listVoices/);
   assert.match(content, /renderAvailableVoiceOptions/);
+  assert.match(content, /Kokoro 高质量本地/);
+  assert.doesNotMatch(content, /<option value="system">/);
+  assert.match(content, /function applyEnginePlatformPolicy/);
+  assert.match(content, /ttsEngineOptionsForPlatform/);
   assert.match(content, /transcriptionProvider === "native" && !payload\.whisper/);
   assert.match(content, /yt-dlp \+ Whisper 就绪/);
   assert.match(content, /localtube\.startEngine/);
@@ -1877,7 +1921,12 @@ function testManifestAndFlowGuards() {
   assert.match(popupHtml, /id="voiceId"/);
   assert.match(popupHtml, /id="ttsEngine"/);
   assert.match(popupHtml, /Microsoft 自然在线（默认）/);
+  assert.match(popupHtml, /Kokoro 高质量本地/);
+  assert.doesNotMatch(popupHtml, /<option value="system">/);
   assert.match(popup, /ttsEngine: "edge"/);
+  assert.match(popup, /function applyEnginePlatformPolicy/);
+  assert.match(popup, /ttsEngineOptionsForPlatform/);
+  assert.match(popup, /localtube\.setSettings/);
   assert.match(popup, /provider: nodes\.ttsEngine\.value/);
   assert.match(popupHtml, /<script src="voice_helpers\.js"><\/script>/);
   assert.match(popupHtml, /<script src="permission_helpers\.js"><\/script>/);

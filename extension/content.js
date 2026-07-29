@@ -62,7 +62,12 @@ const DEFAULT_SETTINGS = {
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 const YOUTUBE_SOURCE_CACHE_PROVIDER = "youtube-source";
-const { mergeVoiceOptions, selectVoiceOptions } = globalThis.LocalTubeDubVoiceHelpers;
+const {
+  mergeVoiceOptions,
+  normalizeTtsEngineForPlatform,
+  selectVoiceOptions,
+  ttsEngineOptionsForPlatform
+} = globalThis.LocalTubeDubVoiceHelpers;
 const CAPTION_FAST_TIMEOUT_MS = 6000;
 const CAPTION_TOTAL_TIMEOUT_MS = 23000;
 const CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS = 2000;
@@ -142,6 +147,7 @@ const state = {
   translatedCues: [],
   voiceSegments: [],
   availableVoices: [],
+  enginePlatform: "",
   pendingTranslationTracker: createCueTranslationTracker((cue) => hasTranslatedCue(cue)),
   activeCueIndex: -1,
   spokenCueIndex: -1,
@@ -407,7 +413,7 @@ function renderWidget() {
             <span>配音引擎</span>
             <select data-field="ttsEngine">
               <option value="edge">Microsoft 自然在线（默认）</option>
-              <option value="system">本地系统（快速）</option>
+              <option value="kokoro">Kokoro 高质量本地</option>
             </select>
           </label>
           <label class="ltd-field">
@@ -460,11 +466,8 @@ function updateControlsFromSettings() {
   state.root.querySelector("[data-field='provider']").value = state.settings.provider || "chrome-translator";
   state.root.querySelector("[data-field='voiceEnabled']").checked = state.settings.voiceEnabled;
   state.root.querySelector("[data-field='muteOriginal']").checked = state.settings.muteOriginal;
-  state.root.querySelector("[data-field='ttsEngine']").value = state.settings.ttsEngine === "edge" ? "edge" : "system";
-  const voiceSelect = state.root.querySelector("[data-field='voiceId']");
-  if (voiceSelect) {
-    voiceSelect.value = selectHasOption(voiceSelect, state.settings.voiceId) ? state.settings.voiceId : "auto";
-  }
+  renderAvailableTtsEngineOptions(state.settings.ttsEngine);
+  state.settings.voiceId = renderAvailableVoiceOptions(state.settings.voiceId);
   const volumeInput = state.root.querySelector("[data-field='originalVolume']");
   if (volumeInput) {
     volumeInput.value = String(Math.round(clampNumber(state.settings.originalVolume, 0, 1, DEFAULT_SETTINGS.originalVolume) * 100));
@@ -504,7 +507,7 @@ async function refreshAvailableVoiceOptions() {
 function renderAvailableVoiceOptions(selectedVoice = "auto") {
   const select = state.root?.querySelector("[data-field='voiceId']");
   if (!select) {
-    return;
+    return "auto";
   }
   const current = String(selectedVoice || "auto");
   const fallbackVoices = VOICE_OPTIONS.filter(([id]) => id !== "auto").map(([id, name]) => ({ id, name }));
@@ -513,22 +516,49 @@ function renderAvailableVoiceOptions(selectedVoice = "auto") {
     state.settings.targetLanguage,
     current,
     fallbackVoices,
-    { provider: state.settings.ttsEngine || DEFAULT_SETTINGS.ttsEngine }
+    { provider: normalizeTtsEngineForPlatform(state.settings.ttsEngine, state.enginePlatform, false) }
   );
   const options = [new Option("自动匹配（推荐）", "auto")];
   for (const voice of voices) {
     const locale = voice.language ? ` · ${voice.language}` : "";
     options.push(new Option(`${voice.name}${locale}`, voice.id));
   }
-  if (!state.availableVoices.length) {
-    for (const [id, label] of VOICE_OPTIONS) {
-      if (id !== "auto" && !options.some((option) => option.value === id)) {
-        options.push(new Option(label, id));
-      }
-    }
-  }
   select.replaceChildren(...options);
   select.value = selectHasOption(select, current) ? current : "auto";
+  return select.value;
+}
+
+function renderAvailableTtsEngineOptions(selectedEngine = state.settings.ttsEngine) {
+  const select = state.root?.querySelector("[data-field='ttsEngine']");
+  if (!select) {
+    return "edge";
+  }
+  const normalized = normalizeTtsEngineForPlatform(selectedEngine, state.enginePlatform, false);
+  select.replaceChildren(
+    ...ttsEngineOptionsForPlatform(state.enginePlatform).map((engine) => new Option(engine.label, engine.id))
+  );
+  select.value = normalized;
+  return normalized;
+}
+
+function applyEnginePlatformPolicy(platform) {
+  state.enginePlatform = ["macos", "windows", "linux"].includes(String(platform || "").toLowerCase())
+    ? String(platform).toLowerCase()
+    : "";
+  const normalized = renderAvailableTtsEngineOptions(state.settings.ttsEngine);
+  if (normalized === state.settings.ttsEngine) {
+    return false;
+  }
+  state.settings = { ...state.settings, ttsEngine: normalized, voiceId: "auto" };
+  renderAvailableVoiceOptions("auto");
+  if (state.enginePlatform) {
+    sendRuntimeMessage({ type: "localtube.setSettings", settings: state.settings }).then((response) => {
+      if (response?.settings) {
+        state.settings = { ...state.settings, ...response.settings };
+      }
+    }).catch(() => {});
+  }
+  return true;
 }
 
 function startEngineStatusPolling() {
@@ -563,6 +593,7 @@ async function refreshEngineStatus() {
   node.classList.remove("is-checking", "is-ok", "is-warn", "is-error");
   if (response?.ok) {
     const payload = response.payload || {};
+    applyEnginePlatformPolicy(payload.platform);
     const transport = payload.transport === "native" ? "Native" : "HTTP";
     if (payload.upgradeRequired) {
       node.classList.add("is-error");
@@ -594,6 +625,7 @@ async function refreshEngineStatus() {
     return;
   }
 
+  applyEnginePlatformPolicy("");
   node.classList.add("is-error");
   textNode.textContent = `字幕 Engine 未连接：${shortEngineError(response?.error)}`;
 }
@@ -705,7 +737,11 @@ function readSettingsFromWidget() {
     provider: state.root.querySelector("[data-field='provider']").value,
     voiceEnabled: state.root.querySelector("[data-field='voiceEnabled']").checked,
     muteOriginal: state.root.querySelector("[data-field='muteOriginal']").checked,
-    ttsEngine: state.root.querySelector("[data-field='ttsEngine']")?.value === "edge" ? "edge" : "system",
+    ttsEngine: normalizeTtsEngineForPlatform(
+      state.root.querySelector("[data-field='ttsEngine']")?.value,
+      state.enginePlatform,
+      false
+    ),
     voiceId: state.root.querySelector("[data-field='voiceId']")?.value || "auto",
     originalVolume: Number(state.root.querySelector("[data-field='originalVolume']").value || 0) / 100,
     dubTrackMode: state.root.querySelector("[data-field='dubTrackMode']")?.value === "mixed" ? "mixed" : "voice-only",

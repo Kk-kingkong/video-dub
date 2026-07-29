@@ -570,7 +570,8 @@ function sanitizeVoiceId(voiceId) {
 }
 
 function sanitizeTtsEngine(value) {
-  return String(value || "").toLowerCase() === "system" ? "system" : "edge";
+  const engine = String(value || "").trim().toLowerCase();
+  return ["edge", "kokoro", "system"].includes(engine) ? engine : "edge";
 }
 
 function sanitizeProvider(provider) {

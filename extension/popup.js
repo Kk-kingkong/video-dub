@@ -24,7 +24,12 @@ const DEFAULT_SETTINGS = {
 };
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
-const { mergeVoiceOptions, selectVoiceOptions } = globalThis.LocalTubeDubVoiceHelpers;
+const {
+  mergeVoiceOptions,
+  normalizeTtsEngineForPlatform,
+  selectVoiceOptions,
+  ttsEngineOptionsForPlatform
+} = globalThis.LocalTubeDubVoiceHelpers;
 const { collectOptionalOrigins, optionalCapturePermissions } = globalThis.LocalTubeDubPermissionHelpers;
 
 const PROVIDER_DEFAULTS = {
@@ -189,6 +194,7 @@ let currentSettings = { ...DEFAULT_SETTINGS };
 let engineStatusTimer = 0;
 let volumeSaveTimer = 0;
 let availableVoiceOptions = [];
+let enginePlatform = "";
 const fallbackVoiceOptions = Array.from(nodes.voiceId.options).map((option) => ({
   id: option.value,
   name: option.textContent,
@@ -369,6 +375,36 @@ function renderVoiceOptions(selectedVoice = "auto") {
     })
   ].join("");
   nodes.voiceId.value = selectHasValue(nodes.voiceId, current) ? current : "auto";
+  return nodes.voiceId.value;
+}
+
+function renderTtsEngineOptions(selectedEngine = currentSettings.ttsEngine) {
+  const normalized = normalizeTtsEngineForPlatform(selectedEngine, enginePlatform, false);
+  nodes.ttsEngine.innerHTML = ttsEngineOptionsForPlatform(enginePlatform)
+    .map((engine) => `<option value="${engine.id}">${escapeHtml(engine.label)}</option>`)
+    .join("");
+  nodes.ttsEngine.value = normalized;
+  return normalized;
+}
+
+function applyEnginePlatformPolicy(platform) {
+  enginePlatform = ["macos", "windows", "linux"].includes(String(platform || "").toLowerCase())
+    ? String(platform).toLowerCase()
+    : "";
+  const normalized = renderTtsEngineOptions(currentSettings.ttsEngine);
+  if (normalized === currentSettings.ttsEngine) {
+    return false;
+  }
+  currentSettings = { ...currentSettings, ttsEngine: normalized, voiceId: "auto" };
+  renderVoiceOptions("auto");
+  if (enginePlatform) {
+    chrome.runtime.sendMessage({ type: "localtube.setSettings", settings: currentSettings }).then((response) => {
+      if (response?.ok && response.settings) {
+        currentSettings = { ...currentSettings, ...response.settings };
+      }
+    }).catch(() => {});
+  }
+  return true;
 }
 
 function render(settings) {
@@ -423,8 +459,8 @@ function render(settings) {
   nodes.transcriptionNote.textContent = transcriptionProvider.note;
 
   nodes.targetLanguage.value = currentSettings.targetLanguage;
-  nodes.ttsEngine.value = currentSettings.ttsEngine === "edge" ? "edge" : "system";
-  nodes.voiceId.value = selectHasValue(nodes.voiceId, currentSettings.voiceId) ? currentSettings.voiceId : "auto";
+  renderTtsEngineOptions(currentSettings.ttsEngine);
+  currentSettings.voiceId = renderVoiceOptions(currentSettings.voiceId);
   nodes.voiceEnabled.checked = currentSettings.voiceEnabled;
   nodes.muteOriginal.checked = currentSettings.muteOriginal;
   nodes.originalVolume.value = String(Math.round(clampNumber(currentSettings.originalVolume, 0, 1, DEFAULT_SETTINGS.originalVolume) * 100));
@@ -446,6 +482,7 @@ async function refreshEngineStatus() {
 
   if (response?.ok) {
     const payload = response.payload || {};
+    applyEnginePlatformPolicy(payload.platform);
     const transport = payload.transport === "native" ? "Native" : "HTTP";
     if (payload.upgradeRequired) {
       setEngineStatus(
@@ -487,6 +524,7 @@ async function refreshEngineStatus() {
     return;
   }
 
+  applyEnginePlatformPolicy("");
   setEngineStatus("error", "字幕 Engine 未连接", shortEngineHealthError(response?.error));
 }
 
@@ -695,7 +733,7 @@ function buildSettingsFromForm() {
     transcriptionModel: nodes.transcriptionModel.value.trim(),
     transcriptionApiKey: nodes.transcriptionApiKey.value.trim(),
     targetLanguage: nodes.targetLanguage.value,
-    ttsEngine: nodes.ttsEngine.value === "edge" ? "edge" : "system",
+    ttsEngine: normalizeTtsEngineForPlatform(nodes.ttsEngine.value, enginePlatform, false),
     voiceId: nodes.voiceId.value,
     voiceEnabled: nodes.voiceEnabled.checked,
     muteOriginal: nodes.muteOriginal.checked,

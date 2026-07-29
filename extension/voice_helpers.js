@@ -1,4 +1,32 @@
 (function installLocalTubeVoiceHelpers(globalScope) {
+  const TTS_ENGINE_OPTIONS = Object.freeze([
+    Object.freeze({ id: "edge", label: "Microsoft 自然在线（默认）" }),
+    Object.freeze({ id: "kokoro", label: "Kokoro 高质量本地" }),
+    Object.freeze({ id: "system", label: "macOS 系统配音（仅限 macOS）", macosOnly: true })
+  ]);
+
+  function normalizePlatform(platform) {
+    return String(platform || "").trim().toLowerCase() === "macos" ? "macos" : "";
+  }
+
+  function normalizeTtsEngineForPlatform(ttsEngine, platform, kokoroReady) {
+    const engine = String(ttsEngine || "").trim().toLowerCase();
+    // Readiness controls model actions, never the user's Kokoro selection.
+    void kokoroReady;
+    if (engine === "kokoro") {
+      return "kokoro";
+    }
+    if (engine === "system" && normalizePlatform(platform) === "macos") {
+      return "system";
+    }
+    return "edge";
+  }
+
+  function ttsEngineOptionsForPlatform(platform) {
+    const isMacos = normalizePlatform(platform) === "macos";
+    return TTS_ENGINE_OPTIONS.filter((engine) => !engine.macosOnly || isMacos).map((engine) => ({ ...engine }));
+  }
+
   function voiceLanguagePrefix(language) {
     return String(language || "").trim().toLowerCase().replace(/_/g, "-").split("-")[0] || "";
   }
@@ -51,7 +79,7 @@
       return left.name.localeCompare(right.name, targetLanguage || undefined);
     });
     const current = String(selectedVoice || "auto");
-    if (current !== "auto" && !matching.some((voice) => voice.id === current)) {
+    if (!requestedProvider && current !== "auto" && !matching.some((voice) => voice.id === current)) {
       matching.unshift({
         id: current,
         name: `${current}（当前设置）`,
@@ -64,7 +92,13 @@
     return matching;
   }
 
-  const api = { mergeVoiceOptions, selectVoiceOptions, voiceLanguagePrefix };
+  const api = {
+    mergeVoiceOptions,
+    normalizeTtsEngineForPlatform,
+    selectVoiceOptions,
+    ttsEngineOptionsForPlatform,
+    voiceLanguagePrefix
+  };
   globalScope.LocalTubeDubVoiceHelpers = api;
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
