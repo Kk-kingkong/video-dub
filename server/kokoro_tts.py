@@ -23,16 +23,34 @@ KOKORO_MODEL_MANIFEST = MappingProxyType(
         "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2",
         "sha256": "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6",
         "archiveBytes": 147031220,
-        "installedBytes": 0,
+        "installedBytes": 215321602,
+        "archiveRoot": "kokoro-int8-multi-lang-v1_1",
+        "allowedRootFiles": (
+            "LICENSE",
+            "README.md",
+            "date-zh.fst",
+            "lexicon-gb-en.txt",
+            "lexicon-us-en.txt",
+            "lexicon-zh.txt",
+            "model.int8.onnx",
+            "number-zh.fst",
+            "phone-zh.fst",
+            "tokens.txt",
+            "voices.bin",
+        ),
+        "allowedPrefixes": ("dict", "espeak-ng-data"),
         "requiredFiles": (
             "model.int8.onnx",
             "voices.bin",
             "tokens.txt",
             "lexicon-zh.txt",
+            "lexicon-gb-en.txt",
+            "lexicon-us-en.txt",
             "date-zh.fst",
             "number-zh.fst",
             "phone-zh.fst",
         ),
+        "fileCount": 377,
     }
 )
 
@@ -61,10 +79,28 @@ def _normalized_required_files(required_files: Set[str]) -> Set[PurePosixPath]:
     return {_safe_relative_path(str(name)) for name in required_files}
 
 
-def extract_verified_archive(archive: Path, destination: Path, required_files: Set[str]) -> int:
-    """Extract an exact set of regular files without following archive links."""
+def extract_verified_archive(
+    archive: Path,
+    destination: Path,
+    required_files: Set[str],
+    *,
+    archive_root: Optional[str] = None,
+    allowed_root_files: Optional[Set[str]] = None,
+    allowed_prefixes: Optional[Set[str]] = None,
+    expected_file_count: Optional[int] = None,
+    expected_installed_bytes: Optional[int] = None,
+) -> int:
+    """Extract a fixed archive layout without following archive links."""
 
     expected_files = _normalized_required_files(required_files)
+    normalized_root = _safe_relative_path(archive_root) if archive_root else None
+    if normalized_root is not None and len(normalized_root.parts) != 1:
+        raise KokoroModelError("unsafe archive root")
+    allowed_files = _normalized_required_files(allowed_root_files or required_files)
+    allowed_direct_files = {PurePosixPath(path.name) for path in allowed_files if len(path.parts) == 1}
+    allowed_nested_prefixes = {str(prefix).rstrip("/") for prefix in (allowed_prefixes or set())}
+    if any(not _safe_relative_path(prefix) or "/" in prefix for prefix in allowed_nested_prefixes):
+        raise KokoroModelError("unsafe archive prefix")
     destination = destination.expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=False)
     destination_root = destination.resolve()
@@ -75,7 +111,7 @@ def extract_verified_archive(archive: Path, destination: Path, required_files: S
             regular_members = [member for member in members if member.isfile()]
             parsed_paths = [_safe_relative_path(member.name) for member in regular_members]
             common_prefix: Optional[str] = None
-            if parsed_paths and all(len(path.parts) > 1 for path in parsed_paths):
+            if normalized_root is None and parsed_paths and all(len(path.parts) > 1 for path in parsed_paths):
                 first_parts = {path.parts[0] for path in parsed_paths}
                 if len(first_parts) == 1:
                     common_prefix = next(iter(first_parts))
@@ -84,16 +120,33 @@ def extract_verified_archive(archive: Path, destination: Path, required_files: S
             total_bytes = 0
             for member in members:
                 member_path = _safe_relative_path(member.name)
+                relative_path = member_path
+                if normalized_root is not None:
+                    if member_path.parts[0] != normalized_root.name:
+                        raise KokoroModelError("unexpected archive root")
+                    relative_path = PurePosixPath(*member_path.parts[1:])
+                elif common_prefix is not None:
+                    relative_path = PurePosixPath(*member_path.parts[1:])
+
                 if member.isdir():
+                    if normalized_root is not None and relative_path.parts:
+                        top_level = relative_path.parts[0]
+                        if len(relative_path.parts) == 1 and top_level not in allowed_nested_prefixes:
+                            raise KokoroModelError("unexpected archive directory")
+                        if len(relative_path.parts) > 1 and top_level not in allowed_nested_prefixes:
+                            raise KokoroModelError("unexpected archive directory")
                     continue
                 if not member.isfile():
                     raise KokoroModelError("unsafe archive member")
-
-                relative_path = member_path
-                if common_prefix is not None:
-                    relative_path = PurePosixPath(*member_path.parts[1:])
-                if relative_path not in expected_files:
+                if not relative_path.parts:
                     raise KokoroModelError("unexpected archive file")
+
+                if normalized_root is None and relative_path not in expected_files:
+                    raise KokoroModelError("unexpected archive file")
+                if normalized_root is not None and len(relative_path.parts) == 1 and relative_path not in allowed_direct_files:
+                    raise KokoroModelError("unexpected archive file")
+                if normalized_root is not None and len(relative_path.parts) > 1 and relative_path.parts[0] not in allowed_nested_prefixes:
+                    raise KokoroModelError("unexpected archive prefix")
                 if relative_path in extracted:
                     raise KokoroModelError("duplicate archive file")
 
@@ -123,8 +176,15 @@ def extract_verified_archive(archive: Path, destination: Path, required_files: S
         raise
 
     if extracted != expected_files:
+        if not expected_files.issubset(extracted):
+            shutil.rmtree(destination, ignore_errors=True)
+            raise KokoroModelError("model archive is missing required files")
+    if expected_file_count is not None and len(extracted) != expected_file_count:
         shutil.rmtree(destination, ignore_errors=True)
-        raise KokoroModelError("model archive is missing required files")
+        raise KokoroModelError("unexpected model file count")
+    if expected_installed_bytes is not None and total_bytes != expected_installed_bytes:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise KokoroModelError("unexpected installed model size")
     return total_bytes
 
 
@@ -136,19 +196,34 @@ class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 class KokoroModelManager:
-    """Own the fixed model's staging, validation, and atomic activation."""
+    """Own the fixed model's staging, validation, and atomic activation.
 
-    def __init__(self, root: Path, manifest: Optional[dict] = None) -> None:
+    Production callers use this class with its fixed manifest and ``install``
+    method only. ``_for_tests`` and ``_install_for_tests`` are deterministic
+    test seams; Engine protocol handlers must never expose either input.
+    """
+
+    def __init__(self, root: Path, *, _manifest_for_tests: Optional[Mapping[str, Any]] = None) -> None:
         self.root = Path(root).expanduser().resolve()
-        source_manifest = KOKORO_MODEL_MANIFEST if manifest is None else manifest
+        source_manifest = KOKORO_MODEL_MANIFEST if _manifest_for_tests is None else _manifest_for_tests
         self.manifest = MappingProxyType(dict(source_manifest))
         self._required_files = _normalized_required_files(set(self.manifest["requiredFiles"]))
+        self._archive_root = self.manifest.get("archiveRoot")
+        self._allowed_root_files = set(self.manifest.get("allowedRootFiles", self.manifest["requiredFiles"]))
+        self._allowed_prefixes = set(self.manifest.get("allowedPrefixes", ()))
+        self._file_count = self.manifest.get("fileCount")
         self.active_path = self.root / "active"
         self._lock = threading.RLock()
         self._cancel_event = threading.Event()
         self._state = "not-installed"
         self._error = ""
         self._downloaded_bytes = 0
+
+    @classmethod
+    def _for_tests(cls, root: Path, manifest: Mapping[str, Any]) -> "KokoroModelManager":
+        """Create a manager with a synthetic manifest for deterministic tests."""
+
+        return cls(root, _manifest_for_tests=manifest)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -174,7 +249,17 @@ class KokoroModelManager:
             return {"ok": False, "code": "INVALID_MODEL_REQUEST"}
         return self.install()
 
-    def install(self, fetcher: Optional[Fetcher] = None) -> dict[str, Any]:
+    def install(self) -> dict[str, Any]:
+        """Install only the fixed production archive through its fixed HTTPS source."""
+
+        return self._install(None)
+
+    def _install_for_tests(self, fetcher: Fetcher) -> dict[str, Any]:
+        """Install a synthetic archive for deterministic tests only."""
+
+        return self._install(fetcher)
+
+    def _install(self, fetcher: Optional[Fetcher]) -> dict[str, Any]:
         with self._lock:
             if self._state == "installing":
                 return self.status()
@@ -196,6 +281,11 @@ class KokoroModelManager:
                     archive,
                     extracted,
                     {str(path) for path in self._required_files},
+                    archive_root=self._archive_root,
+                    allowed_root_files=self._allowed_root_files,
+                    allowed_prefixes=self._allowed_prefixes,
+                    expected_file_count=self._file_count,
+                    expected_installed_bytes=int(self.manifest["installedBytes"]),
                 )
                 self._raise_if_cancelled()
                 self._write_activation_metadata(extracted, installed_bytes)
@@ -283,6 +373,7 @@ class KokoroModelManager:
             "id": self.manifest["id"],
             "version": self.manifest["version"],
             "installedBytes": installed_bytes,
+            "fileCount": self._file_count,
         }
         (extracted / ".kokoro-model.json").write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
 
@@ -290,18 +381,29 @@ class KokoroModelManager:
         replacement = self.root / ".kokoro-active-next"
         backup = self.root / ".kokoro-active-previous"
         shutil.rmtree(replacement, ignore_errors=True)
-        shutil.rmtree(backup, ignore_errors=True)
+        if backup.exists():
+            if self.active_path.exists():
+                shutil.rmtree(backup)
+            else:
+                os.replace(backup, self.active_path)
         os.replace(extracted, replacement)
+        moved_active_to_backup = False
         try:
             if self.active_path.exists():
                 os.replace(self.active_path, backup)
+                moved_active_to_backup = True
             os.replace(replacement, self.active_path)
         except OSError:
-            if backup.exists() and not self.active_path.exists():
-                os.replace(backup, self.active_path)
+            if moved_active_to_backup and backup.exists() and not self.active_path.exists():
+                try:
+                    os.replace(backup, self.active_path)
+                except OSError:
+                    pass
             raise
+        else:
+            if backup.exists():
+                shutil.rmtree(backup)
         finally:
-            shutil.rmtree(backup, ignore_errors=True)
             shutil.rmtree(replacement, ignore_errors=True)
 
     def _active_model_is_valid(self) -> bool:
@@ -310,18 +412,38 @@ class KokoroModelManager:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             if metadata.get("id") != self.manifest["id"] or metadata.get("version") != self.manifest["version"]:
                 return False
+            if metadata.get("installedBytes") != int(self.manifest["installedBytes"]):
+                return False
+            if self._file_count is not None and metadata.get("fileCount") != self._file_count:
+                return False
             active_root = self.active_path.resolve()
             for relative_path in self._required_files:
                 candidate = self.active_path.joinpath(*relative_path.parts)
                 if candidate.is_symlink() or not candidate.is_file():
                     return False
                 candidate.resolve().relative_to(active_root)
-            return True
+            file_count, installed_bytes = self._active_payload_stats()
+            return (
+                (self._file_count is None or file_count == self._file_count)
+                and installed_bytes == int(self.manifest["installedBytes"])
+            )
         except (OSError, ValueError, json.JSONDecodeError):
             return False
 
     def _installed_bytes(self) -> int:
-        return sum((self.active_path.joinpath(*path.parts)).stat().st_size for path in self._required_files)
+        return self._active_payload_stats()[1]
+
+    def _active_payload_stats(self) -> tuple[int, int]:
+        file_count = 0
+        installed_bytes = 0
+        for candidate in self.active_path.rglob("*"):
+            if candidate.name == ".kokoro-model.json":
+                continue
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            file_count += 1
+            installed_bytes += candidate.stat().st_size
+        return file_count, installed_bytes
 
     def _raise_if_cancelled(self) -> None:
         if self._cancel_event.is_set():
