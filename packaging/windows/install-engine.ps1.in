@@ -1,0 +1,188 @@
+[CmdletBinding()]
+param(
+    [switch]$Repair
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$ExtensionId = "__EXTENSION_ID__"
+$Version = "__VERSION__"
+$TaskName = "LocalTube Dub Engine"
+$RegistryPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.localtube.dub.engine"
+$SourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$DefaultProductRoot = Join-Path $env:LOCALAPPDATA "LocalTube Dub"
+$RuntimeRoot = if ($env:LOCAL_DUB_RUNTIME_DIR) { $env:LOCAL_DUB_RUNTIME_DIR } else { Join-Path $DefaultProductRoot "engine-runtime" }
+$StateRoot = if ($env:LOCAL_DUB_STATE_DIR) { $env:LOCAL_DUB_STATE_DIR } else { Join-Path $DefaultProductRoot "state" }
+$NativeManifestPath = if ($env:LOCAL_DUB_NATIVE_MANIFEST_PATH) { $env:LOCAL_DUB_NATIVE_MANIFEST_PATH } else { Join-Path $DefaultProductRoot "native-messaging\com.localtube.dub.engine.json" }
+$DryRun = $env:LOCAL_DUB_INSTALL_DRY_RUN -eq "1"
+$StagingRoot = "$RuntimeRoot.staging.$PID"
+$BackupRoot = "$RuntimeRoot.backup.$PID"
+$ActivationStarted = $false
+$HadPreviousRuntime = $false
+
+function Invoke-RuntimeVerification([string]$Root) {
+    $ReleasePath = Join-Path $Root "release.json"
+    $PythonPath = Join-Path $Root ".venv\python.exe"
+    $VerifierPath = Join-Path $Root "scripts\assemble_engine_runtime.py"
+    $LockPath = Join-Path $Root ".venv\runtime-lock.json"
+    if (-not (Test-Path -LiteralPath $ReleasePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $PythonPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $VerifierPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
+        throw "Bundled Windows runtime is incomplete."
+    }
+    $Release = Get-Content -LiteralPath $ReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($Release.version -ne $Version -or
+        $Release.chromeExtensionId -ne $ExtensionId -or
+        $Release.platform -ne "windows" -or
+        $Release.architecture -ne "x64" -or
+        $Release.bundledRuntime -ne $true -or
+        $null -eq $Release.runtimeContract) {
+        throw "Bundled Windows runtime metadata is invalid."
+    }
+    & $PythonPath $VerifierPath `
+        --verify-runtime (Join-Path $Root ".venv") `
+        --platform windows `
+        --arch x64 `
+        --release-metadata $ReleasePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bundled Windows runtime integrity verification failed."
+    }
+}
+
+function Stop-Engine {
+    if (-not $DryRun) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    }
+    $PidPath = Join-Path $StateRoot "engine.pid"
+    if (Test-Path -LiteralPath $PidPath -PathType Leaf) {
+        $EnginePid = [int](Get-Content -LiteralPath $PidPath -Raw)
+        Stop-Process -Id $EnginePid -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Register-NativeHost {
+    $Manifest = [ordered]@{
+        name = "com.localtube.dub.engine"
+        description = "LocalTube Dub Engine"
+        path = (Join-Path $RuntimeRoot "companion\native_host_launcher.exe")
+        type = "stdio"
+        allowed_origins = @("chrome-extension://$ExtensionId/")
+    }
+    $ManifestDirectory = Split-Path -Parent $NativeManifestPath
+    New-Item -ItemType Directory -Path $ManifestDirectory -Force | Out-Null
+    $ManifestJson = $Manifest | ConvertTo-Json -Depth 4
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($NativeManifestPath, $ManifestJson, $Utf8NoBom)
+    if (-not $DryRun) {
+        New-Item -Path $RegistryPath -Force | Out-Null
+        Set-Item -Path $RegistryPath -Value $NativeManifestPath
+    }
+}
+
+function Register-PerUserStartup {
+    if ($DryRun) {
+        return
+    }
+    $PythonPath = Join-Path $RuntimeRoot ".venv\python.exe"
+    $ServerPath = Join-Path $RuntimeRoot "server\local_dub_server.py"
+    $Action = New-ScheduledTaskAction `
+        -Execute $PythonPath `
+        -Argument "`"$ServerPath`"" `
+        -WorkingDirectory $RuntimeRoot
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $UserId = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+    $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $Action `
+        -Trigger $Trigger `
+        -Principal $Principal `
+        -Description "Starts the per-user LocalTube Dub loopback Engine." `
+        -Force | Out-Null
+}
+
+function Start-And-TestEngine {
+    if ($DryRun) {
+        return
+    }
+    New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
+    $PythonPath = Join-Path $RuntimeRoot ".venv\python.exe"
+    $ServerPath = Join-Path $RuntimeRoot "server\local_dub_server.py"
+    $Engine = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList @($ServerPath) `
+        -WorkingDirectory $RuntimeRoot `
+        -WindowStyle Hidden `
+        -PassThru
+    Set-Content -LiteralPath (Join-Path $StateRoot "engine.pid") -Value $Engine.Id -Encoding ASCII
+    for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {
+        try {
+            $Health = Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/health" -TimeoutSec 1
+            if ([int]$Health.protocolVersion -ge 2) {
+                return
+            }
+        } catch {
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    throw "Installed Engine did not pass /api/health."
+}
+
+function Invoke-Rollback {
+    Stop-Engine
+    if (-not $DryRun) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $RegistryPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $NativeManifestPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    if ($ActivationStarted) {
+        Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force -ErrorAction SilentlyContinue
+        if ($HadPreviousRuntime -and (Test-Path -LiteralPath $BackupRoot -PathType Container)) {
+            Move-Item -LiteralPath $BackupRoot -Destination $RuntimeRoot
+            Register-NativeHost
+            Register-PerUserStartup
+            Start-And-TestEngine
+        }
+    }
+    Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+try {
+    if (-not [Environment]::Is64BitOperatingSystem -or
+        [Environment]::OSVersion.Version.Major -lt 10) {
+        throw "LocalTube Dub Engine requires Windows 10/11 x64."
+    }
+    Invoke-RuntimeVerification $SourceRoot
+    Stop-Engine
+    Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path (Split-Path -Parent $RuntimeRoot) -Force | Out-Null
+    New-Item -ItemType Directory -Path $StagingRoot -Force | Out-Null
+    Get-ChildItem -LiteralPath $SourceRoot -Force | Copy-Item -Destination $StagingRoot -Recurse -Force
+    Invoke-RuntimeVerification $StagingRoot
+    if (Test-Path -LiteralPath $RuntimeRoot -PathType Container) {
+        Move-Item -LiteralPath $RuntimeRoot -Destination $BackupRoot
+        $HadPreviousRuntime = $true
+    }
+    $ActivationStarted = $true
+    Move-Item -LiteralPath $StagingRoot -Destination $RuntimeRoot
+    Invoke-RuntimeVerification $RuntimeRoot
+    Register-NativeHost
+    Register-PerUserStartup
+    if ($env:LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE -eq "1") {
+        throw "Injected installer failure after activation."
+    }
+    Start-And-TestEngine
+    $ActivationStarted = $false
+    Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "LocalTube Dub Engine $Version installed for the current user."
+    Write-Host "Runtime: $RuntimeRoot"
+} catch {
+    Invoke-Rollback
+    Write-Error $_
+    exit 1
+}

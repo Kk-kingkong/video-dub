@@ -1,0 +1,40 @@
+[CmdletBinding()]
+param(
+    [switch]$Yes
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$TaskName = "LocalTube Dub Engine"
+$RegistryPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.localtube.dub.engine"
+$DefaultProductRoot = Join-Path $env:LOCALAPPDATA "LocalTube Dub"
+$RuntimeRoot = if ($env:LOCAL_DUB_RUNTIME_DIR) { $env:LOCAL_DUB_RUNTIME_DIR } else { Join-Path $DefaultProductRoot "engine-runtime" }
+$StateRoot = if ($env:LOCAL_DUB_STATE_DIR) { $env:LOCAL_DUB_STATE_DIR } else { Join-Path $DefaultProductRoot "state" }
+$NativeManifestPath = if ($env:LOCAL_DUB_NATIVE_MANIFEST_PATH) { $env:LOCAL_DUB_NATIVE_MANIFEST_PATH } else { Join-Path $DefaultProductRoot "native-messaging\com.localtube.dub.engine.json" }
+$DryRun = $env:LOCAL_DUB_UNINSTALL_DRY_RUN -eq "1"
+
+if (-not $Yes) {
+    $Answer = Read-Host "Remove LocalTube Dub Engine for this Windows user? [y/N]"
+    if ($Answer -notin @("y", "Y")) {
+        Write-Host "Uninstall cancelled."
+        exit 0
+    }
+}
+
+if (-not $DryRun) {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-ItemProperty -LiteralPath $RegistryPath -Name "(default)" -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $RegistryPath -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$PidPath = Join-Path $StateRoot "engine.pid"
+if (Test-Path -LiteralPath $PidPath -PathType Leaf) {
+    $EnginePid = [int](Get-Content -LiteralPath $PidPath -Raw)
+    Stop-Process -Id $EnginePid -Force -ErrorAction SilentlyContinue
+}
+Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $NativeManifestPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $StateRoot -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "LocalTube Dub Engine removed for the current user."

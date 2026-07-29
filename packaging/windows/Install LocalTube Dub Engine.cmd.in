@@ -1,0 +1,11 @@
+@echo off
+setlocal
+cd /d "%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-engine.ps1"
+set "LOCAL_DUB_STATUS=%ERRORLEVEL%"
+if not "%LOCAL_DUB_STATUS%"=="0" (
+  echo.
+  echo LocalTube Dub Engine installation failed.
+  pause
+)
+exit /b %LOCAL_DUB_STATUS%

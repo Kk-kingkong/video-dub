@@ -16,6 +16,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+if os.name == "nt":
+    import msvcrt
+else:
+    msvcrt = None  # type: ignore[assignment]
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SERVER_DIR = PROJECT_ROOT / "server"
@@ -31,6 +36,24 @@ WHISPER_INSTALL_LOG_PATH = Path(tempfile.gettempdir()) / "localtube-dub-whisper-
 AUTOSTART_INSTALL_LOG_PATH = Path(tempfile.gettempdir()) / "localtube-dub-autostart-install.log"
 ENGINE_START_WAIT_SECONDS = float(os.environ.get("LOCAL_DUB_ENGINE_START_WAIT_SECONDS", "10"))
 MODEL_FORWARD_TIMEOUT_SECONDS = float(os.environ.get("LOCAL_DUB_MODEL_FORWARD_TIMEOUT_SECONDS", "5"))
+
+
+def default_engine_pid_path() -> Path:
+    override = os.environ.get("LOCAL_DUB_ENGINE_PID_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        product_root = (
+            Path(local_app_data).expanduser()
+            if local_app_data
+            else Path.home() / "AppData" / "Local"
+        ) / "LocalTube Dub"
+        return product_root / "state" / "engine.pid"
+    return Path(tempfile.gettempdir()) / "localtube-dub-engine.pid"
+
+
+ENGINE_PID_PATH = default_engine_pid_path()
 
 
 def configured_engine_endpoint() -> tuple[str, int]:
@@ -54,6 +77,15 @@ KOKORO_MODEL_ENDPOINTS = {
     "cancel": ("POST", "/api/tts-model/kokoro/cancel"),
     "uninstall": ("POST", "/api/tts-model/kokoro/uninstall"),
 }
+
+
+def configure_native_stdio() -> None:
+    """Use Chrome's required binary framing on Windows."""
+
+    if os.name != "nt" or msvcrt is None:
+        return
+    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
+    msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
 
 
 def native_log(message: str) -> None:
@@ -287,18 +319,29 @@ def launch_http_engine() -> dict[str, Any]:
     command = [sys.executable or "python3", str(SERVER_DIR / "local_dub_server.py")]
     env = os.environ.copy()
     env["LOCAL_DUB_PORT"] = str(ENGINE_PORT)
-    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
+    runtime_bin = str(Path(sys.executable).resolve().parent)
+    if os.name == "nt":
+        env["PATH"] = runtime_bin + os.pathsep + env.get("PATH", "")
+    else:
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
     native_log(f"launch-http command={command!r} cwd={PROJECT_ROOT}")
-    try:
-        subprocess.Popen(
-            command,
-            cwd=str(PROJECT_ROOT),
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=output,
-            env=env,
-            start_new_session=True,
+    popen_options: dict[str, Any] = {
+        "cwd": str(PROJECT_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": output,
+        "stderr": output,
+        "env": env,
+    }
+    if os.name == "nt":
+        popen_options["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         )
+    else:
+        popen_options["start_new_session"] = True
+    try:
+        process = subprocess.Popen(command, **popen_options)
+        ENGINE_PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ENGINE_PID_PATH.write_text(str(process.pid), encoding="ascii")
     except Exception as exc:
         native_log(f"launch-http failed: {exc}")
         return {
@@ -374,15 +417,29 @@ def start_local_whisper_install() -> dict[str, Any]:
 
 
 def install_engine_autostart() -> dict[str, Any]:
-    script_path = PROJECT_ROOT / "scripts" / "install_engine_autostart_macos.sh"
+    if os.name == "nt":
+        script_path = PROJECT_ROOT / "install-engine.ps1"
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-Repair",
+        ]
+    else:
+        script_path = PROJECT_ROOT / "scripts" / "install_engine_autostart_macos.sh"
+        command = [str(script_path)]
     if not script_path.is_file():
         return {"ok": False, "error": f"Engine 自启动安装脚本不存在：{script_path}"}
 
     env = os.environ.copy()
-    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
+    if os.name != "nt":
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
     try:
         completed = subprocess.run(
-            [str(script_path)],
+            command,
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
@@ -422,6 +479,8 @@ def install_engine_autostart() -> dict[str, Any]:
 
 
 def local_whisper_install_running() -> bool:
+    if os.name == "nt":
+        return False
     try:
         completed = subprocess.run(
             ["pgrep", "-f", "install_local_whisper_macos.sh"],
@@ -435,6 +494,8 @@ def local_whisper_install_running() -> bool:
 
 
 def stop_http_engine(force: bool = False) -> dict[str, Any]:
+    if os.name == "nt":
+        return stop_windows_http_engine(force)
     try:
         completed = subprocess.run(
             ["lsof", f"-tiTCP:{ENGINE_PORT}", "-sTCP:LISTEN"],
@@ -467,7 +528,70 @@ def stop_http_engine(force: bool = False) -> dict[str, Any]:
     return {"ok": True, "stopped": stopped}
 
 
+def stop_windows_http_engine(force: bool = False) -> dict[str, Any]:
+    if not force and http_engine_running():
+        return {"ok": True}
+    try:
+        pids = [int(ENGINE_PID_PATH.read_text(encoding="ascii").strip())]
+    except (OSError, ValueError):
+        pids = windows_engine_listener_pids()
+    stopped = False
+    for pid in pids:
+        try:
+            completed = subprocess.run(
+                ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception as error:
+            return {"ok": False, "error": f"Engine 停止失败：{error}"}
+        if completed.returncode not in (0, 128):
+            detail = (completed.stderr or completed.stdout or "taskkill failed").strip()
+            return {"ok": False, "error": f"Engine 停止失败：{detail}"}
+        stopped = stopped or completed.returncode == 0
+    ENGINE_PID_PATH.unlink(missing_ok=True)
+    return {"ok": True, "stopped": stopped}
+
+
+def windows_engine_listener_pids() -> list[int]:
+    script = (
+        f"$items=Get-NetTCPConnection -LocalPort {ENGINE_PORT} -State Listen "
+        "-ErrorAction SilentlyContinue;"
+        "foreach($item in $items){"
+        "$process=Get-CimInstance Win32_Process "
+        "-Filter (\"ProcessId=\" + $item.OwningProcess) -ErrorAction SilentlyContinue;"
+        "if($process -and $process.CommandLine -like '*local_dub_server.py*'){"
+        "Write-Output $process.ProcessId"
+        "}}"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0:
+        return []
+    pids: list[int] = []
+    for line in completed.stdout.splitlines():
+        try:
+            pids.append(int(line.strip()))
+        except ValueError:
+            continue
+    return pids
+
+
 def wait_for_port_release() -> None:
+    if os.name == "nt":
+        for _ in range(20):
+            if not http_engine_running():
+                return
+            time.sleep(0.25)
+        return
     for _ in range(20):
         try:
             completed = subprocess.run(
@@ -536,6 +660,7 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--demo":
         return cli_demo()
 
+    configure_native_stdio()
     os.chdir(PROJECT_ROOT)
     return native_loop()
 

@@ -75,12 +75,37 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
 WHISPER_MODEL = os.environ.get("LOCAL_DUB_WHISPER_MODEL", "base")
 WHISPER_COMMAND = os.environ.get("LOCAL_DUB_WHISPER_COMMAND", "")
 WHISPER_CPP_COMMAND = os.environ.get("LOCAL_DUB_WHISPER_CPP_COMMAND", "")
-WHISPER_CPP_MODEL = Path(
-    os.environ.get(
-        "LOCAL_DUB_WHISPER_CPP_MODEL",
-        str(Path.home() / "Library" / "Application Support" / "LocalTube Dub" / "models" / "ggml-base.bin"),
-    )
-).expanduser()
+
+
+def user_data_dir() -> Path:
+    override = os.environ.get("LOCAL_DUB_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        return (Path(base).expanduser() if base else Path.home() / "AppData" / "Local") / "LocalTube Dub"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "LocalTube Dub"
+    base = os.environ.get("XDG_DATA_HOME", "").strip()
+    return (Path(base).expanduser() if base else Path.home() / ".local" / "share") / "localtube-dub"
+
+
+def user_cache_dir() -> Path:
+    override = os.environ.get("LOCAL_DUB_CACHE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        return (Path(base).expanduser() if base else Path.home() / "AppData" / "Local") / "LocalTube Dub" / "cache"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "LocalTube Dub"
+    base = os.environ.get("XDG_CACHE_HOME", "").strip()
+    return (Path(base).expanduser() if base else Path.home() / ".cache") / "localtube-dub"
+
+
+WHISPER_CPP_MODEL = user_data_dir() / "models" / "ggml-base.bin"
+if os.environ.get("LOCAL_DUB_WHISPER_CPP_MODEL", "").strip():
+    WHISPER_CPP_MODEL = Path(os.environ["LOCAL_DUB_WHISPER_CPP_MODEL"]).expanduser()
 FFMPEG_COMMAND = os.environ.get("LOCAL_DUB_FFMPEG_COMMAND", "")
 FFPROBE_COMMAND = os.environ.get("LOCAL_DUB_FFPROBE_COMMAND", "")
 YTDLP_COMMAND = os.environ.get("LOCAL_DUB_YTDLP_COMMAND", "")
@@ -101,12 +126,9 @@ DUB_TRACK_MAX_CUES = int(os.environ.get("LOCAL_DUB_DUB_TRACK_MAX_CUES", "10000")
 DUB_TRACK_MAX_TEXT_CHARS = int(os.environ.get("LOCAL_DUB_DUB_TRACK_MAX_TEXT_CHARS", "1000000"))
 DUB_TRACK_MIX_TIMEOUT = float(os.environ.get("LOCAL_DUB_DUB_TRACK_MIX_TIMEOUT", "900"))
 DUB_TRACK_TTS_WORKERS = max(1, min(int(os.environ.get("LOCAL_DUB_DUB_TRACK_TTS_WORKERS", "3")), 4))
-DUB_TRACK_OUTPUT_DIR = Path(
-    os.environ.get(
-        "LOCAL_DUB_DUB_TRACK_OUTPUT_DIR",
-        str(Path.home() / "Library" / "Caches" / "LocalTube Dub" / "exports"),
-    )
-).expanduser()
+DUB_TRACK_OUTPUT_DIR = user_cache_dir() / "exports"
+if os.environ.get("LOCAL_DUB_DUB_TRACK_OUTPUT_DIR", "").strip():
+    DUB_TRACK_OUTPUT_DIR = Path(os.environ["LOCAL_DUB_DUB_TRACK_OUTPUT_DIR"]).expanduser()
 CAPTION_TIMEOUT = float(os.environ.get("LOCAL_DUB_CAPTION_TIMEOUT", "22"))
 CAPTION_METADATA_TIMEOUT = float(os.environ.get("LOCAL_DUB_CAPTION_METADATA_TIMEOUT", "16"))
 CAPTION_HTTP_TIMEOUT = float(os.environ.get("LOCAL_DUB_CAPTION_HTTP_TIMEOUT", "8"))
@@ -203,15 +225,7 @@ def default_kokoro_model_root() -> Path:
     override = os.environ.get("LOCAL_DUB_KOKORO_MODEL_ROOT", "").strip()
     if override:
         return Path(override).expanduser()
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "LocalTube Dub" / "models" / "kokoro"
-    if os.name == "nt":
-        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_app_data).expanduser() if local_app_data else Path.home() / "AppData" / "Local"
-        return base / "LocalTube Dub" / "models" / "kokoro"
-    data_home = os.environ.get("XDG_DATA_HOME", "").strip()
-    base = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
-    return base / "localtube-dub" / "models" / "kokoro"
+    return user_data_dir() / "models" / "kokoro"
 
 
 def normalized_platform() -> str:

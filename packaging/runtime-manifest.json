@@ -46,6 +46,28 @@
           ]
         }
       }
+    },
+    "windows": {
+      "architectures": {
+        "x64": {
+          "pythonVersion": "3.11.15",
+          "python": {
+            "name": "cpython-3.11.15+20260718-x86_64-pc-windows-msvc-install_only.tar.gz",
+            "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260718/cpython-3.11.15%2B20260718-x86_64-pc-windows-msvc-install_only.tar.gz",
+            "bytes": 48400412,
+            "sha256": "c3d782be3733f779d585633da374ff1bd92400d4d74c0c3922aee1526446096b"
+          },
+          "executables": [
+            {
+              "name": "ffmpeg-win32-x64",
+              "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-win32-x64",
+              "bytes": 82797568,
+              "sha256": "04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00",
+              "installAs": "ffmpeg.exe"
+            }
+          ]
+        }
+      }
     }
   },
   "packages": [
@@ -65,6 +87,16 @@
           "bytes": 19325474,
           "sha256": "674ea57eb6458002dab4e39749d21a7364b2f962f4a4958a3ee4c351b093cafd"
         }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "sherpa_onnx_core-1.13.4-py3-none-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/95/b0/c3d59ac76f3db873e41bd0cb4fc30b352a278da3289217985aaae3650211/sherpa_onnx_core-1.13.4-py3-none-win_amd64.whl",
+            "bytes": 16450053,
+            "sha256": "0a6949cf0fd83adb9fbcfdf5c27b8907a57f7b48626db703c7f6037be9b61764"
+          }
+        }
       }
     },
     {
@@ -82,6 +114,16 @@
           "url": "https://files.pythonhosted.org/packages/41/c8/a2ff828ce9a2702b607c25f6303b21d7d41b6ad1520f660b95a0113f4051/sherpa_onnx-1.13.4-cp311-cp311-macosx_10_15_x86_64.whl",
           "bytes": 2288314,
           "sha256": "c3e9f96a07570faefca8e3aabcfb78690e680d188d5d44d06fd8711185fe37d6"
+        }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "sherpa_onnx-1.13.4-cp311-cp311-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/7e/b1/ae1c113ac9c67dcabbed559f50950c7220a62e49e6b5acb4c2219ab22409/sherpa_onnx-1.13.4-cp311-cp311-win_amd64.whl",
+            "bytes": 2239901,
+            "sha256": "04a82d79c13a4ce2bd9ccf51de93e83cbfc7bc50520c53e5e967565100d0724d"
+          }
         }
       }
     },
@@ -111,6 +153,16 @@
           "bytes": 5686337,
           "sha256": "434cadbe8df2f08b2fc2c16dff2779fb40b984af99c06aa700af898e185bb9db"
         }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "curl_cffi-0.13.0-cp39-abi3-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/6d/e4/15a253f9b4bf8d008c31e176c162d2704a7e0c5e24d35942f759df107b68/curl_cffi-0.13.0-cp39-abi3-win_amd64.whl",
+            "bytes": 1614510,
+            "sha256": "66a6b75ce971de9af64f1b6812e275f60b88880577bac47ef1fa19694fa21cd3"
+          }
+        }
       }
     },
     {
@@ -128,6 +180,16 @@
           "url": "https://files.pythonhosted.org/packages/d3/67/85c89a59ba36a671e79638f44d466749f08179266a57e4f2ffdf92174072/cffi-2.1.0-cp311-cp311-macosx_10_15_x86_64.whl",
           "bytes": 183845,
           "sha256": "02cb7ff33ded4f1532476731f89ede53e2e488a8e6205515a82144246ffa7dcc"
+        }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "cffi-2.1.0-cp311-cp311-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/f9/c8/6c2de1d55cf35ef8b92885d5ef280790f0fb9634d87ea1cc315176aecd61/cffi-2.1.0-cp311-cp311-win_amd64.whl",
+            "bytes": 185113,
+            "sha256": "4f26194e3d95e06501b942642855aed4f953d55e95d7d01b7c4483db3ecff458"
+          }
         }
       }
     },
@@ -177,6 +239,16 @@
           "bytes": 518743,
           "sha256": "1c1af67559445498b502030c35c59db59966f47041ca9de5b4e707f86bd10b5f"
         }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "aiohttp-3.14.1-cp311-cp311-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/17/ca/69274c51dcd6e8947d77b2806cf47a4a15f2c846e2cbeb1882547d3da283/aiohttp-3.14.1-cp311-cp311-win_amd64.whl",
+            "bytes": 483406,
+            "sha256": "03ab4530fdcb3a543a122ba4b65ac9919da9fe9f78a03d328a6e38ff962f7aa5"
+          }
+        }
       }
     },
     {
@@ -225,6 +297,16 @@
           "bytes": 50046,
           "sha256": "17c883ab0ab67200b5f964d2b9ed6b00971917d5d8a92df149dc2c9779208ee9"
         }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "frozenlist-1.8.0-cp311-cp311-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/0a/f5/603d0d6a02cfd4c8f2a095a54672b3cf967ad688a60fb9faf04fc4887f65/frozenlist-1.8.0-cp311-cp311-win_amd64.whl",
+            "bytes": 44064,
+            "sha256": "ac913f8403b36a2c8610bbfd25b8013488533e71e62b4b4adce9c86c8cea905b"
+          }
+        }
       }
     },
     {
@@ -242,6 +324,16 @@
           "url": "https://files.pythonhosted.org/packages/a6/9b/267e64eaf6fc637a15b35f5de31a566634a2740f97d8d094a69d34f524a4/multidict-6.7.1-cp311-cp311-macosx_10_9_x86_64.whl",
           "bytes": 44706,
           "sha256": "844c5bca0b5444adb44a623fb0a1310c2f4cd41f402126bb269cd44c9b3f3e1e"
+        }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "multidict-6.7.1-cp311-cp311-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/c9/68/f16a3a8ba6f7b6dc92a1f19669c0810bd2c43fc5a02da13b1cbf8e253845/multidict-6.7.1-cp311-cp311-win_amd64.whl",
+            "bytes": 45981,
+            "sha256": "bdbf9f3b332abd0cdb306e7c2113818ab1e922dc84b8f8fd06ec89ed2a19ab8b"
+          }
         }
       }
     },
@@ -261,6 +353,16 @@
           "bytes": 52033,
           "sha256": "a4840ab0ae0216d952f4b53dc6d0b992bfc2bedbfe360bdd9b548bc184c08959"
         }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "propcache-0.5.2-cp311-cp311-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/42/4e/f17363fb58c0afe05b067361cb6d86ed2d29de6506779a27547c4d183075/propcache-0.5.2-cp311-cp311-win_amd64.whl",
+            "bytes": 42135,
+            "sha256": "44e488ef40dbb452700b2b1f8188934121f6648f52c295055662d2191959ff82"
+          }
+        }
       }
     },
     {
@@ -278,6 +380,16 @@
           "url": "https://files.pythonhosted.org/packages/87/5a/00f36967203ed89cb3acd2c8ed526cc3fed9418eb70ce128160a911c8499/yarl-1.24.2-cp311-cp311-macosx_10_9_x86_64.whl",
           "bytes": 91507,
           "sha256": "1a97e42c8a2233f2f279ecadd9e4a037bcb5d813b78435e8eedd4db5a9e9708c"
+        }
+      },
+      "platformArtifacts": {
+        "windows": {
+          "x64": {
+            "name": "yarl-1.24.2-cp311-cp311-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/21/3c/f960d7a65ef97d8ba9b424fb5128796a4bc710fc6df2ddbbd7dfdc3bbd20/yarl-1.24.2-cp311-cp311-win_amd64.whl",
+            "bytes": 92808,
+            "sha256": "f8fdbcff8b2c7c9284e60c196f693588598ddcee31e11c18e14949ce44519d45"
+          }
         }
       }
     },

@@ -26,8 +26,12 @@ from typing import Any, Callable, Mapping
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT_DIR / "packaging" / "runtime-manifest.json"
-SUPPORTED_PLATFORMS = {"macos"}
+SUPPORTED_PLATFORMS = {"macos", "windows"}
 SUPPORTED_ARCHITECTURES = {"arm64", "x64"}
+SUPPORTED_ARCHITECTURES_BY_PLATFORM = {
+    "macos": {"arm64", "x64"},
+    "windows": {"x64"},
+}
 RUNTIME_LOCK_SCHEMA_VERSION = 2
 TREE_DIGEST_FORMAT_VERSION = 1
 TREE_DIGEST_EXCLUSIONS = [
@@ -93,12 +97,16 @@ def load_runtime_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
         raise RuntimeAssemblyError("runtime model manifest identity has an invalid SHA-256")
     platforms = manifest.get("platforms")
     if not isinstance(platforms, dict) or set(platforms) != SUPPORTED_PLATFORMS:
-        raise RuntimeAssemblyError("runtime manifest must support exactly the macos platform")
-    macos = platforms.get("macos")
-    if not isinstance(macos, dict) or not isinstance(macos.get("architectures"), dict):
-        raise RuntimeAssemblyError("runtime manifest is missing macOS architecture data")
-    if set(macos["architectures"]) != SUPPORTED_ARCHITECTURES:
-        raise RuntimeAssemblyError("runtime manifest must contain arm64 and x64 architectures")
+        raise RuntimeAssemblyError("runtime manifest must support exactly macos and windows")
+    for platform_name, expected_architectures in SUPPORTED_ARCHITECTURES_BY_PLATFORM.items():
+        target_platform = platforms.get(platform_name)
+        if not isinstance(target_platform, dict) or not isinstance(target_platform.get("architectures"), dict):
+            raise RuntimeAssemblyError(f"runtime manifest is missing {platform_name} architecture data")
+        if set(target_platform["architectures"]) != expected_architectures:
+            expected = ", ".join(sorted(expected_architectures))
+            raise RuntimeAssemblyError(
+                f"runtime manifest {platform_name} architectures must be exactly: {expected}"
+            )
     packages = manifest.get("packages")
     if not isinstance(packages, list) or not packages:
         raise RuntimeAssemblyError("runtime manifest is missing pinned Python packages")
@@ -112,33 +120,56 @@ def load_runtime_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
         seen_packages.add(package_id)
         artifact = package.get("artifact")
         artifacts = package.get("artifacts")
-        if artifact is not None and artifacts is not None:
+        platform_artifacts = package.get("platformArtifacts")
+        if artifact is not None and (artifacts is not None or platform_artifacts is not None):
             raise RuntimeAssemblyError(f"runtime package {package_id} cannot use both artifact forms")
         if artifact is not None:
             if not isinstance(artifact, dict):
                 raise RuntimeAssemblyError(f"runtime package {package_id} artifact is invalid")
             _require_https_artifact(artifact, f"runtime package {package_id}")
-        elif isinstance(artifacts, dict) and set(artifacts) == SUPPORTED_ARCHITECTURES:
+        elif (
+            isinstance(artifacts, dict)
+            and set(artifacts) == SUPPORTED_ARCHITECTURES_BY_PLATFORM["macos"]
+            and isinstance(platform_artifacts, dict)
+            and set(platform_artifacts) == {"windows"}
+            and isinstance(platform_artifacts.get("windows"), dict)
+            and set(platform_artifacts["windows"]) == SUPPORTED_ARCHITECTURES_BY_PLATFORM["windows"]
+        ):
             for architecture, item in artifacts.items():
                 if not isinstance(item, dict):
-                    raise RuntimeAssemblyError(f"runtime package {package_id}/{architecture} artifact is invalid")
-                _require_https_artifact(item, f"runtime package {package_id}/{architecture}")
+                    raise RuntimeAssemblyError(f"runtime package {package_id}/macos/{architecture} artifact is invalid")
+                _require_https_artifact(item, f"runtime package {package_id}/macos/{architecture}")
+            for architecture, item in platform_artifacts["windows"].items():
+                if not isinstance(item, dict):
+                    raise RuntimeAssemblyError(f"runtime package {package_id}/windows/{architecture} artifact is invalid")
+                _require_https_artifact(item, f"runtime package {package_id}/windows/{architecture}")
         else:
-            raise RuntimeAssemblyError(f"runtime package {package_id} is missing architecture artifacts")
-    for architecture, target in macos["architectures"].items():
-        if not isinstance(target, dict):
-            raise RuntimeAssemblyError(f"runtime manifest target macos/{architecture} is invalid")
-        python_artifact = target.get("python")
-        if not isinstance(python_artifact, dict):
-            raise RuntimeAssemblyError(f"runtime manifest is missing Python for macos/{architecture}")
-        _require_https_artifact(python_artifact, f"Python macos/{architecture}")
-        executables = target.get("executables")
-        if not isinstance(executables, list) or not executables:
-            raise RuntimeAssemblyError(f"runtime manifest is missing executables for macos/{architecture}")
-        for executable in executables:
-            if not isinstance(executable, dict) or not str(executable.get("installAs") or ""):
-                raise RuntimeAssemblyError(f"runtime executable for macos/{architecture} is invalid")
-            _require_https_artifact(executable, f"runtime executable macos/{architecture}")
+            raise RuntimeAssemblyError(
+                f"runtime package {package_id} is missing complete macos and windows artifacts"
+            )
+    for platform_name, platform_payload in platforms.items():
+        for architecture, target in platform_payload["architectures"].items():
+            if not isinstance(target, dict):
+                raise RuntimeAssemblyError(f"runtime manifest target {platform_name}/{architecture} is invalid")
+            python_artifact = target.get("python")
+            if not isinstance(python_artifact, dict):
+                raise RuntimeAssemblyError(
+                    f"runtime manifest is missing Python for {platform_name}/{architecture}"
+                )
+            _require_https_artifact(python_artifact, f"Python {platform_name}/{architecture}")
+            executables = target.get("executables")
+            if not isinstance(executables, list) or not executables:
+                raise RuntimeAssemblyError(
+                    f"runtime manifest is missing executables for {platform_name}/{architecture}"
+                )
+            for executable in executables:
+                if not isinstance(executable, dict) or not str(executable.get("installAs") or ""):
+                    raise RuntimeAssemblyError(
+                        f"runtime executable for {platform_name}/{architecture} is invalid"
+                    )
+                _require_https_artifact(
+                    executable, f"runtime executable {platform_name}/{architecture}"
+                )
     return manifest
 
 
@@ -258,19 +289,40 @@ def extract_python_archive(archive_path: Path, destination: Path) -> None:
         raise RuntimeAssemblyError(f"cannot extract Python archive: {error}") from error
 
 
-def _artifact_for_architecture(package: Mapping[str, Any], architecture: str) -> Mapping[str, Any]:
+def _artifact_for_architecture(
+    package: Mapping[str, Any],
+    platform: str,
+    architecture: str,
+) -> Mapping[str, Any]:
     if isinstance(package.get("artifact"), dict):
         return package["artifact"]
+    platform_artifacts = package.get("platformArtifacts")
+    if (
+        isinstance(platform_artifacts, dict)
+        and isinstance(platform_artifacts.get(platform), dict)
+        and isinstance(platform_artifacts[platform].get(architecture), dict)
+    ):
+        return platform_artifacts[platform][architecture]
     artifacts = package.get("artifacts")
-    if not isinstance(artifacts, dict) or not isinstance(artifacts.get(architecture), dict):
-        raise RuntimeAssemblyError(f"runtime package {package.get('id')} lacks {architecture} artifact")
+    if (
+        platform != "macos"
+        or not isinstance(artifacts, dict)
+        or not isinstance(artifacts.get(architecture), dict)
+    ):
+        raise RuntimeAssemblyError(
+            f"runtime package {package.get('id')} lacks {platform}/{architecture} artifact"
+        )
     return artifacts[architecture]
 
 
-def _runtime_python(runtime_dir: Path) -> Path:
-    candidate = runtime_dir / "bin" / "python"
+def _runtime_python(runtime_dir: Path, platform: str) -> Path:
+    candidate = (
+        runtime_dir / "python.exe"
+        if platform == "windows"
+        else runtime_dir / "bin" / "python"
+    )
     if not candidate.is_file() or not os.access(candidate, os.X_OK):
-        raise RuntimeAssemblyError("private runtime is missing bin/python")
+        raise RuntimeAssemblyError(f"private runtime is missing {candidate.relative_to(runtime_dir)}")
     return candidate
 
 
@@ -294,8 +346,8 @@ def _install_wheels(python_bin: Path, wheels: list[Path], *, testing: bool) -> N
         raise RuntimeAssemblyError(f"offline wheel installation failed: {detail}")
 
 
-def _write_sitecustomize(runtime_dir: Path) -> None:
-    python_bin = _runtime_python(runtime_dir)
+def _write_sitecustomize(runtime_dir: Path, platform: str) -> None:
+    python_bin = _runtime_python(runtime_dir, platform)
     version = subprocess.run(
         [str(python_bin), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
         capture_output=True,
@@ -304,7 +356,10 @@ def _write_sitecustomize(runtime_dir: Path) -> None:
     )
     if version.returncode != 0:
         raise RuntimeAssemblyError("private Python cannot report its version")
-    site_packages = runtime_dir / "lib" / f"python{version.stdout.strip()}" / "site-packages"
+    if platform == "windows":
+        site_packages = runtime_dir / "Lib" / "site-packages"
+    else:
+        site_packages = runtime_dir / "lib" / f"python{version.stdout.strip()}" / "site-packages"
     site_packages.mkdir(parents=True, exist_ok=True)
     (site_packages / "sitecustomize.py").write_text(
         "# Keep the bundled media tools discoverable when launchd starts Python.\n"
@@ -371,7 +426,10 @@ def _selected_artifacts(
 ) -> list[Mapping[str, Any]]:
     target = manifest["platforms"][platform]["architectures"][architecture]
     artifacts: list[Mapping[str, Any]] = [target["python"]]
-    artifacts.extend(_artifact_for_architecture(package, architecture) for package in manifest["packages"])
+    artifacts.extend(
+        _artifact_for_architecture(package, platform, architecture)
+        for package in manifest["packages"]
+    )
     artifacts.extend(target["executables"])
     return artifacts
 
@@ -401,7 +459,7 @@ def _write_runtime_lock(runtime_dir: Path, manifest: Mapping[str, Any], platform
         "bundledRuntime": True,
         "platform": platform,
         "architecture": architecture,
-        "pythonExecutable": "bin/python",
+        "pythonExecutable": "python.exe" if platform == "windows" else "bin/python",
         "pythonVersion": manifest["platforms"][platform]["architectures"][architecture]["pythonVersion"],
         "artifacts": _artifact_contract(artifacts),
         "packages": _package_contract(manifest),
@@ -503,7 +561,8 @@ def verify_runtime_contract(
         lock.get("bundledRuntime") is not True
         or lock.get("platform") != expected_platform
         or lock.get("architecture") != expected_architecture
-        or lock.get("pythonExecutable") != "bin/python"
+        or lock.get("pythonExecutable")
+        != ("python.exe" if expected_platform == "windows" else "bin/python")
         or lock.get("pythonVersion") != contract.get("pythonVersion")
     ):
         raise RuntimeAssemblyError("runtime lock platform, architecture, or Python version is invalid")
@@ -532,10 +591,16 @@ def verify_runtime_contract(
     if actual_tree_digest != installed_tree["digest"]:
         raise RuntimeAssemblyError("installed runtime tree integrity verification failed")
 
-    python_bin = _runtime_python(runtime_dir)
-    ffmpeg_bin = runtime_dir / "bin" / "ffmpeg"
+    python_bin = _runtime_python(runtime_dir, expected_platform)
+    ffmpeg_bin = (
+        runtime_dir / "ffmpeg.exe"
+        if expected_platform == "windows"
+        else runtime_dir / "bin" / "ffmpeg"
+    )
     if not ffmpeg_bin.is_file() or not os.access(ffmpeg_bin, os.X_OK):
-        raise RuntimeAssemblyError("private runtime is missing bin/ffmpeg")
+        raise RuntimeAssemblyError(
+            f"private runtime is missing {ffmpeg_bin.relative_to(runtime_dir)}"
+        )
     probe = subprocess.run(
         [
             str(python_bin),
@@ -582,8 +647,8 @@ def assemble_runtime(
     if platform not in SUPPORTED_PLATFORMS:
         raise RuntimeAssemblyError(f"unsupported platform: {platform}")
     architecture = normalize_architecture(architecture)
-    if architecture not in SUPPORTED_ARCHITECTURES:
-        raise RuntimeAssemblyError(f"unsupported architecture: {architecture}")
+    if architecture not in SUPPORTED_ARCHITECTURES_BY_PLATFORM[platform]:
+        raise RuntimeAssemblyError(f"unsupported architecture for {platform}: {architecture}")
     target = manifest["platforms"][platform]["architectures"][architecture]
     artifact_records = _selected_artifacts(manifest, platform, architecture)
     fetched = [fetch_artifact(artifact, cache_dir, fetcher, testing=testing) for artifact in artifact_records]
@@ -603,14 +668,18 @@ def assemble_runtime(
             raise RuntimeAssemblyError("Python archive must contain a top-level python directory")
         runtime_dir = staging / "runtime"
         shutil.move(str(python_root), runtime_dir)
-        _install_wheels(_runtime_python(runtime_dir), wheel_paths, testing=testing)
+        _install_wheels(_runtime_python(runtime_dir, platform), wheel_paths, testing=testing)
         for artifact, executable_path in zip(target["executables"], executable_paths):
-            target_path = runtime_dir / "bin" / str(artifact["installAs"])
+            target_path = (
+                runtime_dir / str(artifact["installAs"])
+                if platform == "windows"
+                else runtime_dir / "bin" / str(artifact["installAs"])
+            )
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(executable_path, target_path)
             target_path.chmod(target_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         if not testing:
-            _write_sitecustomize(runtime_dir)
+            _write_sitecustomize(runtime_dir, platform)
         _remove_runtime_caches(runtime_dir)
         _write_runtime_lock(runtime_dir, manifest, platform, architecture, artifact_records)
         if output.exists():
@@ -671,7 +740,16 @@ def run_self_test(output: Path) -> None:
                 "macos": {
                     "architectures": {
                         architecture: {"pythonVersion": "3.11.test", "python": python_artifact, "executables": [{**binary_artifact, "installAs": "ffmpeg"}]}
-                        for architecture in sorted(SUPPORTED_ARCHITECTURES)
+                        for architecture in sorted(SUPPORTED_ARCHITECTURES_BY_PLATFORM["macos"])
+                    }
+                },
+                "windows": {
+                    "architectures": {
+                        "x64": {
+                            "pythonVersion": "3.11.test",
+                            "python": python_artifact,
+                            "executables": [{**binary_artifact, "installAs": "ffmpeg.exe"}],
+                        }
                     }
                 }
             },
