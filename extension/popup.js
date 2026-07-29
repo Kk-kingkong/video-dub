@@ -27,7 +27,9 @@ const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 const {
   mergeVoiceOptions,
   normalizeTtsEngineForPlatform,
+  resolveConfiguredTtsEngineSelection,
   selectVoiceOptions,
+  transitionTtsEnginePlatformState,
   ttsEngineOptionsForPlatform
 } = globalThis.LocalTubeDubVoiceHelpers;
 const { collectOptionalOrigins, optionalCapturePermissions } = globalThis.LocalTubeDubPermissionHelpers;
@@ -195,6 +197,7 @@ let engineStatusTimer = 0;
 let volumeSaveTimer = 0;
 let availableVoiceOptions = [];
 let enginePlatform = "";
+let renderedTtsEngine = "edge";
 const fallbackVoiceOptions = Array.from(nodes.voiceId.options).map((option) => ({
   id: option.value,
   name: option.textContent,
@@ -378,33 +381,42 @@ function renderVoiceOptions(selectedVoice = "auto") {
   return nodes.voiceId.value;
 }
 
-function renderTtsEngineOptions(selectedEngine = currentSettings.ttsEngine) {
-  const normalized = normalizeTtsEngineForPlatform(selectedEngine, enginePlatform, false);
+function renderTtsEngineOptions(
+  selectedEngine = currentSettings.ttsEngine,
+  effectiveEngine = normalizeTtsEngineForPlatform(selectedEngine, enginePlatform, false)
+) {
   nodes.ttsEngine.innerHTML = ttsEngineOptionsForPlatform(enginePlatform)
     .map((engine) => `<option value="${engine.id}">${escapeHtml(engine.label)}</option>`)
     .join("");
-  nodes.ttsEngine.value = normalized;
-  return normalized;
+  nodes.ttsEngine.value = effectiveEngine;
+  renderedTtsEngine = effectiveEngine;
+  return effectiveEngine;
 }
 
 function applyEnginePlatformPolicy(platform) {
-  enginePlatform = ["macos", "windows", "linux"].includes(String(platform || "").toLowerCase())
-    ? String(platform).toLowerCase()
-    : "";
-  const normalized = renderTtsEngineOptions(currentSettings.ttsEngine);
-  if (normalized === currentSettings.ttsEngine) {
-    return false;
-  }
-  currentSettings = { ...currentSettings, ttsEngine: normalized, voiceId: "auto" };
-  renderVoiceOptions("auto");
-  if (enginePlatform) {
+  const transition = transitionTtsEnginePlatformState(
+    {
+      configuredEngine: currentSettings.ttsEngine,
+      effectiveEngine: renderedTtsEngine
+    },
+    platform
+  );
+  enginePlatform = transition.platform;
+  renderTtsEngineOptions(transition.configuredEngine, transition.effectiveEngine);
+  if (transition.shouldPersist) {
+    currentSettings = { ...currentSettings, ttsEngine: transition.configuredEngine, voiceId: "auto" };
+    renderVoiceOptions("auto");
     chrome.runtime.sendMessage({ type: "localtube.setSettings", settings: currentSettings }).then((response) => {
       if (response?.ok && response.settings) {
         currentSettings = { ...currentSettings, ...response.settings };
       }
     }).catch(() => {});
+    return true;
   }
-  return true;
+  if (transition.effectiveChanged) {
+    renderVoiceOptions(currentSettings.voiceId);
+  }
+  return transition.effectiveChanged;
 }
 
 function render(settings) {
@@ -460,7 +472,7 @@ function render(settings) {
 
   nodes.targetLanguage.value = currentSettings.targetLanguage;
   renderTtsEngineOptions(currentSettings.ttsEngine);
-  currentSettings.voiceId = renderVoiceOptions(currentSettings.voiceId);
+  renderVoiceOptions(currentSettings.voiceId);
   nodes.voiceEnabled.checked = currentSettings.voiceEnabled;
   nodes.muteOriginal.checked = currentSettings.muteOriginal;
   nodes.originalVolume.value = String(Math.round(clampNumber(currentSettings.originalVolume, 0, 1, DEFAULT_SETTINGS.originalVolume) * 100));
@@ -733,7 +745,11 @@ function buildSettingsFromForm() {
     transcriptionModel: nodes.transcriptionModel.value.trim(),
     transcriptionApiKey: nodes.transcriptionApiKey.value.trim(),
     targetLanguage: nodes.targetLanguage.value,
-    ttsEngine: normalizeTtsEngineForPlatform(nodes.ttsEngine.value, enginePlatform, false),
+    ttsEngine: resolveConfiguredTtsEngineSelection(
+      nodes.ttsEngine.value,
+      currentSettings.ttsEngine,
+      enginePlatform
+    ),
     voiceId: nodes.voiceId.value,
     voiceEnabled: nodes.voiceEnabled.checked,
     muteOriginal: nodes.muteOriginal.checked,

@@ -173,6 +173,105 @@ function testVoiceOptions() {
   );
 }
 
+function testPopupTtsPlatformTransitions() {
+  assert.equal(
+    voiceHelpers.resolveConfiguredTtsEngineSelection("edge", "system", ""),
+    "system",
+    "an unknown platform must not overwrite the configured macOS system engine during unrelated saves"
+  );
+  assert.equal(
+    voiceHelpers.resolveConfiguredTtsEngineSelection("kokoro", "system", ""),
+    "kokoro",
+    "an explicit different engine selection must still be accepted while health is unavailable"
+  );
+
+  const unknown = voiceHelpers.transitionTtsEnginePlatformState(
+    { configuredEngine: "system", effectiveEngine: "edge" },
+    ""
+  );
+  assert.deepEqual(unknown, {
+    platform: "",
+    configuredEngine: "system",
+    effectiveEngine: "edge",
+    effectiveChanged: false,
+    shouldPersist: false
+  });
+
+  const macos = voiceHelpers.transitionTtsEnginePlatformState(unknown, "macos");
+  assert.deepEqual(macos, {
+    platform: "macos",
+    configuredEngine: "system",
+    effectiveEngine: "system",
+    effectiveChanged: true,
+    shouldPersist: false
+  });
+
+  const transientFailure = voiceHelpers.transitionTtsEnginePlatformState(macos, "");
+  assert.deepEqual(transientFailure, {
+    platform: "",
+    configuredEngine: "system",
+    effectiveEngine: "edge",
+    effectiveChanged: true,
+    shouldPersist: false
+  });
+
+  const recovered = voiceHelpers.transitionTtsEnginePlatformState(transientFailure, "macos");
+  assert.deepEqual(recovered, {
+    platform: "macos",
+    configuredEngine: "system",
+    effectiveEngine: "system",
+    effectiveChanged: true,
+    shouldPersist: false
+  });
+}
+
+function testOverlayTtsPlatformTransitions() {
+  assert.equal(
+    voiceHelpers.resolveConfiguredTtsEngineSelection("edge", "system", "windows"),
+    "edge"
+  );
+  assert.equal(
+    voiceHelpers.resolveConfiguredTtsEngineSelection("system", "system", "macos"),
+    "system"
+  );
+
+  const windows = voiceHelpers.transitionTtsEnginePlatformState(
+    { configuredEngine: "system", effectiveEngine: "edge" },
+    "windows"
+  );
+  assert.deepEqual(windows, {
+    platform: "windows",
+    configuredEngine: "edge",
+    effectiveEngine: "edge",
+    effectiveChanged: false,
+    shouldPersist: true
+  });
+
+  const linux = voiceHelpers.transitionTtsEnginePlatformState(
+    { configuredEngine: "system", effectiveEngine: "system" },
+    "linux"
+  );
+  assert.deepEqual(linux, {
+    platform: "linux",
+    configuredEngine: "edge",
+    effectiveEngine: "edge",
+    effectiveChanged: true,
+    shouldPersist: true
+  });
+
+  const kokoroUnknown = voiceHelpers.transitionTtsEnginePlatformState(
+    { configuredEngine: "kokoro", effectiveEngine: "kokoro" },
+    ""
+  );
+  assert.deepEqual(kokoroUnknown, {
+    platform: "",
+    configuredEngine: "kokoro",
+    effectiveEngine: "kokoro",
+    effectiveChanged: false,
+    shouldPersist: false
+  });
+}
+
 function testEngineCompatibility() {
   assert.deepEqual(
     backgroundHelpers.assessEngineCompatibility(
@@ -2248,6 +2347,8 @@ async function main() {
   testCaptionTrackPicking();
   testCaptionRequestBudget();
   testVoiceOptions();
+  testPopupTtsPlatformTransitions();
+  testOverlayTtsPlatformTransitions();
   testEngineCompatibility();
   testProviderFailureClassification();
   testCaptionEngineAutoStartDecision();

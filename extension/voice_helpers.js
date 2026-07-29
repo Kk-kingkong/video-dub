@@ -6,11 +6,17 @@
   ]);
 
   function normalizePlatform(platform) {
-    return String(platform || "").trim().toLowerCase() === "macos" ? "macos" : "";
+    const value = String(platform || "").trim().toLowerCase();
+    return ["macos", "windows", "linux"].includes(value) ? value : "";
+  }
+
+  function normalizeConfiguredTtsEngine(ttsEngine) {
+    const engine = String(ttsEngine || "").trim().toLowerCase();
+    return ["edge", "kokoro", "system"].includes(engine) ? engine : "edge";
   }
 
   function normalizeTtsEngineForPlatform(ttsEngine, platform, kokoroReady) {
-    const engine = String(ttsEngine || "").trim().toLowerCase();
+    const engine = normalizeConfiguredTtsEngine(ttsEngine);
     // Readiness controls model actions, never the user's Kokoro selection.
     void kokoroReady;
     if (engine === "kokoro") {
@@ -20,6 +26,42 @@
       return "system";
     }
     return "edge";
+  }
+
+  function resolveConfiguredTtsEngineSelection(selectedEngine, configuredEngine, platform) {
+    const normalizedPlatform = normalizePlatform(platform);
+    const selected = normalizeConfiguredTtsEngine(selectedEngine);
+    const configured = normalizeConfiguredTtsEngine(configuredEngine);
+    if (!normalizedPlatform && configured === "system" && selected === "edge") {
+      return "system";
+    }
+    return normalizedPlatform
+      ? normalizeTtsEngineForPlatform(selected, normalizedPlatform, false)
+      : selected;
+  }
+
+  function transitionTtsEnginePlatformState(currentState = {}, platform, kokoroReady = false) {
+    const normalizedPlatform = normalizePlatform(platform);
+    const previousEffective = normalizeConfiguredTtsEngine(currentState.effectiveEngine);
+    const previousConfigured = normalizeConfiguredTtsEngine(
+      currentState.configuredEngine ?? currentState.ttsEngine
+    );
+    const shouldPersist =
+      previousConfigured === "system" &&
+      (normalizedPlatform === "windows" || normalizedPlatform === "linux");
+    const configuredEngine = shouldPersist ? "edge" : previousConfigured;
+    const effectiveEngine = normalizeTtsEngineForPlatform(
+      configuredEngine,
+      normalizedPlatform,
+      kokoroReady
+    );
+    return {
+      platform: normalizedPlatform,
+      configuredEngine,
+      effectiveEngine,
+      effectiveChanged: effectiveEngine !== previousEffective,
+      shouldPersist
+    };
   }
 
   function ttsEngineOptionsForPlatform(platform) {
@@ -95,7 +137,9 @@
   const api = {
     mergeVoiceOptions,
     normalizeTtsEngineForPlatform,
+    resolveConfiguredTtsEngineSelection,
     selectVoiceOptions,
+    transitionTtsEnginePlatformState,
     ttsEngineOptionsForPlatform,
     voiceLanguagePrefix
   };

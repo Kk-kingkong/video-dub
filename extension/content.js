@@ -65,7 +65,9 @@ const YOUTUBE_SOURCE_CACHE_PROVIDER = "youtube-source";
 const {
   mergeVoiceOptions,
   normalizeTtsEngineForPlatform,
+  resolveConfiguredTtsEngineSelection,
   selectVoiceOptions,
+  transitionTtsEnginePlatformState,
   ttsEngineOptionsForPlatform
 } = globalThis.LocalTubeDubVoiceHelpers;
 const CAPTION_FAST_TIMEOUT_MS = 6000;
@@ -148,6 +150,7 @@ const state = {
   voiceSegments: [],
   availableVoices: [],
   enginePlatform: "",
+  renderedTtsEngine: "edge",
   pendingTranslationTracker: createCueTranslationTracker((cue) => hasTranslatedCue(cue)),
   activeCueIndex: -1,
   spokenCueIndex: -1,
@@ -467,7 +470,7 @@ function updateControlsFromSettings() {
   state.root.querySelector("[data-field='voiceEnabled']").checked = state.settings.voiceEnabled;
   state.root.querySelector("[data-field='muteOriginal']").checked = state.settings.muteOriginal;
   renderAvailableTtsEngineOptions(state.settings.ttsEngine);
-  state.settings.voiceId = renderAvailableVoiceOptions(state.settings.voiceId);
+  renderAvailableVoiceOptions(state.settings.voiceId);
   const volumeInput = state.root.querySelector("[data-field='originalVolume']");
   if (volumeInput) {
     volumeInput.value = String(Math.round(clampNumber(state.settings.originalVolume, 0, 1, DEFAULT_SETTINGS.originalVolume) * 100));
@@ -516,7 +519,7 @@ function renderAvailableVoiceOptions(selectedVoice = "auto") {
     state.settings.targetLanguage,
     current,
     fallbackVoices,
-    { provider: normalizeTtsEngineForPlatform(state.settings.ttsEngine, state.enginePlatform, false) }
+    { provider: state.renderedTtsEngine }
   );
   const options = [new Option("自动匹配（推荐）", "auto")];
   for (const voice of voices) {
@@ -528,37 +531,46 @@ function renderAvailableVoiceOptions(selectedVoice = "auto") {
   return select.value;
 }
 
-function renderAvailableTtsEngineOptions(selectedEngine = state.settings.ttsEngine) {
+function renderAvailableTtsEngineOptions(
+  selectedEngine = state.settings.ttsEngine,
+  effectiveEngine = normalizeTtsEngineForPlatform(selectedEngine, state.enginePlatform, false)
+) {
   const select = state.root?.querySelector("[data-field='ttsEngine']");
   if (!select) {
     return "edge";
   }
-  const normalized = normalizeTtsEngineForPlatform(selectedEngine, state.enginePlatform, false);
   select.replaceChildren(
     ...ttsEngineOptionsForPlatform(state.enginePlatform).map((engine) => new Option(engine.label, engine.id))
   );
-  select.value = normalized;
-  return normalized;
+  select.value = effectiveEngine;
+  state.renderedTtsEngine = effectiveEngine;
+  return effectiveEngine;
 }
 
 function applyEnginePlatformPolicy(platform) {
-  state.enginePlatform = ["macos", "windows", "linux"].includes(String(platform || "").toLowerCase())
-    ? String(platform).toLowerCase()
-    : "";
-  const normalized = renderAvailableTtsEngineOptions(state.settings.ttsEngine);
-  if (normalized === state.settings.ttsEngine) {
-    return false;
-  }
-  state.settings = { ...state.settings, ttsEngine: normalized, voiceId: "auto" };
-  renderAvailableVoiceOptions("auto");
-  if (state.enginePlatform) {
+  const transition = transitionTtsEnginePlatformState(
+    {
+      configuredEngine: state.settings.ttsEngine,
+      effectiveEngine: state.renderedTtsEngine
+    },
+    platform
+  );
+  state.enginePlatform = transition.platform;
+  renderAvailableTtsEngineOptions(transition.configuredEngine, transition.effectiveEngine);
+  if (transition.shouldPersist) {
+    state.settings = { ...state.settings, ttsEngine: transition.configuredEngine, voiceId: "auto" };
+    renderAvailableVoiceOptions("auto");
     sendRuntimeMessage({ type: "localtube.setSettings", settings: state.settings }).then((response) => {
       if (response?.settings) {
         state.settings = { ...state.settings, ...response.settings };
       }
     }).catch(() => {});
+    return true;
   }
-  return true;
+  if (transition.effectiveChanged) {
+    renderAvailableVoiceOptions(state.settings.voiceId);
+  }
+  return transition.effectiveChanged;
 }
 
 function startEngineStatusPolling() {
@@ -737,10 +749,10 @@ function readSettingsFromWidget() {
     provider: state.root.querySelector("[data-field='provider']").value,
     voiceEnabled: state.root.querySelector("[data-field='voiceEnabled']").checked,
     muteOriginal: state.root.querySelector("[data-field='muteOriginal']").checked,
-    ttsEngine: normalizeTtsEngineForPlatform(
+    ttsEngine: resolveConfiguredTtsEngineSelection(
       state.root.querySelector("[data-field='ttsEngine']")?.value,
-      state.enginePlatform,
-      false
+      state.settings.ttsEngine,
+      state.enginePlatform
     ),
     voiceId: state.root.querySelector("[data-field='voiceId']")?.value || "auto",
     originalVolume: Number(state.root.querySelector("[data-field='originalVolume']").value || 0) / 100,
