@@ -171,6 +171,46 @@ function testVoiceOptions() {
     voiceHelpers.selectVoiceOptions(scopedVoices, "zh-CN", "auto", [], { provider: "system" }).map((voice) => voice.id).sort(),
     ["browser-zh", "system-zh"]
   );
+  assert.equal(voiceHelpers.ttsEngineSupportsLanguage("kokoro", "zh-CN"), true);
+  assert.equal(voiceHelpers.ttsEngineSupportsLanguage("kokoro", "en-US"), true);
+  assert.equal(voiceHelpers.ttsEngineSupportsLanguage("kokoro", "ja-JP"), false);
+  assert.equal(voiceHelpers.ttsEngineSupportsLanguage("edge", "ja-JP"), true);
+  assert.equal(
+    voiceHelpers.normalizeTtsEngineForPlatform("kokoro", "windows", false),
+    "kokoro",
+    "an unsupported target language must not silently change the selected provider"
+  );
+}
+
+function testPopupUnsupportedKokoroLocale() {
+  const voices = voiceHelpers.mergeVoiceOptions([
+    { id: "kokoro-en", name: "Kokoro English", language: "en-US", provider: "kokoro" },
+    { id: "kokoro-zh", name: "Kokoro Chinese", language: "zh-CN", provider: "kokoro" },
+    { id: "edge-ja", name: "Edge Japanese", language: "ja-JP", provider: "edge" }
+  ]);
+  const options = voiceHelpers.selectVoiceOptions(
+    voices,
+    "ja-JP",
+    "kokoro-en",
+    [{ id: "fallback-en", name: "Fallback English", language: "en-US", provider: "kokoro" }],
+    { provider: "kokoro" }
+  );
+  assert.deepEqual(options, [], "popup must not offer English Kokoro voices for Japanese");
+}
+
+function testOverlayUnsupportedKokoroLocale() {
+  const voices = voiceHelpers.mergeVoiceOptions([
+    { id: "kokoro-en", name: "Kokoro English", language: "en-US", provider: "kokoro" },
+    { id: "kokoro-zh", name: "Kokoro Chinese", language: "zh-CN", provider: "kokoro" }
+  ]);
+  const options = voiceHelpers.selectVoiceOptions(
+    voices,
+    "es-ES",
+    "auto",
+    [],
+    { provider: "kokoro" }
+  );
+  assert.deepEqual(options, [], "overlay must expose an unavailable Kokoro state for unsupported locales");
 }
 
 function testPopupTtsPlatformTransitions() {
@@ -2347,6 +2387,8 @@ async function main() {
   testCaptionTrackPicking();
   testCaptionRequestBudget();
   testVoiceOptions();
+  testPopupUnsupportedKokoroLocale();
+  testOverlayUnsupportedKokoroLocale();
   testPopupTtsPlatformTransitions();
   testOverlayTtsPlatformTransitions();
   testEngineCompatibility();

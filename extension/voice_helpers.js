@@ -73,6 +73,13 @@
     return String(language || "").trim().toLowerCase().replace(/_/g, "-").split("-")[0] || "";
   }
 
+  function ttsEngineSupportsLanguage(ttsEngine, targetLanguage) {
+    if (normalizeConfiguredTtsEngine(ttsEngine) !== "kokoro") {
+      return true;
+    }
+    return ["zh", "en"].includes(voiceLanguagePrefix(targetLanguage));
+  }
+
   function mergeVoiceOptions(...sources) {
     const merged = new Map();
     for (const source of sources) {
@@ -101,6 +108,9 @@
     const fallback = mergeVoiceOptions(fallbackVoices);
     const targetPrefix = voiceLanguagePrefix(targetLanguage);
     const requestedProvider = String(options.provider || "").toLowerCase();
+    if (!ttsEngineSupportsLanguage(requestedProvider, targetLanguage)) {
+      return [];
+    }
     const providerMatches = (voice) =>
       !requestedProvider ||
       voice.provider === requestedProvider ||
@@ -141,6 +151,7 @@
     selectVoiceOptions,
     transitionTtsEnginePlatformState,
     ttsEngineOptionsForPlatform,
+    ttsEngineSupportsLanguage,
     voiceLanguagePrefix
   };
   globalScope.LocalTubeDubVoiceHelpers = api;
