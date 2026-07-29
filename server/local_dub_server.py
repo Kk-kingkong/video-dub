@@ -37,10 +37,20 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .kokoro_tts import KokoroModelManager, KokoroRuntime, kokoro_voice_catalog
+    from .kokoro_tts import (
+        KokoroModelManager,
+        KokoroRuntime,
+        KokoroRuntimeCancelled,
+        kokoro_voice_catalog,
+    )
 except ImportError:  # pragma: no cover - supports direct Engine execution.
     try:
-        from kokoro_tts import KokoroModelManager, KokoroRuntime, kokoro_voice_catalog
+        from kokoro_tts import (
+            KokoroModelManager,
+            KokoroRuntime,
+            KokoroRuntimeCancelled,
+            kokoro_voice_catalog,
+        )
     except ImportError:
         _kokoro_spec = importlib.util.spec_from_file_location(
             "localtube_kokoro_tts", Path(__file__).with_name("kokoro_tts.py")
@@ -52,6 +62,7 @@ except ImportError:  # pragma: no cover - supports direct Engine execution.
         _kokoro_spec.loader.exec_module(_kokoro_module)
         KokoroModelManager = _kokoro_module.KokoroModelManager
         KokoroRuntime = _kokoro_module.KokoroRuntime
+        KokoroRuntimeCancelled = _kokoro_module.KokoroRuntimeCancelled
         kokoro_voice_catalog = _kokoro_module.kokoro_voice_catalog
 
 
@@ -1403,6 +1414,9 @@ def public_dub_track_job(job: dict[str, Any]) -> dict[str, Any]:
             "error",
         )
     }
+    for key in ("requestedVoice", "actualVoice", "voiceFallback", "voiceFallbackMessage"):
+        if key in job:
+            result[key] = job[key]
     if job.get("status") == "completed":
         result["downloadUrl"] = f"http://127.0.0.1:{PORT}/api/dub-track/download?id={urllib.parse.quote(str(job.get('id') or ''))}"
     return result
@@ -1446,6 +1460,9 @@ def run_dub_track_job(job_id: str, cancel_event: threading.Event) -> None:
         job = dict(DUB_TRACK_JOBS.get(job_id) or {})
     if not job:
         return
+    kokoro_job = sanitize_tts_engine(job.get("ttsEngine")) == "kokoro"
+    if kokoro_job:
+        job.setdefault("requestedVoice", str(job.get("voice") or "auto"))
     output_path = Path(str(job["filePath"]))
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1464,7 +1481,11 @@ def run_dub_track_job(job_id: str, cancel_event: threading.Event) -> None:
                 original_audio_path = download_youtube_full_audio(str(job.get("videoUrl") or ""), original_dir, cancel_event)
             synthesis_start = 14 if original_audio_path else 3
             synthesis_span = 75 if original_audio_path else 87
-            worker_count = min(DUB_TRACK_TTS_WORKERS, max(1, len(cues)))
+            worker_count = (
+                1
+                if kokoro_job
+                else min(DUB_TRACK_TTS_WORKERS, max(1, len(cues)))
+            )
             update_dub_track_job(
                 job_id,
                 status="rendering",
@@ -1481,7 +1502,15 @@ def run_dub_track_job(job_id: str, cancel_event: threading.Event) -> None:
                     for completed_count, future in enumerate(as_completed(futures), start=1):
                         rendered_segments.append(future.result())
                         progress = synthesis_start + int((completed_count / len(cues)) * synthesis_span)
-                        update_dub_track_job(job_id, progress=progress, renderedCues=completed_count)
+                        updates = {"progress": progress, "renderedCues": completed_count}
+                        if kokoro_job:
+                            updates.update(
+                                coalesce_dub_track_voice_metadata(
+                                    rendered_segments,
+                                    str(job.get("requestedVoice") or job.get("voice") or "auto"),
+                                )
+                            )
+                        update_dub_track_job(job_id, **updates)
                 except Exception:
                     cancel_event.set()
                     for future in futures:
@@ -1548,11 +1577,52 @@ def render_dub_track_segment(
         cancel_event=cancel_event,
         tts_engine=str(job.get("ttsEngine") or "system"),
     )
-    return {
+    if (
+        sanitize_tts_engine(job.get("ttsEngine")) == "kokoro"
+        and segment.get("voiceFallback")
+        and segment.get("actualVoice")
+    ):
+        job["voice"] = str(segment["actualVoice"])
+    result = {
         "index": index,
         "start": float(cue["start"]),
         "end": slot_end,
         "path": segment["path"],
+    }
+    for key in ("requestedVoice", "actualVoice", "voiceFallback", "voiceFallbackMessage"):
+        if key in segment:
+            result[key] = segment[key]
+    return result
+
+
+def coalesce_dub_track_voice_metadata(
+    segments: list[dict[str, Any]],
+    requested_voice: str,
+) -> dict[str, Any]:
+    """Coalesce provider fallback details in cue order for stable job status."""
+
+    requested = str(requested_voice or "auto")
+    actual = requested
+    fallback = False
+    messages: list[str] = []
+    ordered_segments = sorted(
+        segments,
+        key=lambda item: (int(item.get("index") or 0), float(item.get("start") or 0)),
+    )
+    for segment in ordered_segments:
+        segment_actual = str(segment.get("actualVoice") or "")
+        if segment_actual:
+            actual = segment_actual
+        if segment.get("voiceFallback"):
+            fallback = True
+            message = str(segment.get("voiceFallbackMessage") or "").strip()
+            if message and message not in messages:
+                messages.append(message)
+    return {
+        "requestedVoice": requested,
+        "actualVoice": actual,
+        "voiceFallback": fallback,
+        "voiceFallbackMessage": " ".join(messages),
     }
 
 
@@ -3158,7 +3228,17 @@ def synthesize_kokoro_speech_to_wav_file(
         raise RuntimeError(f"Kokoro 本地配音不可用：{detail}")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "voice-kokoro.wav"
-    result = KOKORO_RUNTIME.synthesize(text, language, voice_id, rate, output_path)
+    try:
+        result = KOKORO_RUNTIME.synthesize(
+            text,
+            language,
+            voice_id,
+            rate,
+            output_path,
+            cancel_event=cancel_event,
+        )
+    except KokoroRuntimeCancelled as error:
+        raise FullTranscriptCancelled("任务已取消") from error
     if cancel_event and cancel_event.is_set():
         raise FullTranscriptCancelled("任务已取消")
     original_duration = validate_wav_duration(output_path)

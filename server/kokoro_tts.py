@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import importlib.util
+import importlib.metadata
 import math
 import json
 import os
@@ -72,6 +72,10 @@ class KokoroModelCancelled(KokoroModelError):
 
 class KokoroRuntimeError(RuntimeError):
     """Kokoro inference could not safely produce local speech."""
+
+
+class KokoroRuntimeCancelled(KokoroRuntimeError):
+    """A queued Kokoro synthesis request was cancelled before inference."""
 
 
 Fetcher = Callable[[str], Union[Path, bytes, bytearray]]
@@ -624,12 +628,17 @@ def kokoro_voice_catalog(available: bool = False) -> list[dict[str, Any]]:
     return [{**KOKORO_VOICE_BY_ID[voice_id], "available": bool(available)} for voice_id in ordered_ids]
 
 
-def _is_chinese_language(language: str) -> bool:
-    return str(language or "").strip().lower().replace("_", "-").startswith("zh")
+def _normalize_kokoro_language(language: str) -> str:
+    normalized = str(language or "").strip().lower().replace("_", "-")
+    if normalized == "zh" or normalized.startswith("zh-"):
+        return "zh"
+    if normalized == "en" or normalized.startswith("en-"):
+        return "en"
+    raise KokoroRuntimeError("Kokoro supports only Chinese and English target languages")
 
 
 def _select_kokoro_voice(language: str, voice_id: str) -> dict[str, Any]:
-    chinese = _is_chinese_language(language)
+    chinese = _normalize_kokoro_language(language) == "zh"
     selected = str(voice_id or "").strip()
     candidate = KOKORO_VOICE_BY_ID.get(selected)
     if candidate and (candidate["id"].startswith(("zf_", "zm_")) == chinese):
@@ -650,16 +659,14 @@ class KokoroRuntime:
         *,
         clock: Callable[[], float] = time.monotonic,
         sherpa_loader: Optional[Callable[[], Any]] = None,
-        runtime_probe: Optional[Callable[[], bool]] = None,
+        runtime_probe: Optional[Callable[[], Any]] = None,
         schedule_idle_release: bool = True,
         idle_unload_seconds: float = KOKORO_IDLE_UNLOAD_SECONDS,
     ) -> None:
         self.model_manager = model_manager
         self._clock = clock
         self._sherpa_loader = sherpa_loader or self._load_sherpa_onnx
-        self._runtime_probe = runtime_probe or (
-            (lambda: True) if sherpa_loader is not None else self._sherpa_runtime_is_installed
-        )
+        self._runtime_probe = runtime_probe or self._installed_sherpa_version
         self._schedule_idle_release = bool(schedule_idle_release)
         self._idle_unload_seconds = max(1.0, float(idle_unload_seconds))
         self._state_lock = threading.RLock()
@@ -677,29 +684,43 @@ class KokoroRuntime:
     def status(self) -> dict[str, Any]:
         model = self.model_manager.status()
         model_state = str(model.get("state") or "not-installed")
-        runtime_installed = self._runtime_is_installed()
+        runtime_version = self._runtime_version()
         with self._state_lock:
             loaded = self._tts is not None
             runtime_error = self._runtime_error
         if model_state != "ready":
             state = "model-not-installed" if model_state == "not-installed" else f"model-{model_state}"
-        elif not runtime_installed:
+        elif not runtime_version:
             state = "runtime-not-installed"
-        elif runtime_error:
+        elif runtime_version != KOKORO_SHERPA_ONNX_VERSION or runtime_error:
             state = "runtime-incompatible"
         else:
             state = "ready"
+        health_error = runtime_error
+        if not health_error and runtime_version and runtime_version != KOKORO_SHERPA_ONNX_VERSION:
+            health_error = (
+                f"Kokoro requires sherpa-onnx {KOKORO_SHERPA_ONNX_VERSION}, found {runtime_version}"
+            )
         return {
             "state": state,
             "available": state == "ready",
             "loaded": loaded,
-            "runtimeVersion": KOKORO_SHERPA_ONNX_VERSION,
+            "runtimeVersion": runtime_version,
+            "requiredRuntimeVersion": KOKORO_SHERPA_ONNX_VERSION,
             "numThreads": self.num_threads,
             "provider": self.provider,
-            "error": runtime_error,
+            "error": health_error,
         }
 
-    def synthesize(self, text: str, language: str, voice_id: str, rate: float, output_path: Path) -> dict[str, Any]:
+    def synthesize(
+        self,
+        text: str,
+        language: str,
+        voice_id: str,
+        rate: float,
+        output_path: Path,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> dict[str, Any]:
         value = str(text or "").strip()
         if not value:
             raise KokoroRuntimeError("Kokoro requires non-empty text")
@@ -708,17 +729,21 @@ class KokoroRuntime:
         if fallback_voice["id"] == selected_voice["id"]:
             raise KokoroRuntimeError("Kokoro voice fallback configuration is invalid")
 
-        with KOKORO_SYNTHESIS_LOCK:
+        self._acquire_synthesis_lock(cancel_event)
+        try:
             with self._state_lock:
                 self._active_job = True
             try:
                 tts = self._ensure_loaded()
                 output = Path(output_path)
                 try:
-                    return self._synthesize_voice(tts, value, selected_voice, rate, output, selected_voice)
+                    result = self._synthesize_voice(tts, value, selected_voice, rate, output, selected_voice)
+                    self._raise_if_synthesis_cancelled(cancel_event)
+                    return result
                 except KokoroRuntimeError as selected_error:
+                    self._raise_if_synthesis_cancelled(cancel_event)
                     try:
-                        return self._synthesize_voice(
+                        result = self._synthesize_voice(
                             tts,
                             value,
                             fallback_voice,
@@ -727,6 +752,8 @@ class KokoroRuntime:
                             selected_voice,
                             selected_error,
                         )
+                        self._raise_if_synthesis_cancelled(cancel_event)
+                        return result
                     except KokoroRuntimeError as fallback_error:
                         raise KokoroRuntimeError(
                             f"Kokoro cannot generate speech with {selected_voice['id']} or its local fallback "
@@ -737,6 +764,8 @@ class KokoroRuntime:
                     self._active_job = False
                     self._last_used = self._clock()
                 self._schedule_release()
+        finally:
+            KOKORO_SYNTHESIS_LOCK.release()
 
     def release_if_idle(self) -> bool:
         """Release inference deterministically once no work used it for five minutes."""
@@ -803,14 +832,19 @@ class KokoroRuntime:
         model = self.model_manager.status()
         if str(model.get("state") or "") != "ready":
             raise KokoroRuntimeError("Kokoro model is not installed or is not ready")
-        if not self._runtime_is_installed():
-            raise KokoroRuntimeError("Kokoro runtime sherpa-onnx 1.13.4 is not installed")
+        installed_version = self._runtime_version()
+        if installed_version != KOKORO_SHERPA_ONNX_VERSION:
+            found = installed_version or "not installed"
+            raise KokoroRuntimeError(
+                f"Kokoro runtime requires sherpa-onnx {KOKORO_SHERPA_ONNX_VERSION}, found {found}"
+            )
         try:
             sherpa_onnx = self._sherpa_loader()
-            actual_version = str(getattr(sherpa_onnx, "__version__", "") or "")
-            if actual_version and actual_version != KOKORO_SHERPA_ONNX_VERSION:
+            actual_version = str(getattr(sherpa_onnx, "__version__", "") or "").strip()
+            if actual_version != KOKORO_SHERPA_ONNX_VERSION:
+                found = actual_version or "unversioned module"
                 raise KokoroRuntimeError(
-                    f"Kokoro runtime requires sherpa-onnx {KOKORO_SHERPA_ONNX_VERSION}, found {actual_version}"
+                    f"Kokoro runtime requires sherpa-onnx {KOKORO_SHERPA_ONNX_VERSION}, found {found}"
                 )
             active_path = Path(self.model_manager.active_path)
             config = sherpa_onnx.OfflineTtsConfig(
@@ -858,18 +892,41 @@ class KokoroRuntime:
             previous.cancel()
         timer.start()
 
-    def _runtime_is_installed(self) -> bool:
+    def _runtime_version(self) -> str:
         try:
-            return bool(self._runtime_probe())
+            value = self._runtime_probe()
         except Exception:
-            return False
+            return ""
+        if value is None or isinstance(value, bool):
+            return ""
+        return str(value).strip()
 
     @staticmethod
-    def _sherpa_runtime_is_installed() -> bool:
+    def _installed_sherpa_version() -> str:
         try:
-            return importlib.util.find_spec("sherpa_onnx") is not None
-        except (ImportError, ValueError):
-            return False
+            return str(importlib.metadata.version("sherpa-onnx") or "").strip()
+        except importlib.metadata.PackageNotFoundError:
+            return ""
+
+    @staticmethod
+    def _raise_if_synthesis_cancelled(cancel_event: Optional[threading.Event]) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise KokoroRuntimeCancelled("Kokoro synthesis was cancelled")
+
+    @classmethod
+    def _acquire_synthesis_lock(cls, cancel_event: Optional[threading.Event]) -> None:
+        if cancel_event is None:
+            KOKORO_SYNTHESIS_LOCK.acquire()
+            return
+        while True:
+            cls._raise_if_synthesis_cancelled(cancel_event)
+            if KOKORO_SYNTHESIS_LOCK.acquire(timeout=0.05):
+                try:
+                    cls._raise_if_synthesis_cancelled(cancel_event)
+                except Exception:
+                    KOKORO_SYNTHESIS_LOCK.release()
+                    raise
+                return
 
     @staticmethod
     def _load_sherpa_onnx() -> Any:

@@ -493,8 +493,8 @@ class FakeKokoroRuntime:
             "error": "" if self.state == "ready" else "runtime unavailable",
         }
 
-    def synthesize(self, text, language, voice_id, rate, output_path):
-        self.synthesis_calls.append((text, language, voice_id, rate))
+    def synthesize(self, text, language, voice_id, rate, output_path, cancel_event=None):
+        self.synthesis_calls.append((text, language, voice_id, rate, cancel_event))
         write_test_wav(output_path, 24000, 1000, 24000)
         return {
             "path": output_path,
@@ -572,6 +572,7 @@ def test_kokoro_tts_routes_locally_preserves_fallback_metadata_and_fits_duration
     server.fit_wav_to_target_duration = fake_fit
     try:
         with tempfile.TemporaryDirectory() as temp_dir_name:
+            cancel_event = server.threading.Event()
             result = server.synthesize_speech_to_wav_file(
                 "你好",
                 "zh-CN",
@@ -579,6 +580,7 @@ def test_kokoro_tts_routes_locally_preserves_fallback_metadata_and_fits_duration
                 "zf_001",
                 0.5,
                 Path(temp_dir_name),
+                cancel_event=cancel_event,
                 tts_engine="kokoro",
             )
             payload = server.build_tts_payload(
@@ -589,7 +591,8 @@ def test_kokoro_tts_routes_locally_preserves_fallback_metadata_and_fits_duration
         server.KOKORO_RUNTIME = original_runtime
         server.fit_wav_to_target_duration = original_fit
 
-    assert fake_runtime.synthesis_calls[0] == ("你好", "zh-CN", "zf_001", 1.0)
+    assert fake_runtime.synthesis_calls[0][:4] == ("你好", "zh-CN", "zf_001", 1.0)
+    assert fake_runtime.synthesis_calls[0][4] is cancel_event
     assert result["ttsEngine"] == "kokoro"
     assert result["engine"] == "kokoro:zf_002"
     assert result["requestedVoice"] == "zf_001"
@@ -772,8 +775,100 @@ def test_dub_track_job_worker(server):
         assert "filePath" not in result["job"]
         assert "cues" not in result["job"]
         assert "key" not in result["job"]
+        assert "requestedVoice" not in result["job"]
+        assert "voiceFallback" not in result["job"]
         assert output_path.is_file()
         assert abs(server.validate_wav_duration(output_path) - 2) < 0.001
+
+    server.DUB_TRACK_JOBS.clear()
+    server.DUB_TRACK_CANCEL_EVENTS.clear()
+
+
+def test_kokoro_dub_track_coalesces_fallback_and_reuses_actual_voice(server):
+    original_synthesize = server.synthesize_speech_to_wav_file
+    original_workers = server.DUB_TRACK_TTS_WORKERS
+    server.DUB_TRACK_JOBS.clear()
+    server.DUB_TRACK_CANCEL_EVENTS.clear()
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        output_path = Path(temp_dir_name) / "kokoro-fallback.wav"
+        job_id = "kokoro-fallback-test"
+        cues = [
+            {"start": 0.2, "end": 0.7, "text": "第一条"},
+            {"start": 0.8, "end": 1.3, "text": "第二条"},
+            {"start": 1.4, "end": 1.9, "text": "第三条"},
+        ]
+        server.DUB_TRACK_JOBS[job_id] = {
+            "id": job_id,
+            "key": "kokoro-fallback-hash",
+            "videoId": "video",
+            "durationSeconds": 2,
+            "language": "zh-CN",
+            "voice": "zf_001",
+            "ttsEngine": "kokoro",
+            "rate": 1,
+            "mixOriginal": False,
+            "originalVolume": 0,
+            "outputFormat": "wav",
+            "status": "queued",
+            "stage": "queued",
+            "progress": 1,
+            "createdAt": 1000,
+            "updatedAt": 1000,
+            "cueCount": len(cues),
+            "cues": cues,
+            "filename": "LocalTube-Dub-kokoro-fallback.wav",
+            "filePath": str(output_path),
+            "error": "",
+        }
+        requested_voices = []
+
+        def fake_synthesize(
+            text,
+            language,
+            rate,
+            voice,
+            target_duration,
+            output_dir,
+            max_fit_rate=3,
+            cancel_event=None,
+            tts_engine="system",
+        ):
+            requested_voices.append(voice)
+            path = output_dir / "voice.wav"
+            write_test_wav(path, 400, 1000)
+            fallback = voice == "zf_001"
+            return {
+                "path": path,
+                "duration": 0.4,
+                "fitRate": 1,
+                "engine": f"kokoro:{'zf_002' if fallback else voice}",
+                "ttsEngine": "kokoro",
+                "requestedVoice": voice,
+                "actualVoice": "zf_002" if fallback else voice,
+                "voiceFallback": fallback,
+                "voiceFallbackMessage": (
+                    "当前 Kokoro 音色 zf_001 不可用，已切换为 zf_002。" if fallback else ""
+                ),
+            }
+
+        server.DUB_TRACK_TTS_WORKERS = 3
+        server.synthesize_speech_to_wav_file = fake_synthesize
+        try:
+            server.run_dub_track_job(job_id, server.threading.Event())
+        finally:
+            server.synthesize_speech_to_wav_file = original_synthesize
+            server.DUB_TRACK_TTS_WORKERS = original_workers
+
+        result = server.get_dub_track_job(job_id)
+        assert result["job"]["status"] == "completed", result
+        assert result["job"]["synthesisWorkers"] == 1
+        assert requested_voices == ["zf_001", "zf_002", "zf_002"]
+        assert result["job"]["requestedVoice"] == "zf_001"
+        assert result["job"]["actualVoice"] == "zf_002"
+        assert result["job"]["voiceFallback"] is True
+        assert result["job"]["voiceFallbackMessage"] == (
+            "当前 Kokoro 音色 zf_001 不可用，已切换为 zf_002。"
+        )
 
     server.DUB_TRACK_JOBS.clear()
     server.DUB_TRACK_CANCEL_EVENTS.clear()
@@ -1825,6 +1920,7 @@ def main() -> None:
     test_dub_track_audio_mix(server)
     test_dub_track_m4a_encoding(server)
     test_dub_track_job_worker(server)
+    test_kokoro_dub_track_coalesces_fallback_and_reuses_actual_voice(server)
     test_dub_track_parallel_synthesis(server)
     test_dub_track_parallel_cancellation(server)
     test_m4a_dub_track_job_worker(server)

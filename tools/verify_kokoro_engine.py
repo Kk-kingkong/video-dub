@@ -475,6 +475,7 @@ class FakeSherpaRuntime:
     """Minimal sherpa-onnx shape which records the requested runtime config."""
 
     def __init__(self, voice_samples: dict[str, list[object]] | None = None) -> None:
+        self.__version__ = kokoro.KOKORO_SHERPA_ONNX_VERSION
         self.voice_samples = voice_samples or {}
         self.configs = []
         self.generate_calls = []
@@ -556,6 +557,7 @@ def test_kokoro_runtime_is_lazy_uses_two_threads_and_releases_after_idle() -> No
             FakeKokoroModelManager(Path(temp_dir_name)),
             clock=clock,
             sherpa_loader=lambda: fake_sherpa,
+            runtime_probe=lambda: "1.13.4",
             schedule_idle_release=False,
         )
         assert runtime.loaded is False
@@ -593,6 +595,7 @@ def test_kokoro_voice_failure_retries_once_then_uses_one_same_provider_fallback(
         runtime = kokoro.KokoroRuntime(
             FakeKokoroModelManager(Path(temp_dir_name)),
             sherpa_loader=lambda: fake_sherpa,
+            runtime_probe=lambda: "1.13.4",
             schedule_idle_release=False,
         )
         result = runtime.synthesize("测试", "zh-CN", "zf_001", 1.0, Path(temp_dir_name) / "voice.wav")
@@ -610,6 +613,7 @@ def test_kokoro_rejects_empty_or_non_finite_output_without_cross_provider_fallba
         runtime = kokoro.KokoroRuntime(
             FakeKokoroModelManager(Path(temp_dir_name)),
             sherpa_loader=lambda: fake_sherpa,
+            runtime_probe=lambda: "1.13.4",
             schedule_idle_release=False,
         )
         try:
@@ -632,7 +636,12 @@ def test_kokoro_runtime_reports_model_and_runtime_failures_without_loading_infer
             loader_calls += 1
             raise ImportError("missing sherpa")
 
-        runtime = kokoro.KokoroRuntime(manager, sherpa_loader=missing_loader, schedule_idle_release=False)
+        runtime = kokoro.KokoroRuntime(
+            manager,
+            sherpa_loader=missing_loader,
+            runtime_probe=lambda: "1.13.4",
+            schedule_idle_release=False,
+        )
         assert runtime.status()["state"] == "model-not-installed"
         try:
             runtime.synthesize("测试", "zh-CN", "auto", 1.0, Path(temp_dir_name) / "voice.wav")
@@ -648,6 +657,7 @@ def test_kokoro_runtime_reports_model_and_runtime_failures_without_loading_infer
         runtime = kokoro.KokoroRuntime(
             FakeKokoroModelManager(Path(temp_dir_name)),
             sherpa_loader=lambda: fake_sherpa,
+            runtime_probe=lambda: "1.13.4",
             schedule_idle_release=False,
         )
         try:
@@ -694,6 +704,7 @@ def test_runtime_lock_allows_only_one_kokoro_job() -> None:
         runtime = kokoro.KokoroRuntime(
             FakeKokoroModelManager(Path(temp_dir_name)),
             sherpa_loader=lambda: fake_sherpa,
+            runtime_probe=lambda: "1.13.4",
             schedule_idle_release=False,
         )
         errors: list[Exception] = []
@@ -716,6 +727,155 @@ def test_runtime_lock_allows_only_one_kokoro_job() -> None:
         second.join(2)
         assert not errors
         assert peak == 1
+
+
+def test_kokoro_rejects_unsupported_locale_before_loading_runtime() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        loader_calls = 0
+        fake_sherpa = FakeSherpaRuntime()
+
+        def load_runtime():
+            nonlocal loader_calls
+            loader_calls += 1
+            return fake_sherpa
+
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            sherpa_loader=load_runtime,
+            runtime_probe=lambda: "1.13.4",
+            schedule_idle_release=False,
+        )
+        try:
+            runtime.synthesize("こんにちは", "ja-JP", "auto", 1.0, Path(temp_dir_name) / "voice.wav")
+        except kokoro.KokoroRuntimeError as error:
+            assert "supports only Chinese and English" in str(error)
+        else:
+            raise AssertionError("unsupported Kokoro locales must fail explicitly")
+        assert loader_calls == 0
+
+
+def test_kokoro_health_uses_exact_installed_runtime_metadata() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        manager = FakeKokoroModelManager(Path(temp_dir_name))
+        original_version = kokoro.importlib.metadata.version
+        observed_distributions = []
+        cases = (
+            ("1.13.4", "ready", True, "1.13.4"),
+            ("1.12.0", "runtime-incompatible", False, "1.12.0"),
+            (None, "runtime-not-installed", False, ""),
+            ("", "runtime-not-installed", False, ""),
+        )
+        try:
+            for installed_version, expected_state, expected_available, expected_version in cases:
+                def metadata_version(name, version=installed_version):
+                    observed_distributions.append(name)
+                    if version is None:
+                        raise kokoro.importlib.metadata.PackageNotFoundError(name)
+                    return version
+
+                kokoro.importlib.metadata.version = metadata_version
+                runtime = kokoro.KokoroRuntime(manager, schedule_idle_release=False)
+                status = runtime.status()
+                assert status["state"] == expected_state
+                assert status["available"] is expected_available
+                assert status["runtimeVersion"] == expected_version
+                assert status["requiredRuntimeVersion"] == "1.13.4"
+        finally:
+            kokoro.importlib.metadata.version = original_version
+    assert observed_distributions == ["sherpa-onnx"] * len(cases)
+
+
+def test_kokoro_load_rejects_empty_module_version() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        fake_sherpa = FakeSherpaRuntime()
+        fake_sherpa.__version__ = ""
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            sherpa_loader=lambda: fake_sherpa,
+            runtime_probe=lambda: "1.13.4",
+            schedule_idle_release=False,
+        )
+        try:
+            runtime.synthesize("测试", "zh-CN", "auto", 1.0, Path(temp_dir_name) / "voice.wav")
+        except kokoro.KokoroRuntimeError as error:
+            assert "requires sherpa-onnx 1.13.4" in str(error)
+            assert "unversioned" in str(error)
+        else:
+            raise AssertionError("an unversioned sherpa module must not load")
+        assert runtime.status()["state"] == "runtime-incompatible"
+
+
+def test_cancelled_kokoro_job_exits_while_waiting_for_global_lock() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        started = threading.Event()
+        release = threading.Event()
+
+        class ObservedCancelEvent(threading.Event):
+            def __init__(self):
+                super().__init__()
+                self.first_check = threading.Event()
+
+            def is_set(self):
+                self.first_check.set()
+                return super().is_set()
+
+        class BlockingSherpa(FakeSherpaRuntime):
+            def __init__(self):
+                super().__init__()
+                original_tts = self.OfflineTts
+
+                class OfflineTts(original_tts):
+                    def generate(inner, *, text, sid, speed):
+                        started.set()
+                        release.wait(2)
+                        return super(OfflineTts, inner).generate(text=text, sid=sid, speed=speed)
+
+                self.OfflineTts = OfflineTts
+
+        fake_sherpa = BlockingSherpa()
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            sherpa_loader=lambda: fake_sherpa,
+            runtime_probe=lambda: "1.13.4",
+            schedule_idle_release=False,
+        )
+        errors: list[Exception] = []
+        cancel_event = ObservedCancelEvent()
+
+        def active_worker():
+            try:
+                runtime.synthesize("第一条", "zh-CN", "auto", 1.0, Path(temp_dir_name) / "first.wav")
+            except Exception as error:  # pragma: no cover - asserted below.
+                errors.append(error)
+
+        def queued_worker():
+            try:
+                runtime.synthesize(
+                    "第二条",
+                    "zh-CN",
+                    "auto",
+                    1.0,
+                    Path(temp_dir_name) / "second.wav",
+                    cancel_event=cancel_event,
+                )
+            except Exception as error:
+                errors.append(error)
+
+        first = threading.Thread(target=active_worker)
+        second = threading.Thread(target=queued_worker)
+        first.start()
+        assert started.wait(1)
+        second.start()
+        assert cancel_event.first_check.wait(1)
+        cancel_event.set()
+        second.join(1)
+        assert not second.is_alive()
+        assert any(type(error).__name__ == "KokoroRuntimeCancelled" for error in errors)
+        assert len(fake_sherpa.generate_calls) == 0
+        release.set()
+        first.join(2)
+        assert not first.is_alive()
+        assert len(fake_sherpa.generate_calls) == 1
 
 
 def main() -> None:
@@ -752,6 +912,10 @@ def main() -> None:
     test_kokoro_rejects_empty_or_non_finite_output_without_cross_provider_fallback()
     test_kokoro_runtime_reports_model_and_runtime_failures_without_loading_inference()
     test_runtime_lock_allows_only_one_kokoro_job()
+    test_kokoro_rejects_unsupported_locale_before_loading_runtime()
+    test_kokoro_health_uses_exact_installed_runtime_metadata()
+    test_kokoro_load_rejects_empty_module_version()
+    test_cancelled_kokoro_job_exits_while_waiting_for_global_lock()
     print("kokoro engine checks ok")
 
 
