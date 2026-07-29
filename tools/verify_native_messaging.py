@@ -5,11 +5,14 @@ import json
 import os
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LAUNCHER = ROOT / "companion" / "native_host_launcher_macos.sh"
+sys.path.insert(0, str(ROOT / "companion"))
+import native_host  # noqa: E402
 
 
 def request_native(launcher: Path, request_type: str) -> dict:
@@ -48,6 +51,20 @@ def main() -> None:
     voices = voices_response.get("voices") if voices_response.get("ok") else None
     if not isinstance(voices, list):
         raise SystemExit(f"Native Host voice discovery failed: {voices_response}")
+    model_status = native_host.handle_message({"type": "kokoro-model-status"})
+    if not model_status.get("ok") or model_status.get("transport") != "native" or not isinstance(model_status.get("model"), dict):
+        raise SystemExit(f"Native Host Kokoro model status failed: {model_status}")
+    for request_type in (
+        "kokoro-model-status",
+        "install-kokoro-model",
+        "cancel-kokoro-model-install",
+        "uninstall-kokoro-model",
+    ):
+        invalid_model_request = native_host.handle_message(
+            {"type": request_type, "payload": {"url": "https://evil.invalid/model"}}
+        )
+        if invalid_model_request.get("code") != "INVALID_MODEL_REQUEST" or invalid_model_request.get("ok") is not False:
+            raise SystemExit(f"Native Host accepted an unsafe Kokoro model request: {invalid_model_request}")
     print(
         json.dumps(
             {
@@ -59,6 +76,7 @@ def main() -> None:
                 "engineVersion": response.get("engineVersion"),
                 "protocolVersion": response.get("protocolVersion"),
                 "voices": len(voices),
+                "kokoroState": model_status["model"].get("state"),
                 "launcher": str(launcher),
             },
             ensure_ascii=False,

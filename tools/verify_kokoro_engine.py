@@ -7,12 +7,14 @@ import importlib
 import sys
 import tarfile
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 kokoro = importlib.import_module("server.kokoro_tts")
+local_server = importlib.import_module("server.local_dub_server")
 
 
 PRODUCTION_ARCHIVE_ROOT = "kokoro-int8-multi-lang-v1_1"
@@ -292,6 +294,145 @@ def test_cancellation_before_activation_never_installs_a_model(tmp_path: Path) -
     assert not manager.active_path.exists()
 
 
+class FakeAsyncModelManager:
+    """Small deterministic model manager used only to test protocol scheduling."""
+
+    def __init__(self) -> None:
+        self.state = "not-installed"
+        self.install_calls = 0
+        self.cancel_calls = 0
+        self.uninstall_calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def status(self) -> dict:
+        return {
+            "state": self.state,
+            "version": "test",
+            "downloadedBytes": 0,
+            "totalBytes": 100,
+            "progress": 1 if self.state == "ready" else 0,
+            "installedBytes": 0,
+            "error": "",
+        }
+
+    def install(self) -> dict:
+        self.install_calls += 1
+        self.state = "installing"
+        self.started.set()
+        self.release.wait(2)
+        if self.state == "installing":
+            self.state = "ready"
+        return self.status()
+
+    def cancel(self) -> dict:
+        self.cancel_calls += 1
+        self.state = "not-installed"
+        self.release.set()
+        return self.status()
+
+    def uninstall(self) -> dict:
+        self.uninstall_calls += 1
+        self.state = "not-installed"
+        self.release.set()
+        return self.status()
+
+
+class LateActivationModelManager(FakeAsyncModelManager):
+    """Simulates an installer that reports ready after cancellation was requested."""
+
+    def install(self) -> dict:
+        self.install_calls += 1
+        self.state = "installing"
+        self.started.set()
+        self.release.wait(2)
+        self.state = "ready"
+        return self.status()
+
+    def cancel(self) -> dict:
+        self.cancel_calls += 1
+        self.release.set()
+        return self.status()
+
+
+def test_protocol_status_schema_and_async_install_reuse() -> None:
+    manager = FakeAsyncModelManager()
+    service = local_server.KokoroModelService(manager)
+
+    first = service.install("http")
+    assert first["ok"] is True
+    assert first["transport"] == "http"
+    assert first["model"]["state"] == "installing"
+    assert manager.started.wait(1)
+    second = service.install("http")
+    assert second["ok"] is True
+    assert second["model"]["state"] == "installing"
+    assert manager.install_calls == 1
+
+    cancelled = service.cancel("http")
+    assert cancelled["ok"] is True
+    assert cancelled["model"]["state"] == "not-installed"
+    assert manager.cancel_calls == 1
+    assert service.uninstall("http")["model"]["state"] == "not-installed"
+    assert service.uninstall("http")["model"]["state"] == "not-installed"
+    assert manager.uninstall_calls >= 2
+    ready_manager = FakeAsyncModelManager()
+    ready_manager.state = "ready"
+    ready_service = local_server.KokoroModelService(ready_manager)
+    assert ready_service.install("http")["model"]["state"] == "ready"
+    assert ready_manager.install_calls == 0
+
+
+def test_cancel_or_uninstall_cleans_up_late_activation() -> None:
+    manager = LateActivationModelManager()
+    service = local_server.KokoroModelService(manager)
+    assert service.install("native")["model"]["state"] == "installing"
+    assert manager.started.wait(1)
+    service.cancel("native")
+    for _ in range(50):
+        if manager.uninstall_calls:
+            break
+        threading.Event().wait(0.01)
+    assert manager.uninstall_calls == 1
+    assert service.status("native")["model"]["state"] == "not-installed"
+
+
+def test_http_model_routes_allow_only_empty_objects() -> None:
+    manager = FakeAsyncModelManager()
+    service = local_server.KokoroModelService(manager)
+    original_service = local_server.KOKORO_MODEL_SERVICE
+    local_server.KOKORO_MODEL_SERVICE = service
+    try:
+        captured: list[tuple[dict, int]] = []
+        handler = object.__new__(local_server.LocalDubHandler)
+        handler.path = "/api/tts-model/kokoro/status"
+        handler.send_json = lambda payload, status=200: captured.append((payload, status))
+        handler.do_GET()
+        status, status_code = captured.pop()
+        assert status["ok"] is True
+        assert status_code == 200
+        assert status["transport"] == "http"
+        assert status["model"]["state"] == "not-installed"
+
+        for endpoint in ("install", "cancel", "uninstall"):
+            handler.path = f"/api/tts-model/kokoro/{endpoint}"
+            handler.read_json = lambda: {"url": "https://evil.invalid/model"}
+            handler.do_POST()
+            rejected, rejected_status = captured.pop()
+            assert rejected["ok"] is False
+            assert rejected["code"] == "INVALID_MODEL_REQUEST"
+            assert rejected_status == 400
+        assert manager.install_calls == 0
+        handler.path = "/api/tts-model/kokoro/install"
+        handler.read_json = lambda: (_ for _ in ()).throw(ValueError("JSON body must be an object"))
+        handler.do_POST()
+        rejected, rejected_status = captured.pop()
+        assert rejected["code"] == "INVALID_MODEL_REQUEST"
+        assert rejected_status == 400
+    finally:
+        local_server.KOKORO_MODEL_SERVICE = original_service
+
+
 def main() -> None:
     test_model_manifest_is_immutable()
     with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -317,6 +458,9 @@ def main() -> None:
         test_digest_failure_never_activates_a_model(Path(temp_dir_name))
     with tempfile.TemporaryDirectory() as temp_dir_name:
         test_cancellation_before_activation_never_installs_a_model(Path(temp_dir_name))
+    test_protocol_status_schema_and_async_install_reuse()
+    test_cancel_or_uninstall_cleans_up_late_activation()
+    test_http_model_routes_allow_only_empty_objects()
     print("kokoro engine checks ok")
 
 

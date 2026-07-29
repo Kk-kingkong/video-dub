@@ -561,10 +561,12 @@ async function testBackgroundModeNormalization() {
   const localData = {};
   const nativeMessages = [];
   const permissionChecks = [];
+  let runtimeMessageListener = null;
   let hostPermissionGranted = true;
   const context = {
     AbortController,
     URL,
+    Response,
     console,
     fetch,
     setTimeout,
@@ -576,9 +578,17 @@ async function testBackgroundModeNormalization() {
       runtime: {
         getManifest: () => JSON.parse(fs.readFileSync(path.join(root, "extension", "manifest.json"), "utf8")),
         onInstalled: { addListener() {} },
-        onMessage: { addListener() {} },
+        onMessage: { addListener(listener) { runtimeMessageListener = listener; } },
         sendNativeMessage(_host, message, callback) {
           nativeMessages.push(message);
+          if (String(message?.type || "").includes("kokoro-model")) {
+            callback({
+              ok: true,
+              transport: "native",
+              model: { state: "not-installed", version: "test", downloadedBytes: 0, totalBytes: 1, progress: 0, installedBytes: 0, error: "" }
+            });
+            return;
+          }
           callback({ ok: true, service: "localtube-dub", engineVersion: "0.1.82", protocolVersion: 2 });
         }
       },
@@ -630,6 +640,36 @@ async function testBackgroundModeNormalization() {
   assert.equal(advancedOllama.provider, "native");
   assert.equal(vm.runInContext("sanitizeSettings({}).ttsEngine", context), "edge");
   assert.equal(vm.runInContext('sanitizeSettings({ ttsEngine: "system" }).ttsEngine', context), "system");
+  context.fetch = async (url) => {
+    if (String(url).endsWith("/api/tts-model/kokoro/status")) {
+      return new Response(JSON.stringify({
+        ok: true,
+        transport: "http",
+        model: { state: "not-installed", version: "test", downloadedBytes: 0, totalBytes: 1, progress: 0, installedBytes: 0, error: "" }
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: false, error: "HTTP unavailable" }), { status: 503 });
+  };
+  const statusResponse = await new Promise((resolve) => {
+    assert.equal(runtimeMessageListener({ type: "localtube.getKokoroModelStatus" }, {}, resolve), true);
+  });
+  assert.equal(statusResponse.ok, true);
+  assert.equal(statusResponse.payload.transport, "http");
+  context.fetch = async () => new Response(JSON.stringify({ ok: false, error: "offline" }), { status: 503 });
+  const installResponse = await new Promise((resolve) => {
+    assert.equal(runtimeMessageListener({ type: "localtube.installKokoroModel" }, {}, resolve), true);
+  });
+  assert.equal(installResponse.ok, true);
+  assert.equal(nativeMessages.at(-1).type, "install-kokoro-model");
+  const invalidResponse = await new Promise((resolve) => {
+    assert.equal(
+      runtimeMessageListener({ type: "localtube.installKokoroModel", payload: { url: "https://evil.invalid/model" } }, {}, resolve),
+      true
+    );
+  });
+  assert.equal(invalidResponse.ok, false);
+  assert.equal(invalidResponse.code, "INVALID_MODEL_REQUEST");
+  nativeMessages.length = 0;
   const saved = await vm.runInContext(
     `saveCachedTranslationTimeline({
       videoId: "cache-video",
@@ -1281,6 +1321,16 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.optional_host_permissions, ["https://*/*"]);
 
   const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const kokoroBackground = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+  assert.match(kokoroBackground, /localtube\.getKokoroModelStatus/);
+  assert.match(kokoroBackground, /localtube\.installKokoroModel/);
+  assert.match(kokoroBackground, /localtube\.cancelKokoroModelInstall/);
+  assert.match(kokoroBackground, /localtube\.uninstallKokoroModel/);
+  assert.match(kokoroBackground, /\/api\/tts-model\/kokoro\/status/);
+  assert.match(kokoroBackground, /\/api\/tts-model\/kokoro\/install/);
+  assert.match(kokoroBackground, /\/api\/tts-model\/kokoro\/cancel/);
+  assert.match(kokoroBackground, /\/api\/tts-model\/kokoro\/uninstall/);
+  assert.doesNotMatch(kokoroBackground, /payload\.(?:url|path|checksum|package|command)/);
   assert.match(content, /const EXTENSION_VERSION = chrome\.runtime\.getManifest\(\)\.version/);
   assert.match(content, /LocalTube Dub <span>\$\{EXTENSION_VERSION\}<\/span>/);
   assert.match(content, /handleWidgetVolumeInput/);

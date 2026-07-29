@@ -240,6 +240,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  const kokoroModelOperations = {
+    "localtube.getKokoroModelStatus": "status",
+    "localtube.installKokoroModel": "install",
+    "localtube.cancelKokoroModelInstall": "cancel",
+    "localtube.uninstallKokoroModel": "uninstall"
+  };
+  const kokoroModelOperation = kokoroModelOperations[message.type];
+  if (kokoroModelOperation) {
+    manageKokoroModel(kokoroModelOperation, message.payload, message.settings)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+    return true;
+  }
+
   if (message.type === "localtube.restartEngine") {
     restartLocalEngine(message.settings)
       .then((result) => sendResponse(result))
@@ -1066,6 +1080,71 @@ async function listAvailableVoices(settings = {}) {
     code: "VOICE_LIST_UNAVAILABLE",
     error: errors.join("；")
   };
+}
+
+function normalizeKokoroModelRequest(payload) {
+  if (payload === undefined) {
+    return { ok: true, payload: {} };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).length) {
+    return { ok: false, code: "INVALID_MODEL_REQUEST", error: "Kokoro 模型请求不接受额外参数。" };
+  }
+  return { ok: true, payload: {} };
+}
+
+async function manageKokoroModel(operation, requestPayload, settings = {}) {
+  const request = normalizeKokoroModelRequest(requestPayload);
+  if (!request.ok) {
+    return request;
+  }
+  const endpointPaths = {
+    status: "/api/tts-model/kokoro/status",
+    install: "/api/tts-model/kokoro/install",
+    cancel: "/api/tts-model/kokoro/cancel",
+    uninstall: "/api/tts-model/kokoro/uninstall"
+  };
+  const nativeTypes = {
+    status: "kokoro-model-status",
+    install: "install-kokoro-model",
+    cancel: "cancel-kokoro-model-install",
+    uninstall: "uninstall-kokoro-model"
+  };
+  const endpointPath = endpointPaths[operation];
+  const nativeType = nativeTypes[operation];
+  if (!endpointPath || !nativeType) {
+    return { ok: false, code: "INVALID_MODEL_REQUEST", error: "Unsupported Kokoro model operation." };
+  }
+
+  const storedSettings = await getStoredSettings();
+  const nextSettings = sanitizeSettings({ ...storedSettings, ...settings });
+  const localEndpoint = (nextSettings.endpoint || DEFAULT_SETTINGS.endpoint).replace(/\/+$/, "");
+  const errors = [];
+  try {
+    const response = await fetchJson(`${localEndpoint}${endpointPath}`, {
+      method: operation === "status" ? "GET" : "POST",
+      headers: operation === "status" ? {} : { "content-type": "application/json" },
+      body: operation === "status" ? undefined : "{}",
+      timeoutMs: operation === "install" ? 5000 : 4000,
+      timeoutMessage: "本地 Kokoro 模型服务暂未响应"
+    });
+    if (response.ok && response.payload?.ok !== false && response.payload?.model) {
+      return { ok: true, payload: { ...response.payload, transport: response.payload.transport || "http" } };
+    }
+    errors.push(`HTTP Kokoro：${response.error || "没有返回模型状态"}`);
+  } catch (error) {
+    errors.push(`HTTP Kokoro：${error.message || String(error)}`);
+  }
+
+  try {
+    const nativePayload = await sendNativeMessage({ type: nativeType });
+    if (nativePayload?.ok && nativePayload?.model) {
+      return { ok: true, payload: { ...nativePayload, transport: nativePayload.transport || "native" } };
+    }
+    errors.push(`Native Kokoro：${nativePayload?.error || "没有返回模型状态"}`);
+  } catch (error) {
+    errors.push(`Native Kokoro：${error.message || String(error)}`);
+  }
+  return { ok: false, code: "KOKORO_MODEL_ENGINE_UNAVAILABLE", error: errors.join("；") };
 }
 
 async function restartLocalEngine(settings = {}) {

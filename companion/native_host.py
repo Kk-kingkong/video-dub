@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SERVER_DIR = PROJECT_ROOT / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
-from local_dub_server import ENGINE_PROTOCOL_VERSION, build_captions_payload, build_dub_payload, build_health_payload, build_transcribe_payload, build_tts_payload, build_video_transcribe_payload, build_voices_payload  # noqa: E402
+from local_dub_server import ENGINE_PROTOCOL_VERSION, build_captions_payload, build_dub_payload, build_health_payload, build_kokoro_model_payload, build_transcribe_payload, build_tts_payload, build_video_transcribe_payload, build_voices_payload  # noqa: E402
 
 
 MAX_CHROME_MESSAGE_BYTES = 64 * 1024 * 1024
@@ -75,6 +75,19 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any]:
 
     if message_type in ("voices", "list-voices"):
         return build_voices_payload(transport="native")
+
+    model_operations = {
+        "kokoro-model-status": "status",
+        "install-kokoro-model": "install",
+        "cancel-kokoro-model-install": "cancel",
+        "uninstall-kokoro-model": "uninstall",
+    }
+    model_operation = model_operations.get(message_type)
+    if model_operation:
+        if set(message).difference({"type", "payload"}):
+            return build_kokoro_model_payload(model_operation, {"invalid": True}, transport="native")
+        payload = {} if "payload" not in message else message.get("payload")
+        return build_kokoro_model_payload(model_operation, payload, transport="native")
 
     if message_type in ("start-http", "start"):
         return start_http_engine()

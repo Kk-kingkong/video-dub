@@ -35,6 +35,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+try:
+    from .kokoro_tts import KokoroModelManager
+except ImportError:  # pragma: no cover - supports direct Engine execution.
+    try:
+        from kokoro_tts import KokoroModelManager
+    except ImportError:
+        _kokoro_spec = importlib.util.spec_from_file_location(
+            "localtube_kokoro_tts", Path(__file__).with_name("kokoro_tts.py")
+        )
+        if _kokoro_spec is None or _kokoro_spec.loader is None:
+            raise
+        _kokoro_module = importlib.util.module_from_spec(_kokoro_spec)
+        sys.modules.setdefault(_kokoro_spec.name, _kokoro_module)
+        _kokoro_spec.loader.exec_module(_kokoro_module)
+        KokoroModelManager = _kokoro_module.KokoroModelManager
+
 
 HOST = os.environ.get("LOCAL_DUB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LOCAL_DUB_PORT", "8787"))
@@ -167,6 +183,136 @@ LANGUAGE_NAMES = {
 }
 
 
+def default_kokoro_model_root() -> Path:
+    """Return the user-owned data location for the fixed Kokoro payload."""
+
+    override = os.environ.get("LOCAL_DUB_KOKORO_MODEL_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "LocalTube Dub" / "models" / "kokoro"
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_app_data).expanduser() if local_app_data else Path.home() / "AppData" / "Local"
+        return base / "LocalTube Dub" / "models" / "kokoro"
+    data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+    return base / "localtube-dub" / "models" / "kokoro"
+
+
+class KokoroModelService:
+    """Expose one fixed-model installation job without blocking Engine requests."""
+
+    def __init__(self, manager: KokoroModelManager) -> None:
+        self.manager = manager
+        self._lock = threading.RLock()
+        self._worker: threading.Thread | None = None
+        self._install_requested = False
+        self._generation = 0
+
+    def status(self, transport: str) -> dict[str, Any]:
+        model = self._normalized_status()
+        return {"ok": True, "transport": transport, "model": model}
+
+    def install(self, transport: str) -> dict[str, Any]:
+        with self._lock:
+            worker_is_running = self._worker is not None and self._worker.is_alive()
+            if not worker_is_running and self._normalized_status()["state"] == "ready":
+                return self.status(transport)
+            if not worker_is_running:
+                self._install_requested = True
+                self._generation += 1
+                generation = self._generation
+                self._worker = threading.Thread(
+                    target=self._run_install,
+                    args=(generation,),
+                    name="localtube-kokoro-install",
+                    daemon=True,
+                )
+                self._worker.start()
+        return self.status(transport)
+
+    def cancel(self, transport: str) -> dict[str, Any]:
+        with self._lock:
+            self._generation += 1
+            self._install_requested = False
+        self.manager.cancel()
+        return self.status(transport)
+
+    def uninstall(self, transport: str) -> dict[str, Any]:
+        with self._lock:
+            self._generation += 1
+            self._install_requested = False
+        self.manager.uninstall()
+        return self.status(transport)
+
+    def _run_install(self, generation: int) -> None:
+        try:
+            self.manager.install()
+        finally:
+            with self._lock:
+                stale_install = generation != self._generation
+            if stale_install:
+                # A cancellation/uninstall may arrive while activation is in its
+                # final critical section. Clean up after that old worker before
+                # another install is allowed to begin.
+                self.manager.uninstall()
+            with self._lock:
+                if threading.current_thread() is self._worker:
+                    self._install_requested = False
+                    self._worker = None
+
+    def _normalized_status(self) -> dict[str, Any]:
+        raw_status = self.manager.status()
+        model = {
+            "state": str(raw_status.get("state") or "not-installed"),
+            "version": str(raw_status.get("version") or ""),
+            "downloadedBytes": max(0, int(raw_status.get("downloadedBytes") or 0)),
+            "totalBytes": max(0, int(raw_status.get("totalBytes") or 0)),
+            "progress": max(0.0, min(1.0, float(raw_status.get("progress") or 0))),
+            "installedBytes": max(0, int(raw_status.get("installedBytes") or 0)),
+            "error": str(raw_status.get("error") or ""),
+        }
+        with self._lock:
+            if self._install_requested and self._worker is not None and self._worker.is_alive():
+                model["state"] = "installing"
+            elif self._worker is not None and self._worker.is_alive():
+                model["state"] = "not-installed"
+        return model
+
+
+KOKORO_MODEL_SERVICE = KokoroModelService(KokoroModelManager(default_kokoro_model_root()))
+
+
+def build_kokoro_model_payload(operation: str, payload: Any, transport: str) -> dict[str, Any]:
+    """Run a fixed-schema model operation without forwarding caller data."""
+
+    if not isinstance(payload, dict) or payload:
+        return {
+            "ok": False,
+            "code": "INVALID_MODEL_REQUEST",
+            "error": "Kokoro model requests must use an empty object.",
+            "transport": transport,
+            "model": KOKORO_MODEL_SERVICE.status(transport)["model"],
+        }
+    operations = {
+        "status": KOKORO_MODEL_SERVICE.status,
+        "install": KOKORO_MODEL_SERVICE.install,
+        "cancel": KOKORO_MODEL_SERVICE.cancel,
+        "uninstall": KOKORO_MODEL_SERVICE.uninstall,
+    }
+    handler = operations.get(operation)
+    if handler is None:
+        return {
+            "ok": False,
+            "code": "INVALID_MODEL_REQUEST",
+            "error": "Unsupported Kokoro model operation.",
+            "transport": transport,
+            "model": KOKORO_MODEL_SERVICE.status(transport)["model"],
+        }
+    return handler(transport)
+
+
 class LocalDubHandler(BaseHTTPRequestHandler):
     server_version = "LocalTubeDub/0.1"
 
@@ -195,6 +341,12 @@ class LocalDubHandler(BaseHTTPRequestHandler):
             self.send_json(build_voices_payload(transport="http"))
             return
 
+        if parsed.path == "/api/tts-model/kokoro/status":
+            payload: dict[str, Any] = {} if not parsed.query else {"query": parsed.query}
+            response = build_kokoro_model_payload("status", payload, transport="http")
+            self.send_json(response, status=200 if response.get("ok") else 400)
+            return
+
         if parsed.path == "/api/full-transcript/status":
             job_id = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
             response = get_full_transcript_job(job_id)
@@ -217,10 +369,25 @@ class LocalDubHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": False, "error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
+        model_operations = {
+            "/api/tts-model/kokoro/install": "install",
+            "/api/tts-model/kokoro/cancel": "cancel",
+            "/api/tts-model/kokoro/uninstall": "uninstall",
+        }
+        model_operation = model_operations.get(self.path)
         try:
             payload = self.read_json()
         except ValueError as exc:
+            if model_operation:
+                response = build_kokoro_model_payload(model_operation, {"invalid": True}, transport="http")
+                self.send_json(response, status=400)
+                return
             self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if model_operation:
+            response = build_kokoro_model_payload(model_operation, payload, transport="http")
+            self.send_json(response, status=200 if response.get("ok") else 400)
             return
 
         if self.path in ("/api/dub", "/api/translate"):
