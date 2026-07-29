@@ -28,12 +28,18 @@ manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 print(manifest["version"])
 PY
 )"
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+  arm64|aarch64) PACKAGE_ARCH="arm64" ;;
+  x86_64|amd64) PACKAGE_ARCH="x64" ;;
+  *) echo "Unsupported macOS build architecture: $HOST_ARCH"; exit 1 ;;
+esac
 OUTPUT_DIR="$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)"
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/localtube-release.XXXXXX")"
 trap 'rm -rf "$BUILD_ROOT"' EXIT
 
 EXTENSION_ZIP="$OUTPUT_DIR/LocalTube-Dub-extension-v$VERSION.zip"
-ENGINE_NAME="LocalTube-Dub-Engine-v$VERSION-macOS"
+ENGINE_NAME="LocalTube-Dub-Engine-v$VERSION-macOS-$PACKAGE_ARCH"
 ENGINE_ZIP="$OUTPUT_DIR/$ENGINE_NAME.zip"
 CHECKSUM_FILE="$OUTPUT_DIR/LocalTube-Dub-v$VERSION-SHA256SUMS.txt"
 rm -f "$EXTENSION_ZIP" "$ENGINE_ZIP" "$CHECKSUM_FILE"
@@ -77,6 +83,7 @@ mkdir -p "$ENGINE_STAGE/server" "$ENGINE_STAGE/scripts" "$ENGINE_STAGE/companion
 install -m 0644 "$ROOT_DIR/LICENSE" "$ENGINE_STAGE/LICENSE"
 install -m 0644 "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$ENGINE_STAGE/THIRD_PARTY_NOTICES.md"
 install -m 0644 "$ROOT_DIR/server/local_dub_server.py" "$ENGINE_STAGE/server/local_dub_server.py"
+install -m 0644 "$ROOT_DIR/server/kokoro_tts.py" "$ENGINE_STAGE/server/kokoro_tts.py"
 for script in \
   start_engine_macos.sh \
   install_engine_deps_macos.sh \
@@ -85,6 +92,11 @@ for script in \
   install_local_whisper_macos.sh; do
   install -m 0755 "$ROOT_DIR/scripts/$script" "$ENGINE_STAGE/scripts/$script"
 done
+
+python3 "$ROOT_DIR/scripts/assemble_engine_runtime.py" \
+  --platform macos \
+  --arch "$PACKAGE_ARCH" \
+  --output "$ENGINE_STAGE/.venv"
 for script in \
   native_host.py \
   native_host_launcher_macos.sh \
@@ -108,7 +120,7 @@ render_template "$ROOT_DIR/packaging/macos/Uninstall LocalTube Dub Engine.comman
 render_template "$ROOT_DIR/packaging/macos/README.md.in" "$ENGINE_STAGE/README.md"
 chmod 0755 "$ENGINE_STAGE"/*.command
 
-python3 - "$ENGINE_STAGE/release.json" "$VERSION" "$EXTENSION_ID" <<'PY'
+python3 - "$ENGINE_STAGE/release.json" "$VERSION" "$EXTENSION_ID" "$PACKAGE_ARCH" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -119,6 +131,10 @@ payload = {
     "version": sys.argv[2],
     "protocolVersion": 2,
     "chromeExtensionId": sys.argv[3],
+    "platform": "macos",
+    "architecture": sys.argv[4],
+    "bundledRuntime": True,
+    "runtimeLock": ".venv/runtime-lock.json",
     "channel": "private-beta",
     "signed": False,
     "notarized": False,
@@ -132,11 +148,7 @@ PY
 )
 
 python3 "$ROOT_DIR/tools/verify_release_packages.py" "$EXTENSION_ZIP" "$ENGINE_ZIP" "$EXTENSION_ID" "$VERSION"
-if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
-  "$ROOT_DIR/tools/smoke_release_macos.sh" "$ENGINE_ZIP" "$EXTENSION_ID" "$VERSION"
-else
-  echo "Skipping isolated installer smoke test because project .venv is unavailable."
-fi
+"$ROOT_DIR/tools/smoke_release_macos.sh" "$ENGINE_ZIP" "$EXTENSION_ID" "$VERSION"
 (
   cd "$OUTPUT_DIR"
   shasum -a 256 "$(basename "$EXTENSION_ZIP")" "$(basename "$ENGINE_ZIP")" > "$CHECKSUM_FILE"
@@ -144,6 +156,6 @@ fi
 
 echo "LocalTube Dub release packages are ready:"
 echo "  Extension: $EXTENSION_ZIP"
-echo "  macOS Engine: $ENGINE_ZIP"
+echo "  macOS Engine ($PACKAGE_ARCH): $ENGINE_ZIP"
 echo "  Checksums: $CHECKSUM_FILE"
 echo "This private-beta Engine bundle is not signed or notarized."

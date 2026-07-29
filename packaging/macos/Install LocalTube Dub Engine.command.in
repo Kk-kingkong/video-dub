@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTENSION_ID="__EXTENSION_ID__"
 VERSION="__VERSION__"
+RUNTIME_ROOT="${LOCAL_DUB_RUNTIME_DIR:-$HOME/Library/Application Support/LocalTube Dub/engine-runtime}"
+DRY_RUN="${LOCAL_DUB_INSTALL_DRY_RUN:-0}"
 
 pause_on_error() {
   local status=$?
@@ -11,7 +13,9 @@ pause_on_error() {
   if [[ $status -ne 0 ]]; then
     echo
     echo "安装失败。请保留上面的错误信息并联系支持。"
-    read -r -p "按回车键关闭窗口..." _
+    if [[ "$DRY_RUN" != "1" ]]; then
+      read -r -p "按回车键关闭窗口..." _
+    fi
   fi
   exit "$status"
 }
@@ -22,9 +26,31 @@ echo "将为 Chrome 扩展 $EXTENSION_ID 安装本地字幕、配音和开机自
 echo
 
 "$ROOT_DIR/scripts/install_engine_deps_macos.sh"
-"$ROOT_DIR/companion/install_native_host_macos.sh" "$EXTENSION_ID"
+
+STAGING_ROOT="$RUNTIME_ROOT.staging.$$"
+BACKUP_ROOT="$RUNTIME_ROOT.backup.$$"
+rm -rf "$STAGING_ROOT" "$BACKUP_ROOT"
+mkdir -p "$(dirname "$RUNTIME_ROOT")"
+ditto "$ROOT_DIR" "$STAGING_ROOT"
+if [[ -d "$RUNTIME_ROOT" ]]; then
+  mv "$RUNTIME_ROOT" "$BACKUP_ROOT"
+fi
+mv "$STAGING_ROOT" "$RUNTIME_ROOT"
+rm -rf "$BACKUP_ROOT"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  LOCAL_DUB_NATIVE_INSTALL_DRY_RUN=1 \
+  LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
+    "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID"
+  trap - EXIT
+  echo "安装干运行完成。未修改 Chrome、LaunchAgent 或用户目录以外的配置。"
+  exit 0
+fi
+
+LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID"
 
 trap - EXIT
 echo
-echo "安装完成。请完全退出并重新打开 Chrome，然后在 LocalTube Dub 中点击“检查 Engine”。"
+echo "安装完成。私有运行时已复制到：$RUNTIME_ROOT"
+echo "请完全退出并重新打开 Chrome，然后在 LocalTube Dub 中点击“检查 Engine”。"
 read -r -p "按回车键关闭窗口..." _

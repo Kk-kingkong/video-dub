@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import re
+import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -25,7 +28,7 @@ def assert_safe_names(names: set[str], label: str) -> None:
             fail(f"{label} contains metadata or cache files: {name}")
 
 
-def verify_extension(path: Path, extension_id: str, expected_version: str) -> dict[str, object]:
+def verify_extension(path: Path, extension_id: str, expected_version: str, expected_engine_name: str) -> dict[str, object]:
     with zipfile.ZipFile(path) as archive:
         names = normalized_files(archive)
         assert_safe_names(names, "extension ZIP")
@@ -52,7 +55,6 @@ def verify_extension(path: Path, extension_id: str, expected_version: str) -> di
             fail("extension ZIP release-info has an invalid customer channel")
         if release_info.get("version") != expected_version or release_info.get("extensionId") != extension_id:
             fail("extension ZIP release-info does not match version and extension ID")
-        expected_engine_name = f"LocalTube-Dub-Engine-v{expected_version}-macOS.zip"
         if release_info.get("engineBundleName") != expected_engine_name:
             fail("extension ZIP release-info has the wrong Engine bundle name")
         for key in ("engineDownloadUrl", "supportUrl"):
@@ -126,6 +128,9 @@ def verify_engine(path: Path, extension_id: str, expected_version: str) -> dict[
             f"{root}/THIRD_PARTY_NOTICES.md",
             f"{root}/release.json",
             f"{root}/server/local_dub_server.py",
+            f"{root}/server/kokoro_tts.py",
+            f"{root}/.venv/bin/python",
+            f"{root}/.venv/runtime-lock.json",
             f"{root}/scripts/install_engine_deps_macos.sh",
             f"{root}/scripts/install_engine_autostart_macos.sh",
             f"{root}/companion/native_host.py",
@@ -136,8 +141,11 @@ def verify_engine(path: Path, extension_id: str, expected_version: str) -> dict[
         missing = sorted(required - names)
         if missing:
             fail(f"Engine ZIP is missing required files: {missing}")
-        if any("/.venv/" in f"/{name}" or name.endswith((".pyc", ".DS_Store")) for name in names):
-            fail("Engine ZIP contains a machine-specific virtual environment or cache")
+        if any(name.endswith((".pyc", ".DS_Store")) for name in names):
+            fail("Engine ZIP contains a Python cache or Finder metadata")
+        prohibited_model_names = ("model.int8.onnx", "voices.bin", "kokoro-int8-multi-lang-v1_1.tar.bz2")
+        if any(name.endswith(prohibited_model_names) or "/models/kokoro/" in f"/{name}" for name in names):
+            fail("Engine ZIP must not contain a Kokoro model archive or activated model files")
 
         release = json.loads(archive.read(f"{root}/release.json"))
         if release.get("version") != expected_version or release.get("chromeExtensionId") != extension_id:
@@ -146,16 +154,73 @@ def verify_engine(path: Path, extension_id: str, expected_version: str) -> dict[
             fail("Engine release metadata is missing the required protocol version")
         if release.get("signed") is not False or release.get("notarized") is not False:
             fail("private beta metadata must accurately report unsigned/unnotarized state")
+        architecture = str(release.get("architecture") or "")
+        if release.get("platform") != "macos" or architecture not in {"arm64", "x64"}:
+            fail("Engine release metadata must identify a supported macOS architecture")
+        if release.get("bundledRuntime") is not True or release.get("runtimeLock") != ".venv/runtime-lock.json":
+            fail("Engine release metadata must identify its bundled private runtime")
+        runtime_lock = json.loads(archive.read(f"{root}/.venv/runtime-lock.json"))
+        if runtime_lock.get("bundledRuntime") is not True or runtime_lock.get("architecture") != architecture:
+            fail("Engine runtime lock does not match release architecture")
+        if runtime_lock.get("pythonExecutable") != "bin/python":
+            fail("Engine runtime lock does not identify the private Python executable")
         installer = archive.read(f"{root}/Install LocalTube Dub Engine.command").decode("utf-8")
         if extension_id not in installer or "__EXTENSION_ID__" in installer or "__VERSION__" in installer:
             fail("Engine installer was not bound to the requested extension ID and version")
+        if "ditto \"$ROOT_DIR\" \"$STAGING_ROOT\"" not in installer or "LOCAL_DUB_RUNTIME_DIR=\"$RUNTIME_ROOT\"" not in installer:
+            fail("Engine installer does not atomically copy its bundled runtime")
+        if re.search(r"\b(?:pip|brew|curl|wget)\b", installer):
+            fail("customer Engine installer must not invoke package managers or network tools")
+        dependency_installer = archive.read(f"{root}/scripts/install_engine_deps_macos.sh").decode("utf-8")
+        bundled_gate = dependency_installer.find('if [[ -f "$VENV_DIR/runtime-lock.json" ]]')
+        first_pip_or_brew = min(
+            position
+            for position in (dependency_installer.find("-m pip"), dependency_installer.find("brew install"))
+            if position >= 0
+        )
+        if bundled_gate < 0 or bundled_gate > first_pip_or_brew:
+            fail("release dependency script must exit through bundled runtime verification before pip or Homebrew")
         native_installer = archive.read(f"{root}/companion/install_native_host_macos.sh").decode("utf-8")
         if "^[a-p]{32}$" not in native_installer or "allowed_origins" not in native_installer:
             fail("Native Host installer lacks extension-ID validation or allowed_origins wiring")
-        return {"files": len(names), "root": root, "version": release["version"]}
+        return {"files": len(names), "root": root, "version": release["version"], "architecture": architecture}
 
 
 def main() -> None:
+    if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+        root = Path(__file__).resolve().parents[1]
+        manifest_path = root / "packaging" / "runtime-manifest.json"
+        assembler_path = root / "scripts" / "assemble_engine_runtime.py"
+        if not manifest_path.is_file():
+            fail("runtime manifest is missing")
+        if not assembler_path.is_file():
+            fail("runtime assembler is missing")
+        assembler_spec = importlib.util.spec_from_file_location("localtube_runtime_assembler", assembler_path)
+        if assembler_spec is None or assembler_spec.loader is None:
+            fail("runtime assembler is not importable")
+        assembler = importlib.util.module_from_spec(assembler_spec)
+        assembler_spec.loader.exec_module(assembler)
+        manifest = assembler.load_runtime_manifest(manifest_path)
+        for architecture in ("arm64", "x64"):
+            target = manifest["platforms"]["macos"]["architectures"][architecture]
+            if target["python"]["url"].startswith("https://") is False:
+                fail("runtime Python URL must use HTTPS")
+            if not target["python"].get("bytes") or not target["python"].get("sha256"):
+                fail("runtime Python artifact must have size and SHA-256")
+            if any("kokoro-int8" in str(artifact.get("name")) for artifact in target["executables"]):
+                fail("runtime manifest must not distribute the Kokoro model")
+        with tempfile.TemporaryDirectory(prefix="localtube-release-self-test.") as temporary:
+            output = Path(temporary) / "runtime"
+            result = subprocess.run(
+                [sys.executable, str(assembler_path), "--self-test", "--output", str(output)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                fail(result.stderr.strip() or result.stdout.strip() or "runtime assembler self-test failed")
+        print(json.dumps({"ok": True, "selfTest": "runtime-package"}))
+        return
     if len(sys.argv) != 5:
         fail("Usage: verify_release_packages.py <extension.zip> <engine.zip> <extension-id> <version>")
     extension_zip = Path(sys.argv[1])
@@ -166,10 +231,12 @@ def main() -> None:
         fail("invalid Chrome extension ID")
     if not extension_zip.is_file() or not engine_zip.is_file():
         fail("release ZIP is missing")
+    engine = verify_engine(engine_zip, extension_id, version)
+    expected_engine_name = f"LocalTube-Dub-Engine-v{version}-macOS-{engine['architecture']}.zip"
     result = {
         "ok": True,
-        "extension": verify_extension(extension_zip, extension_id, version),
-        "engine": verify_engine(engine_zip, extension_id, version),
+        "extension": verify_extension(extension_zip, extension_id, version, expected_engine_name),
+        "engine": engine,
     }
     print(json.dumps(result, ensure_ascii=False))
 

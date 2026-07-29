@@ -1,0 +1,310 @@
+{
+  "schemaVersion": 1,
+  "runtimeName": "LocalTube Dub private CPython runtime",
+  "platforms": {
+    "macos": {
+      "architectures": {
+        "arm64": {
+          "pythonVersion": "3.11.15",
+          "python": {
+            "name": "cpython-3.11.15+20260718-aarch64-apple-darwin-install_only.tar.gz",
+            "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260718/cpython-3.11.15%2B20260718-aarch64-apple-darwin-install_only.tar.gz",
+            "bytes": 27241978,
+            "sha256": "125587d03495bebdf30ec9e549a8469c97c0925d863ff401f24f157fd44d91d6"
+          },
+          "executables": [
+            {
+              "name": "ffmpeg-darwin-arm64",
+              "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64",
+              "bytes": 45568216,
+              "sha256": "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584",
+              "installAs": "ffmpeg"
+            }
+          ]
+        },
+        "x64": {
+          "pythonVersion": "3.11.15",
+          "python": {
+            "name": "cpython-3.11.15+20260718-x86_64-apple-darwin-install_only.tar.gz",
+            "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260718/cpython-3.11.15%2B20260718-x86_64-apple-darwin-install_only.tar.gz",
+            "bytes": 27140302,
+            "sha256": "870df60775609536b7c3b82ad5c10c5ffbf822e6819bb86d2218e43c172a5f32"
+          },
+          "executables": [
+            {
+              "name": "ffmpeg-darwin-x64",
+              "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64",
+              "bytes": 78862176,
+              "sha256": "ebdddc936f61e14049a2d4b549a412b8a40deeff6540e58a9f2a2da9e6b18894",
+              "installAs": "ffmpeg"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "packages": [
+    {
+      "id": "sherpa-onnx-core",
+      "version": "1.13.4",
+      "artifacts": {
+        "arm64": {
+          "name": "sherpa_onnx_core-1.13.4-py3-none-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/a2/26/d0d6bebea4ef8b7de6eed1a335235d1acce9197425c08eecb57ef107904d/sherpa_onnx_core-1.13.4-py3-none-macosx_11_0_arm64.whl",
+          "bytes": 16897650,
+          "sha256": "7820183581b711a68e30281a4fb36c0af8ef5615bfc789234fb259439824a014"
+        },
+        "x64": {
+          "name": "sherpa_onnx_core-1.13.4-py3-none-macosx_10_15_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/2a/8c/a1336beab226d228f62bdbe1cacf1439a2f6cf8714baac98f1f031dd2f60/sherpa_onnx_core-1.13.4-py3-none-macosx_10_15_x86_64.whl",
+          "bytes": 19325474,
+          "sha256": "674ea57eb6458002dab4e39749d21a7364b2f962f4a4958a3ee4c351b093cafd"
+        }
+      }
+    },
+    {
+      "id": "sherpa-onnx",
+      "version": "1.13.4",
+      "artifacts": {
+        "arm64": {
+          "name": "sherpa_onnx-1.13.4-cp311-cp311-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/e8/93/4385fcdb1f197521fe13fa887893cc200d27569d3cbcccf0d7b92d6a9e62/sherpa_onnx-1.13.4-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 2100029,
+          "sha256": "c2d4337b80b54dd68f566cab941a2ad47ab6cfabb68e88002ee0c920493c16d3"
+        },
+        "x64": {
+          "name": "sherpa_onnx-1.13.4-cp311-cp311-macosx_10_15_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/41/c8/a2ff828ce9a2702b607c25f6303b21d7d41b6ad1520f660b95a0113f4051/sherpa_onnx-1.13.4-cp311-cp311-macosx_10_15_x86_64.whl",
+          "bytes": 2288314,
+          "sha256": "c3e9f96a07570faefca8e3aabcfb78690e680d188d5d44d06fd8711185fe37d6"
+        }
+      }
+    },
+    {
+      "id": "yt-dlp",
+      "version": "2026.7.4",
+      "artifact": {
+        "name": "yt_dlp-2026.7.4-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/f9/8a/cd4c9b02c10c563adfe78118310129641900e1cd6de888cfae2452072696/yt_dlp-2026.7.4-py3-none-any.whl",
+        "bytes": 3184705,
+        "sha256": "f11f2b11d5a8ac4059f9bdf29fa4407dc7c6bb00c5097e95ca22a7a9db518266"
+      }
+    },
+    {
+      "id": "curl-cffi",
+      "version": "0.13.0",
+      "artifacts": {
+        "arm64": {
+          "name": "curl_cffi-0.13.0-cp39-abi3-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/2c/1c/cdb4fb2d16a0e9de068e0e5bc02094e105ce58a687ff30b4c6f88e25a057/curl_cffi-0.13.0-cp39-abi3-macosx_11_0_arm64.whl",
+          "bytes": 2994613,
+          "sha256": "59afa877a9ae09efa04646a7d068eeea48915a95d9add0a29854e7781679fcd7"
+        },
+        "x64": {
+          "name": "curl_cffi-0.13.0-cp39-abi3-macosx_10_9_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/19/d1/acabfd460f1de26cad882e5ef344d9adde1507034528cb6f5698a2e6a2f1/curl_cffi-0.13.0-cp39-abi3-macosx_10_9_x86_64.whl",
+          "bytes": 5686337,
+          "sha256": "434cadbe8df2f08b2fc2c16dff2779fb40b984af99c06aa700af898e185bb9db"
+        }
+      }
+    },
+    {
+      "id": "cffi",
+      "version": "2.1.0",
+      "artifacts": {
+        "arm64": {
+          "name": "cffi-2.1.0-cp311-cp311-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/ea/dd/e3b0baa2d3d6a857ac72b7efbf18e32e487c9cdafcc13049ad765495b15e/cffi-2.1.0-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 184186,
+          "sha256": "f5bce581e6b8c235e566a14768a943b172ada3ed73537bb0c0be1edee312d4e7"
+        },
+        "x64": {
+          "name": "cffi-2.1.0-cp311-cp311-macosx_10_15_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/d3/67/85c89a59ba36a671e79638f44d466749f08179266a57e4f2ffdf92174072/cffi-2.1.0-cp311-cp311-macosx_10_15_x86_64.whl",
+          "bytes": 183845,
+          "sha256": "02cb7ff33ded4f1532476731f89ede53e2e488a8e6205515a82144246ffa7dcc"
+        }
+      }
+    },
+    {
+      "id": "pycparser",
+      "version": "3.0",
+      "artifact": {
+        "name": "pycparser-3.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl",
+        "bytes": 48172,
+        "sha256": "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992"
+      }
+    },
+    {
+      "id": "certifi",
+      "version": "2026.6.17",
+      "artifact": {
+        "name": "certifi-2026.6.17-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/ef/2f/c5464532e965badff2f4c4c1a3a83f5697f0d7c407ed0cda44aaa99bb451/certifi-2026.6.17-py3-none-any.whl",
+        "bytes": 133289,
+        "sha256": "2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db"
+      }
+    },
+    {
+      "id": "edge-tts",
+      "version": "7.2.8",
+      "artifact": {
+        "name": "edge_tts-7.2.8-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/8c/2b/a8cb687b92a2690d2ad171f0c2fd1c8f18690363cca7618bab2bbe4cdf2b/edge_tts-7.2.8-py3-none-any.whl",
+        "bytes": 31026,
+        "sha256": "361fe48ce7ef613adbe30f664e3765dd71029c6cb57427279eff8ad6df2eb211"
+      }
+    },
+    {
+      "id": "aiohttp",
+      "version": "3.14.1",
+      "artifacts": {
+        "arm64": {
+          "name": "aiohttp-3.14.1-cp311-cp311-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/5b/e7/c60c7b209e509cc787de3cea0550a518538cfc08003e1c1e14c1c63fff71/aiohttp-3.14.1-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 514139,
+          "sha256": "d44ec478e713ee7f29b439f7eb8dc2b9d4079e11ae114d2c2ac3d5daf30516c8"
+        },
+        "x64": {
+          "name": "aiohttp-3.14.1-cp311-cp311-macosx_10_9_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/8f/e1/a2872aa55495a70f61310d411541c6ee23812d9a884e000c716e1bc3edbf/aiohttp-3.14.1-cp311-cp311-macosx_10_9_x86_64.whl",
+          "bytes": 518743,
+          "sha256": "1c1af67559445498b502030c35c59db59966f47041ca9de5b4e707f86bd10b5f"
+        }
+      }
+    },
+    {
+      "id": "aiohappyeyeballs",
+      "version": "2.7.1",
+      "artifact": {
+        "name": "aiohappyeyeballs-2.7.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/71/43/1947f06babed6b3f1d7f38b0c767f52df66bfb2bc10b468c4a7de9eceff2/aiohappyeyeballs-2.7.1-py3-none-any.whl",
+        "bytes": 15038,
+        "sha256": "9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472"
+      }
+    },
+    {
+      "id": "aiosignal",
+      "version": "1.4.0",
+      "artifact": {
+        "name": "aiosignal-1.4.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl",
+        "bytes": 7490,
+        "sha256": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e"
+      }
+    },
+    {
+      "id": "attrs",
+      "version": "26.1.0",
+      "artifact": {
+        "name": "attrs-26.1.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl",
+        "bytes": 67548,
+        "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"
+      }
+    },
+    {
+      "id": "frozenlist",
+      "version": "1.8.0",
+      "artifacts": {
+        "arm64": {
+          "name": "frozenlist-1.8.0-cp311-cp311-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/6e/ef/0e8f1fe32f8a53dd26bdd1f9347efe0778b0fddf62789ea683f4cc7d787d/frozenlist-1.8.0-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 50119,
+          "sha256": "fa47e444b8ba08fffd1c18e8cdb9a75db1b6a27f17507522834ad13ed5922b93"
+        },
+        "x64": {
+          "name": "frozenlist-1.8.0-cp311-cp311-macosx_10_9_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/df/b5/7610b6bd13e4ae77b96ba85abea1c8cb249683217ef09ac9e0ae93f25a91/frozenlist-1.8.0-cp311-cp311-macosx_10_9_x86_64.whl",
+          "bytes": 50046,
+          "sha256": "17c883ab0ab67200b5f964d2b9ed6b00971917d5d8a92df149dc2c9779208ee9"
+        }
+      }
+    },
+    {
+      "id": "multidict",
+      "version": "6.7.1",
+      "artifacts": {
+        "arm64": {
+          "name": "multidict-6.7.1-cp311-cp311-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/dd/a4/d45caf2b97b035c57267791ecfaafbd59c68212004b3842830954bb4b02e/multidict-6.7.1-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 44356,
+          "sha256": "f2a0a924d4c2e9afcd7ec64f9de35fcd96915149b2216e1cb2c10a56df483855"
+        },
+        "x64": {
+          "name": "multidict-6.7.1-cp311-cp311-macosx_10_9_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/a6/9b/267e64eaf6fc637a15b35f5de31a566634a2740f97d8d094a69d34f524a4/multidict-6.7.1-cp311-cp311-macosx_10_9_x86_64.whl",
+          "bytes": 44706,
+          "sha256": "844c5bca0b5444adb44a623fb0a1310c2f4cd41f402126bb269cd44c9b3f3e1e"
+        }
+      }
+    },
+    {
+      "id": "propcache",
+      "version": "0.5.2",
+      "artifacts": {
+        "arm64": {
+          "name": "propcache-0.5.2-cp311-cp311-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/15/a8/8ede85d6aa1f79fc7dc2f8fd2c8d65920b8272c3892903c8a1affde48cfb/propcache-0.5.2-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 52754,
+          "sha256": "c6844ba6364fb12f403928a82cfd295ab103a2b315c77c747b2dbe4a41894ea7"
+        },
+        "x64": {
+          "name": "propcache-0.5.2-cp311-cp311-macosx_10_9_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/c2/f4/651b1225e976bd1a2ba5cfba0c29d096581c2636b437e3a9a7ab6276270a/propcache-0.5.2-cp311-cp311-macosx_10_9_x86_64.whl",
+          "bytes": 52033,
+          "sha256": "a4840ab0ae0216d952f4b53dc6d0b992bfc2bedbfe360bdd9b548bc184c08959"
+        }
+      }
+    },
+    {
+      "id": "yarl",
+      "version": "1.24.2",
+      "artifacts": {
+        "arm64": {
+          "name": "yarl-1.24.2-cp311-cp311-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/31/d0/1fb0c1cd27288f39f6974da4318c32768d72c9890984541fdf1e2e32a51d/yarl-1.24.2-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 91343,
+          "sha256": "8d027d56f1035e339d1001ac33eceab5b2ec8e42e449787bb75e289fb9a5cd1d"
+        },
+        "x64": {
+          "name": "yarl-1.24.2-cp311-cp311-macosx_10_9_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/87/5a/00f36967203ed89cb3acd2c8ed526cc3fed9418eb70ce128160a911c8499/yarl-1.24.2-cp311-cp311-macosx_10_9_x86_64.whl",
+          "bytes": 91507,
+          "sha256": "1a97e42c8a2233f2f279ecadd9e4a037bcb5d813b78435e8eedd4db5a9e9708c"
+        }
+      }
+    },
+    {
+      "id": "idna",
+      "version": "3.18",
+      "artifact": {
+        "name": "idna-3.18-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl",
+        "bytes": 65455,
+        "sha256": "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2"
+      }
+    },
+    {
+      "id": "typing-extensions",
+      "version": "4.16.0",
+      "artifact": {
+        "name": "typing_extensions-4.16.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+        "bytes": 45571,
+        "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+      }
+    },
+    {
+      "id": "tabulate",
+      "version": "0.10.0",
+      "artifact": {
+        "name": "tabulate-0.10.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl",
+        "bytes": 39814,
+        "sha256": "f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3"
+      }
+    }
+  ]
+}

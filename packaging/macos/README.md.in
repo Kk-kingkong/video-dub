@@ -9,11 +9,11 @@
 3. 安装完成后完全退出并重新打开 Chrome。
 4. 在扩展弹窗或 YouTube 面板中点击“检查 Engine”。
 
-安装器会准备 Python 3.10+、私有虚拟环境、yt-dlp、可选的 Microsoft 自然在线语音、Native Messaging Host 和登录自动启动服务。首次安装需要联网。没有 Homebrew 且系统没有 Python 3.10+ 时，安装器会显示 Python 安装提示。只有用户在扩展中主动选择“自然在线”时，待朗读字幕才会发送给 Microsoft；默认本地系统配音不会发送。
+安装器会把完整的私有运行时复制到 `~/Library/Application Support/LocalTube Dub/engine-runtime`，其中已包含 Python、yt-dlp、ffmpeg、Kokoro 运行时、Microsoft 自然在线语音依赖、Native Messaging Host 和登录自动启动服务。主 Engine 安装不需要 Homebrew、预装 Python、pip、编译器或额外终端命令。Kokoro 模型不会随安装包下载，用户只在扩展中明确选择“安装本地模型”后才会下载它。只有用户主动选择“自然在线”时，待朗读字幕才会发送给 Microsoft。
 
 ## 无字幕视频
 
-字幕视频只需要主 Engine。需要翻译没有公开字幕的视频时，再双击 `Install No-Caption Whisper.command`；它会通过 Homebrew 安装 whisper.cpp 和 ffmpeg，并下载多语言模型。
+字幕视频只需要主 Engine。需要翻译没有公开字幕的视频时，再双击 `Install No-Caption Whisper.command`；它会通过 Homebrew 安装 whisper.cpp，并下载多语言模型。
 
 ## 卸载
 
