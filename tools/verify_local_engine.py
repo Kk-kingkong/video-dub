@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER_PATH = ROOT / "server" / "local_dub_server.py"
+KOKORO_PATH = ROOT / "server" / "kokoro_tts.py"
 NATIVE_HOST_PATH = ROOT / "companion" / "native_host.py"
 
 
@@ -27,6 +28,20 @@ def load_native_host_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_kokoro_module():
+    spec = importlib.util.spec_from_file_location("kokoro_tts", KOKORO_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_kokoro_model_starts_not_installed(kokoro):
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        manager = kokoro.KokoroModelManager(Path(temp_dir_name))
+        assert manager.status()["state"] == "not-installed"
 
 
 def test_data_url_decode(server):
@@ -1641,7 +1656,9 @@ def test_native_autostart_installer(native_host):
 
 def main() -> None:
     server = load_server_module()
+    kokoro = load_kokoro_module()
     native_host = load_native_host_module()
+    test_kokoro_model_starts_not_installed(kokoro)
     test_data_url_decode(server)
     test_health_version_metadata(server)
     test_http_byte_ranges(server)
