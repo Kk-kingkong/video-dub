@@ -1,6 +1,11 @@
 {
   "schemaVersion": 1,
   "runtimeName": "LocalTube Dub private CPython runtime",
+  "modelManifest": {
+    "id": "kokoro-int8-multi-lang-v1_1",
+    "version": "1.1-int8",
+    "archiveSha256": "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6"
+  },
   "platforms": {
     "macos": {
       "architectures": {

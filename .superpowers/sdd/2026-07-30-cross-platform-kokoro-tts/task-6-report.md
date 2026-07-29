@@ -13,8 +13,18 @@
 - Customer installation validates the bundled runtime, atomically copies the
   whole package to Application Support, then registers the existing Native Host
   and LaunchAgent. It does not run pip, Homebrew, curl, or a compiler.
-- The source-development dependency script remains available when no release
-  runtime lock exists and clearly follows the existing development setup path.
+- Customer mode is explicit and fail-closed. Missing or damaged release
+  metadata never falls through to Homebrew, pip, or another network dependency
+  path. Source setup remains available only through
+  `--source-development`/`LOCAL_DUB_SOURCE_DEVELOPMENT=1`.
+- Runtime lock schema 2 now binds platform, architecture, exact Python version,
+  the complete 19-package set, all selected artifact records, the reviewed
+  Kokoro model-manifest identity, and a deterministic installed-tree SHA-256.
+  `release.json` independently pins the lock-file and tree digests.
+- Runtime replacement is a two-phase operation. The previous runtime remains
+  available until Native Host registration and LaunchAgent health verification
+  succeed. A later failure removes the failed service, restores the backup, and
+  re-runs the previous runtime's registration/health path.
 
 ## Pinned Runtime
 
@@ -33,14 +43,17 @@
 
 - `python3 tools/verify_release_packages.py --self-test` passed with synthetic
   archives and wheels, including HTTPS/digest, architecture normalization and
-  unsafe archive checks.
+  unsafe archive checks, deterministic tree hashing, and symlink mutation.
 - `python3 -m py_compile scripts/assemble_engine_runtime.py tools/verify_release_packages.py` passed.
 - `bash -n scripts/build_release_macos.sh scripts/install_engine_deps_macos.sh tools/smoke_release_macos.sh` passed.
 - `git diff --check` passed.
 - Built and smoke-tested the host Apple Silicon package for version `0.1.99`:
   private-runtime imports, installer copy dry run, Native Host/LaunchAgent dry
   registration, isolated Engine start and health request, and uninstall dry run
-  all passed. No Kokoro model was downloaded.
+  all passed. Adversarial cases also passed: a missing lock failed before
+  developer tools, a tampered lock and tampered runtime tree were rejected, and
+  an injected post-move failure after Native Host/LaunchAgent verification
+  restored the previous runtime. No Kokoro model was downloaded.
 
 ## Concern
 

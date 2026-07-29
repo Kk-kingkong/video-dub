@@ -6,11 +6,41 @@ EXTENSION_ID="__EXTENSION_ID__"
 VERSION="__VERSION__"
 RUNTIME_ROOT="${LOCAL_DUB_RUNTIME_DIR:-$HOME/Library/Application Support/LocalTube Dub/engine-runtime}"
 DRY_RUN="${LOCAL_DUB_INSTALL_DRY_RUN:-0}"
+STAGING_ROOT="$RUNTIME_ROOT.staging.$$"
+BACKUP_ROOT="$RUNTIME_ROOT.backup.$$"
+ACTIVATION_STARTED=0
+HAD_PREVIOUS_RUNTIME=0
+
+rollback_runtime() {
+  if [[ "$ACTIVATION_STARTED" != "1" ]]; then
+    rm -rf "$STAGING_ROOT" "$BACKUP_ROOT"
+    return
+  fi
+  echo "正在恢复先前可用的 Engine..."
+  if [[ "$DRY_RUN" != "1" && -x "$RUNTIME_ROOT/companion/uninstall_native_host_macos.sh" ]]; then
+    LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
+      "$RUNTIME_ROOT/companion/uninstall_native_host_macos.sh" \
+      || echo "清理失败版本的后台服务时遇到问题，将继续恢复旧 Engine。"
+  fi
+  rm -rf "$STAGING_ROOT" "$RUNTIME_ROOT"
+  if [[ "$HAD_PREVIOUS_RUNTIME" == "1" && -d "$BACKUP_ROOT" ]]; then
+    mv "$BACKUP_ROOT" "$RUNTIME_ROOT"
+    if [[ "$DRY_RUN" != "1" && -x "$RUNTIME_ROOT/companion/install_native_host_macos.sh" ]]; then
+      LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
+        "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID" \
+        || echo "旧 Engine 已恢复，但自动启动健康检查仍需手动处理。"
+    fi
+  else
+    rm -rf "$BACKUP_ROOT"
+  fi
+}
 
 pause_on_error() {
   local status=$?
   trap - EXIT
   if [[ $status -ne 0 ]]; then
+    set +e
+    rollback_runtime
     echo
     echo "安装失败。请保留上面的错误信息并联系支持。"
     if [[ "$DRY_RUN" != "1" ]]; then
@@ -25,23 +55,28 @@ echo "LocalTube Dub Engine $VERSION"
 echo "将为 Chrome 扩展 $EXTENSION_ID 安装本地字幕、配音和开机自启服务。"
 echo
 
-"$ROOT_DIR/scripts/install_engine_deps_macos.sh"
+LOCAL_DUB_CUSTOMER_RELEASE=1 "$ROOT_DIR/scripts/install_engine_deps_macos.sh"
 
-STAGING_ROOT="$RUNTIME_ROOT.staging.$$"
-BACKUP_ROOT="$RUNTIME_ROOT.backup.$$"
 rm -rf "$STAGING_ROOT" "$BACKUP_ROOT"
 mkdir -p "$(dirname "$RUNTIME_ROOT")"
 ditto "$ROOT_DIR" "$STAGING_ROOT"
 if [[ -d "$RUNTIME_ROOT" ]]; then
   mv "$RUNTIME_ROOT" "$BACKUP_ROOT"
+  HAD_PREVIOUS_RUNTIME=1
 fi
+ACTIVATION_STARTED=1
 mv "$STAGING_ROOT" "$RUNTIME_ROOT"
-rm -rf "$BACKUP_ROOT"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   LOCAL_DUB_NATIVE_INSTALL_DRY_RUN=1 \
   LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
     "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID"
+  if [[ "${LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE:-0}" == "1" ]]; then
+    echo "Injected installer failure after Native Host and LaunchAgent verification."
+    false
+  fi
+  ACTIVATION_STARTED=0
+  rm -rf "$BACKUP_ROOT"
   trap - EXIT
   echo "安装干运行完成。未修改 Chrome、LaunchAgent 或用户目录以外的配置。"
   exit 0
@@ -49,6 +84,12 @@ fi
 
 LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID"
 
+if [[ "${LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE:-0}" == "1" ]]; then
+  echo "Injected installer failure after Native Host and LaunchAgent verification."
+  false
+fi
+ACTIVATION_STARTED=0
+rm -rf "$BACKUP_ROOT"
 trap - EXIT
 echo
 echo "安装完成。私有运行时已复制到：$RUNTIME_ROOT"

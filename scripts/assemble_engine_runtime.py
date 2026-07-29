@@ -28,6 +28,13 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT_DIR / "packaging" / "runtime-manifest.json"
 SUPPORTED_PLATFORMS = {"macos"}
 SUPPORTED_ARCHITECTURES = {"arm64", "x64"}
+RUNTIME_LOCK_SCHEMA_VERSION = 2
+TREE_DIGEST_FORMAT_VERSION = 1
+TREE_DIGEST_EXCLUSIONS = [
+    "runtime-lock.json",
+    "**/__pycache__/**",
+    "**/*.pyc",
+]
 ArtifactFetcher = Callable[[Mapping[str, Any]], bytes]
 
 
@@ -74,6 +81,16 @@ def load_runtime_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
         raise RuntimeAssemblyError(f"cannot read runtime manifest: {path}") from error
     if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1:
         raise RuntimeAssemblyError("runtime manifest schemaVersion must be 1")
+    if set(manifest) != {"schemaVersion", "runtimeName", "modelManifest", "platforms", "packages"}:
+        raise RuntimeAssemblyError("runtime manifest has unsupported or missing top-level keys")
+    model_manifest = manifest.get("modelManifest")
+    if not isinstance(model_manifest, dict) or set(model_manifest) != {"id", "version", "archiveSha256"}:
+        raise RuntimeAssemblyError("runtime manifest must identify the reviewed Kokoro model manifest")
+    if not str(model_manifest.get("id") or "") or not str(model_manifest.get("version") or ""):
+        raise RuntimeAssemblyError("runtime model manifest identity is incomplete")
+    model_digest = str(model_manifest.get("archiveSha256") or "").lower()
+    if len(model_digest) != 64 or any(character not in "0123456789abcdef" for character in model_digest):
+        raise RuntimeAssemblyError("runtime model manifest identity has an invalid SHA-256")
     platforms = manifest.get("platforms")
     if not isinstance(platforms, dict) or set(platforms) != SUPPORTED_PLATFORMS:
         raise RuntimeAssemblyError("runtime manifest must support exactly the macos platform")
@@ -308,29 +325,248 @@ def _remove_runtime_caches(runtime_dir: Path) -> None:
         bytecode.unlink(missing_ok=True)
 
 
+def _tree_entry_is_excluded(relative_path: PurePosixPath) -> bool:
+    if relative_path == PurePosixPath("runtime-lock.json"):
+        return True
+    if "__pycache__" in relative_path.parts:
+        return True
+    return relative_path.suffix == ".pyc"
+
+
+def runtime_tree_sha256(runtime_dir: Path) -> str:
+    runtime_dir = runtime_dir.expanduser().resolve()
+    if not runtime_dir.is_dir():
+        raise RuntimeAssemblyError(f"private runtime directory is missing: {runtime_dir}")
+    digest = hashlib.sha256()
+    entries = sorted(runtime_dir.rglob("*"), key=lambda item: item.relative_to(runtime_dir).as_posix())
+    for entry in entries:
+        relative = PurePosixPath(entry.relative_to(runtime_dir).as_posix())
+        if _tree_entry_is_excluded(relative):
+            continue
+        encoded_path = relative.as_posix().encode("utf-8")
+        if entry.is_symlink():
+            target = os.readlink(entry).encode("utf-8")
+            digest.update(b"L\0" + encoded_path + b"\0" + target + b"\0")
+            continue
+        if entry.is_dir():
+            continue
+        if not entry.is_file():
+            raise RuntimeAssemblyError(f"unsupported runtime tree entry: {relative}")
+        size = entry.stat().st_size
+        digest.update(b"F\0" + encoded_path + b"\0" + str(size).encode("ascii") + b"\0")
+        with entry.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _selected_artifacts(
+    manifest: Mapping[str, Any],
+    platform: str,
+    architecture: str,
+) -> list[Mapping[str, Any]]:
+    target = manifest["platforms"][platform]["architectures"][architecture]
+    artifacts: list[Mapping[str, Any]] = [target["python"]]
+    artifacts.extend(_artifact_for_architecture(package, architecture) for package in manifest["packages"])
+    artifacts.extend(target["executables"])
+    return artifacts
+
+
+def _artifact_contract(artifacts: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": item["name"],
+            "url": item["url"],
+            "bytes": item["bytes"],
+            "sha256": item["sha256"],
+        }
+        for item in artifacts
+    ]
+
+
+def _package_contract(manifest: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [
+        {"id": str(item["id"]), "version": str(item["version"])}
+        for item in manifest["packages"]
+    ]
+
+
 def _write_runtime_lock(runtime_dir: Path, manifest: Mapping[str, Any], platform: str, architecture: str, artifacts: list[Mapping[str, Any]]) -> None:
     lock = {
-        "schemaVersion": 1,
+        "schemaVersion": RUNTIME_LOCK_SCHEMA_VERSION,
         "bundledRuntime": True,
         "platform": platform,
         "architecture": architecture,
         "pythonExecutable": "bin/python",
         "pythonVersion": manifest["platforms"][platform]["architectures"][architecture]["pythonVersion"],
-        "artifacts": [
-            {
-                "name": item["name"],
-                "url": item["url"],
-                "bytes": item["bytes"],
-                "sha256": item["sha256"],
-            }
-            for item in artifacts
-        ],
-        "packages": [
-            {"id": item["id"], "version": item["version"]}
-            for item in manifest["packages"]
-        ],
+        "artifacts": _artifact_contract(artifacts),
+        "packages": _package_contract(manifest),
+        "modelManifest": dict(manifest["modelManifest"]),
+        "installedTree": {
+            "algorithm": "sha256",
+            "formatVersion": TREE_DIGEST_FORMAT_VERSION,
+            "digest": runtime_tree_sha256(runtime_dir),
+            "excluded": TREE_DIGEST_EXCLUSIONS,
+        },
     }
     (runtime_dir / "runtime-lock.json").write_text(json.dumps(lock, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _load_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeAssemblyError(f"{label} is missing or invalid: {path}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeAssemblyError(f"{label} must be a JSON object")
+    return payload
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError as error:
+        raise RuntimeAssemblyError(f"cannot read integrity file: {path}") from error
+    return digest.hexdigest()
+
+
+def _validate_contract_list(value: Any, required_keys: set[str], label: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise RuntimeAssemblyError(f"{label} must be a non-empty list")
+    records: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != required_keys:
+            raise RuntimeAssemblyError(f"{label} contains an invalid record")
+        records.append(item)
+    return records
+
+
+def verify_runtime_contract(
+    runtime_dir: Path,
+    release_metadata: Mapping[str, Any],
+    expected_platform: str,
+    expected_architecture: str,
+) -> dict[str, Any]:
+    expected_architecture = normalize_architecture(expected_architecture)
+    if expected_platform not in SUPPORTED_PLATFORMS:
+        raise RuntimeAssemblyError(f"unsupported platform: {expected_platform}")
+    if (
+        release_metadata.get("bundledRuntime") is not True
+        or release_metadata.get("platform") != expected_platform
+        or release_metadata.get("architecture") != expected_architecture
+        or release_metadata.get("runtimeLock") != ".venv/runtime-lock.json"
+    ):
+        raise RuntimeAssemblyError("release metadata does not match this bundled runtime")
+    contract = release_metadata.get("runtimeContract")
+    required_contract_keys = {
+        "schemaVersion",
+        "lockSha256",
+        "treeSha256",
+        "pythonVersion",
+        "packages",
+        "artifacts",
+        "modelManifest",
+    }
+    if not isinstance(contract, dict) or set(contract) != required_contract_keys or contract.get("schemaVersion") != 1:
+        raise RuntimeAssemblyError("release metadata has an invalid runtime contract")
+
+    runtime_dir = runtime_dir.expanduser().resolve()
+    lock_path = runtime_dir / "runtime-lock.json"
+    if _sha256_file(lock_path) != str(contract.get("lockSha256") or ""):
+        raise RuntimeAssemblyError("runtime lock integrity verification failed")
+    lock = _load_json_object(lock_path, "runtime lock")
+    required_lock_keys = {
+        "schemaVersion",
+        "bundledRuntime",
+        "platform",
+        "architecture",
+        "pythonExecutable",
+        "pythonVersion",
+        "artifacts",
+        "packages",
+        "modelManifest",
+        "installedTree",
+    }
+    if set(lock) != required_lock_keys or lock.get("schemaVersion") != RUNTIME_LOCK_SCHEMA_VERSION:
+        raise RuntimeAssemblyError("runtime lock schema is invalid")
+    if (
+        lock.get("bundledRuntime") is not True
+        or lock.get("platform") != expected_platform
+        or lock.get("architecture") != expected_architecture
+        or lock.get("pythonExecutable") != "bin/python"
+        or lock.get("pythonVersion") != contract.get("pythonVersion")
+    ):
+        raise RuntimeAssemblyError("runtime lock platform, architecture, or Python version is invalid")
+
+    packages = _validate_contract_list(lock.get("packages"), {"id", "version"}, "runtime packages")
+    artifacts = _validate_contract_list(lock.get("artifacts"), {"name", "url", "bytes", "sha256"}, "runtime artifacts")
+    if packages != contract.get("packages") or artifacts != contract.get("artifacts"):
+        raise RuntimeAssemblyError("runtime lock does not match the pinned package and artifact contract")
+    package_ids = [str(item["id"]) for item in packages]
+    if len(package_ids) != len(set(package_ids)):
+        raise RuntimeAssemblyError("runtime package contract contains duplicate package identifiers")
+    if lock.get("modelManifest") != contract.get("modelManifest"):
+        raise RuntimeAssemblyError("runtime lock does not match the reviewed model manifest identity")
+
+    installed_tree = lock.get("installedTree")
+    if (
+        not isinstance(installed_tree, dict)
+        or set(installed_tree) != {"algorithm", "formatVersion", "digest", "excluded"}
+        or installed_tree.get("algorithm") != "sha256"
+        or installed_tree.get("formatVersion") != TREE_DIGEST_FORMAT_VERSION
+        or installed_tree.get("excluded") != TREE_DIGEST_EXCLUSIONS
+        or installed_tree.get("digest") != contract.get("treeSha256")
+    ):
+        raise RuntimeAssemblyError("runtime lock has an invalid installed-tree contract")
+    actual_tree_digest = runtime_tree_sha256(runtime_dir)
+    if actual_tree_digest != installed_tree["digest"]:
+        raise RuntimeAssemblyError("installed runtime tree integrity verification failed")
+
+    python_bin = _runtime_python(runtime_dir)
+    ffmpeg_bin = runtime_dir / "bin" / "ffmpeg"
+    if not ffmpeg_bin.is_file() or not os.access(ffmpeg_bin, os.X_OK):
+        raise RuntimeAssemblyError("private runtime is missing bin/ffmpeg")
+    probe = subprocess.run(
+        [
+            str(python_bin),
+            "-I",
+            "-c",
+            (
+                "import importlib.metadata,json,platform,sys;"
+                "expected=json.loads(sys.argv[1]);"
+                "arch={'aarch64':'arm64','arm64':'arm64','amd64':'x64','x86_64':'x64'}.get(platform.machine().lower());"
+                "actual={item['id']:importlib.metadata.version(item['id']) for item in expected['packages']};"
+                "raise SystemExit(0 if platform.python_version()==expected['pythonVersion'] "
+                "and arch==expected['architecture'] "
+                "and actual=={item['id']:item['version'] for item in expected['packages']} else 1)"
+            ),
+            json.dumps(
+                {
+                    "pythonVersion": lock["pythonVersion"],
+                    "architecture": expected_architecture,
+                    "packages": packages,
+                },
+                separators=(",", ":"),
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout or "version mismatch").strip()
+        raise RuntimeAssemblyError(f"installed Python package verification failed: {detail}")
+    return lock
 
 
 def assemble_runtime(
@@ -349,9 +585,7 @@ def assemble_runtime(
     if architecture not in SUPPORTED_ARCHITECTURES:
         raise RuntimeAssemblyError(f"unsupported architecture: {architecture}")
     target = manifest["platforms"][platform]["architectures"][architecture]
-    artifact_records: list[Mapping[str, Any]] = [target["python"]]
-    artifact_records.extend(_artifact_for_architecture(package, architecture) for package in manifest["packages"])
-    artifact_records.extend(target["executables"])
+    artifact_records = _selected_artifacts(manifest, platform, architecture)
     fetched = [fetch_artifact(artifact, cache_dir, fetcher, testing=testing) for artifact in artifact_records]
     python_archive = fetched[0]
     wheel_paths = fetched[1 : 1 + len(manifest["packages"])]
@@ -407,6 +641,11 @@ def run_self_test(output: Path) -> None:
         root = Path(temporary)
         python_tree = root / "python"
         (python_tree / "bin").mkdir(parents=True)
+        (python_tree / "lib").mkdir()
+        (python_tree / "lib" / "marker.txt").write_text("runtime-library\n", encoding="utf-8")
+        (python_tree / "other-lib").mkdir()
+        (python_tree / "other-lib" / "marker.txt").write_text("other-library\n", encoding="utf-8")
+        (python_tree / "current-lib").symlink_to("lib", target_is_directory=True)
         python_binary = python_tree / "bin" / "python"
         python_binary.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
         python_binary.chmod(0o755)
@@ -422,6 +661,12 @@ def run_self_test(output: Path) -> None:
         fixture_bytes = {item["name"]: data for item, data in ((python_artifact, archive_payload), (wheel_artifact, wheel_payload), (binary_artifact, ffmpeg_payload))}
         manifest = {
             "schemaVersion": 1,
+            "runtimeName": "Synthetic private runtime",
+            "modelManifest": {
+                "id": "synthetic-kokoro",
+                "version": "test",
+                "archiveSha256": "1" * 64,
+            },
             "platforms": {
                 "macos": {
                     "architectures": {
@@ -450,8 +695,33 @@ def run_self_test(output: Path) -> None:
             testing=True,
         )
         lock = json.loads((result / "runtime-lock.json").read_text(encoding="utf-8"))
+        if lock.get("schemaVersion") != 2:
+            raise RuntimeAssemblyError("self-test runtime lock schema is not integrity-enforcing")
         if lock.get("architecture") != "arm64" or lock.get("pythonExecutable") != "bin/python":
             raise RuntimeAssemblyError("self-test runtime lock is invalid")
+        if lock.get("packages") != [{"id": "example", "version": "1.0"}]:
+            raise RuntimeAssemblyError("self-test runtime lock does not contain the complete package contract")
+        if lock.get("modelManifest") != manifest["modelManifest"]:
+            raise RuntimeAssemblyError("self-test runtime lock does not identify the Kokoro model manifest")
+        installed_tree = lock.get("installedTree")
+        if (
+            not isinstance(installed_tree, dict)
+            or installed_tree.get("algorithm") != "sha256"
+            or len(str(installed_tree.get("digest") or "")) != 64
+        ):
+            raise RuntimeAssemblyError("self-test runtime lock is missing the installed-tree digest")
+        if runtime_tree_sha256(result) != installed_tree["digest"]:
+            raise RuntimeAssemblyError("self-test installed-tree digest does not reproduce")
+        current_library = result / "current-lib"
+        current_library.unlink()
+        current_library.symlink_to("other-lib", target_is_directory=True)
+        if runtime_tree_sha256(result) == installed_tree["digest"]:
+            raise RuntimeAssemblyError("self-test installed-tree digest ignored a directory symlink")
+        current_library.unlink()
+        current_library.symlink_to("lib", target_is_directory=True)
+        (result / "bin" / "ffmpeg").write_bytes(ffmpeg_payload + b"tampered")
+        if runtime_tree_sha256(result) == installed_tree["digest"]:
+            raise RuntimeAssemblyError("self-test installed-tree digest did not detect tampering")
         if not (result / "bin" / "python").is_file() or not (result / "bin" / "ffmpeg").is_file():
             raise RuntimeAssemblyError("self-test runtime is incomplete")
         unsafe_archive = root / "unsafe.tar.gz"
@@ -478,15 +748,22 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Assemble a pinned LocalTube Dub private runtime")
     parser.add_argument("--platform", choices=sorted(SUPPORTED_PLATFORMS))
     parser.add_argument("--arch")
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--verify-runtime", type=Path)
+    parser.add_argument("--release-metadata", type=Path)
     parser.add_argument("--cache", type=Path, default=Path.home() / ".cache" / "localtube-dub" / "runtime")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        if args.platform is not None or args.arch is not None:
-            parser.error("--self-test does not accept --platform or --arch")
-    elif args.platform is None or args.arch is None:
-        parser.error("--platform and --arch are required")
+        if args.output is None:
+            parser.error("--self-test requires --output")
+        if args.platform is not None or args.arch is not None or args.verify_runtime is not None or args.release_metadata is not None:
+            parser.error("--self-test accepts only --output")
+    elif args.verify_runtime is not None:
+        if args.output is not None or args.platform is None or args.arch is None or args.release_metadata is None:
+            parser.error("--verify-runtime requires --platform, --arch, and --release-metadata")
+    elif args.output is None or args.platform is None or args.arch is None or args.release_metadata is not None:
+        parser.error("assembly requires --output, --platform, and --arch")
     return args
 
 
@@ -496,6 +773,21 @@ def main() -> None:
         if args.self_test:
             run_self_test(args.output)
             print(json.dumps({"ok": True, "selfTest": "runtime-assembly"}))
+            return
+        if args.verify_runtime is not None:
+            release = _load_json_object(args.release_metadata, "release metadata")
+            lock = verify_runtime_contract(args.verify_runtime, release, args.platform, args.arch)
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "platform": lock["platform"],
+                        "architecture": lock["architecture"],
+                        "pythonVersion": lock["pythonVersion"],
+                        "packages": len(lock["packages"]),
+                    }
+                )
+            )
             return
         manifest = load_runtime_manifest()
         output = assemble_runtime(manifest, args.platform, args.arch, args.output, args.cache)

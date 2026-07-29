@@ -85,6 +85,7 @@ install -m 0644 "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$ENGINE_STAGE/THIRD_PARTY_NO
 install -m 0644 "$ROOT_DIR/server/local_dub_server.py" "$ENGINE_STAGE/server/local_dub_server.py"
 install -m 0644 "$ROOT_DIR/server/kokoro_tts.py" "$ENGINE_STAGE/server/kokoro_tts.py"
 for script in \
+  assemble_engine_runtime.py \
   start_engine_macos.sh \
   install_engine_deps_macos.sh \
   install_engine_autostart_macos.sh \
@@ -120,21 +121,35 @@ render_template "$ROOT_DIR/packaging/macos/Uninstall LocalTube Dub Engine.comman
 render_template "$ROOT_DIR/packaging/macos/README.md.in" "$ENGINE_STAGE/README.md"
 chmod 0755 "$ENGINE_STAGE"/*.command
 
-python3 - "$ENGINE_STAGE/release.json" "$VERSION" "$EXTENSION_ID" "$PACKAGE_ARCH" <<'PY'
+python3 - "$ENGINE_STAGE/release.json" "$ENGINE_STAGE/.venv/runtime-lock.json" "$VERSION" "$EXTENSION_ID" "$PACKAGE_ARCH" <<'PY'
+import hashlib
 import json
 import sys
 from pathlib import Path
 
 target = Path(sys.argv[1])
+lock_path = Path(sys.argv[2])
+lock_bytes = lock_path.read_bytes()
+lock = json.loads(lock_bytes)
+runtime_contract = {
+    "schemaVersion": 1,
+    "lockSha256": hashlib.sha256(lock_bytes).hexdigest(),
+    "treeSha256": lock["installedTree"]["digest"],
+    "pythonVersion": lock["pythonVersion"],
+    "packages": lock["packages"],
+    "artifacts": lock["artifacts"],
+    "modelManifest": lock["modelManifest"],
+}
 payload = {
     "product": "LocalTube Dub Engine",
-    "version": sys.argv[2],
+    "version": sys.argv[3],
     "protocolVersion": 2,
-    "chromeExtensionId": sys.argv[3],
+    "chromeExtensionId": sys.argv[4],
     "platform": "macos",
-    "architecture": sys.argv[4],
+    "architecture": sys.argv[5],
     "bundledRuntime": True,
     "runtimeLock": ".venv/runtime-lock.json",
+    "runtimeContract": runtime_contract,
     "channel": "private-beta",
     "signed": False,
     "notarized": False,
@@ -144,7 +159,7 @@ PY
 
 (
   cd "$BUILD_ROOT"
-  zip -X -q -r "$ENGINE_ZIP" "$ENGINE_NAME"
+  zip -X -y -q -r "$ENGINE_ZIP" "$ENGINE_NAME"
 )
 
 python3 "$ROOT_DIR/tools/verify_release_packages.py" "$EXTENSION_ZIP" "$ENGINE_ZIP" "$EXTENSION_ID" "$VERSION"
