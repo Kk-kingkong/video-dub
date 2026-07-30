@@ -2,48 +2,56 @@
 
 ## Scope
 
-Implemented a Windows 10/11 x64, current-user Engine package without changing
-Task 5 UI files, release versions, changelog, or public documentation.
+Implemented and reviewed the Windows 10/11 x64 per-user Engine package without
+changing Task 8 CI/docs/extension files. The package remains bound to Store ID
+`ikoenamldegccnhmjjnlkffocdkbbbmo`, uses pinned offline runtime artifacts,
+fails closed on runtime-integrity errors, and does not bundle a Kokoro model.
+
+## Review Fixes
+
+- Added one shared `manage-engine.ps1` lifecycle for installer, Scheduled Task,
+  uninstaller, and Native Host launches.
+- Uses quoted `.NET ProcessStartInfo` startup and quoted Scheduled Task
+  arguments for paths containing spaces and Chinese characters.
+- Replaced trusted PID termination with an atomic JSON instance record plus
+  exact executable path, quoted server command, and loopback-listener ownership
+  verification. Stale/reused PIDs are ignored; listener discovery recovers
+  installer, Task Scheduler, and Native Host launches.
+- Serializes concurrent lifecycle operations with a per-port Windows mutex.
+- Engine health now exposes version, protocol, platform, architecture,
+  `instanceId`, and `runtimeRoot`. Install/start accepts only version `0.2.0`,
+  protocol `2`, Windows x64, the expected runtime, the newly launched instance,
+  a live process, and that process's listener.
+- Replaced the dry-run Windows smoke with a real temporary-LocalAppData flow:
+  HKCU registration, limited per-user Scheduled Task, installer launch, stale
+  PID recovery, Scheduled Task launch, compiled Native Messaging launch,
+  repair, post-activation rollback, fail-closed preflight, uninstall, and
+  guaranteed verified cleanup.
 
 ## TDD Evidence
 
-1. Added `tools/verify_windows_package.py` before Windows implementation.
-2. Confirmed RED: `runtime manifest is missing Windows`.
-3. Added pinned Windows runtime metadata and confirmed the next RED:
-   `runtime manifest must support exactly the macos platform`.
-4. Added Windows runtime assembly and confirmed the next RED:
-   missing `packaging/windows/Install LocalTube Dub Engine.cmd.in`.
-5. Added packaging/install sources and completed GREEN:
+1. Strengthened `tools/verify_windows_package.py` first.
+2. Confirmed RED:
+   `Native Host does not use the shared Windows Engine lifecycle manager`.
+3. Implemented shared lifecycle and exact identity checks; confirmed the next
+   RED:
+   `Windows install smoke does not exercise Get-ScheduledTask`.
+4. Replaced the dry-run smoke with real per-user assertions.
+5. Added concurrent lifecycle verification; confirmed RED:
+   `lifecycle manager does not serialize concurrent Task/installer/Native Host operations`.
+6. Added the named mutex and reached GREEN:
    `Windows package source verification ok`.
 
-## Implementation
+## Final Local Verification
 
-- Pins CPython 3.11.15, ffmpeg, and every Windows x64 native wheel with exact
-  HTTPS URL, byte size, and SHA-256.
-- Extends the existing runtime lock and installed-tree integrity contract to
-  `windows/x64`, `python.exe`, and `ffmpeg.exe`.
-- Builds `LocalTube-Dub-Engine-v0.2.0-Windows-x64.zip` on Windows.
-- Compiles a small in-repository C# Native Messaging launcher during the
-  Windows release build.
-- Installs per user under
-  `%LOCALAPPDATA%\LocalTube Dub\engine-runtime`.
-- Registers `com.localtube.dub.engine` under HKCU for Store extension
-  `ikoenamldegccnhmjjnlkffocdkbbbmo`.
-- Creates a limited, current-user startup task and verifies `/api/health`.
-- Supports install, repair, rollback, uninstall, and isolated dry-run paths
-  containing spaces and Chinese characters.
-- Uses binary stdin/stdout framing on Windows Native Messaging.
-- Keeps the Kokoro model out of the Engine package.
-- Fails closed before activation when the bundled runtime lock, package
-  versions, artifacts, or installed-tree digest do not match.
-
-## Local Verification
-
-Passed on macOS:
+Passed on macOS without package downloads:
 
 ```text
 python3 tools/verify_windows_package.py --source
 Windows package source verification ok
+
+python3 -m py_compile companion/native_host.py server/local_dub_server.py \
+  scripts/build_release_windows.py tools/verify_windows_package.py
 
 python3 scripts/assemble_engine_runtime.py --self-test --output <temporary>
 {"ok": true, "selfTest": "runtime-assembly"}
@@ -52,23 +60,22 @@ python3 tools/verify_release_packages.py --self-test
 {"ok": true, "selfTest": "runtime-package"}
 
 python3 tools/verify_native_messaging.py
-{"ok": true, "transport": "native", "protocolVersion": 2, ...}
+{"ok": true, "transport": "native", "engineVersion": "0.2.0", ...}
 ```
 
-Python compilation, `scripts/build_release_windows.py --help`, and
-`git diff --check` also passed.
+Template rendering with all placeholders removed and `git diff --check` also
+passed.
 
-## Windows CI Follow-Up
+## Windows Re-Review Gate
 
-The full package was intentionally not downloaded or built on macOS. Windows
-CI must run:
+The real install smoke cannot execute on macOS because it requires Windows
+HKCU, Scheduled Tasks, the bundled Windows runtime, and the compiled `.exe`
+launcher. Re-review on Windows x64 must run:
 
 ```text
 py scripts\build_release_windows.py
 py tools\verify_windows_package.py --install-smoke
 ```
 
-That smoke test executes the rendered PowerShell install and repair flows in a
-temporary LocalAppData path with spaces and Chinese characters, starts the
-packaged Engine, checks `/api/health`, verifies fail-closed behavior, and runs
-the uninstaller.
+The smoke uses unique HKCU Native Host and Scheduled Task fixtures under a
+temporary LocalAppData tree and removes them in a `finally` cleanup path.

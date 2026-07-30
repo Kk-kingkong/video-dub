@@ -70,6 +70,9 @@ HOST = os.environ.get("LOCAL_DUB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LOCAL_DUB_PORT", "8787"))
 ENGINE_PROTOCOL_VERSION = 2
 ENGINE_ROOT = Path(__file__).resolve().parents[1]
+ENGINE_INSTANCE_ID = os.environ.get("LOCAL_DUB_ENGINE_INSTANCE_ID", "").strip()
+ENGINE_RUNTIME_ROOT = os.environ.get("LOCAL_DUB_ENGINE_RUNTIME_ROOT", "").strip()
+ENGINE_VERSION_OVERRIDE = os.environ.get("LOCAL_DUB_ENGINE_VERSION", "").strip()
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
 WHISPER_MODEL = os.environ.get("LOCAL_DUB_WHISPER_MODEL", "base")
@@ -677,6 +680,8 @@ def build_health_payload(transport: str) -> dict[str, Any]:
         "model": OLLAMA_MODEL,
         "platform": normalized_platform(),
         "architecture": normalized_architecture(),
+        "instanceId": ENGINE_INSTANCE_ID,
+        "runtimeRoot": ENGINE_RUNTIME_ROOT or str(ENGINE_ROOT.resolve()),
         "kokoroRuntime": runtime,
         "kokoroModel": str(model.get("state") or "not-installed"),
         "kokoroModelVersion": str(model.get("version") or ""),
@@ -689,6 +694,8 @@ def build_health_payload(transport: str) -> dict[str, Any]:
 
 @functools.lru_cache(maxsize=1)
 def get_engine_version() -> str:
+    if ENGINE_VERSION_OVERRIDE:
+        return ENGINE_VERSION_OVERRIDE
     candidates = [ENGINE_ROOT / "release.json", ENGINE_ROOT / "extension" / "manifest.json"]
     for path in candidates:
         if not path.is_file():

@@ -56,6 +56,19 @@ def default_engine_pid_path() -> Path:
 ENGINE_PID_PATH = default_engine_pid_path()
 
 
+def windows_engine_state_path() -> Path:
+    override = os.environ.get("LOCAL_DUB_STATE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser() / "engine-state.json"
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    product_root = (
+        Path(local_app_data).expanduser()
+        if local_app_data
+        else Path.home() / "AppData" / "Local"
+    ) / "LocalTube Dub"
+    return product_root / "state" / "engine-state.json"
+
+
 def configured_engine_endpoint() -> tuple[str, int]:
     configured_port = int(os.environ.get("LOCAL_DUB_PORT", str(DEFAULT_ENGINE_PORT)))
     raw_base_url = os.environ.get("LOCAL_DUB_ENGINE_BASE_URL", "").strip()
@@ -315,6 +328,8 @@ def restart_http_engine() -> dict[str, Any]:
 def launch_http_engine() -> dict[str, Any]:
     if http_engine_running():
         return {"ok": True, "transport": "native", "alreadyRunning": True}
+    if os.name == "nt":
+        return run_windows_engine_manager("Start")
     output = open(ENGINE_LOG_PATH, "ab", buffering=0)
     command = [sys.executable or "python3", str(SERVER_DIR / "local_dub_server.py")]
     env = os.environ.copy()
@@ -332,12 +347,7 @@ def launch_http_engine() -> dict[str, Any]:
         "stderr": output,
         "env": env,
     }
-    if os.name == "nt":
-        popen_options["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-        )
-    else:
-        popen_options["start_new_session"] = True
+    popen_options["start_new_session"] = True
     try:
         process = subprocess.Popen(command, **popen_options)
         ENGINE_PID_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -531,58 +541,139 @@ def stop_http_engine(force: bool = False) -> dict[str, Any]:
 def stop_windows_http_engine(force: bool = False) -> dict[str, Any]:
     if not force and http_engine_running():
         return {"ok": True}
+    return run_windows_engine_manager("Stop")
+
+
+def load_expected_engine_identity() -> dict[str, Any] | None:
+    release_path = PROJECT_ROOT / "release.json"
     try:
-        pids = [int(ENGINE_PID_PATH.read_text(encoding="ascii").strip())]
-    except (OSError, ValueError):
-        pids = windows_engine_listener_pids()
-    stopped = False
-    for pid in pids:
+        release = json.loads(release_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(release, dict):
+        return None
+    identity: dict[str, Any] = {
+        "service": "localtube-dub",
+        "engineVersion": str(release.get("version") or ""),
+        "protocolVersion": int(release.get("protocolVersion") or 0),
+        "platform": str(release.get("platform") or ""),
+        "architecture": str(release.get("architecture") or ""),
+        "runtimeRoot": str(PROJECT_ROOT.resolve()),
+        "instanceId": "",
+    }
+    if os.name == "nt":
         try:
-            completed = subprocess.run(
-                ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except Exception as error:
-            return {"ok": False, "error": f"Engine 停止失败：{error}"}
-        if completed.returncode not in (0, 128):
-            detail = (completed.stderr or completed.stdout or "taskkill failed").strip()
-            return {"ok": False, "error": f"Engine 停止失败：{detail}"}
-        stopped = stopped or completed.returncode == 0
-    ENGINE_PID_PATH.unlink(missing_ok=True)
-    return {"ok": True, "stopped": stopped}
+            state = json.loads(windows_engine_state_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        if isinstance(state, dict):
+            identity["instanceId"] = str(state.get("instanceId") or "")
+    if (
+        not identity["engineVersion"]
+        or identity["protocolVersion"] <= 0
+        or not identity["platform"]
+        or not identity["architecture"]
+    ):
+        return None
+    return identity
 
 
-def windows_engine_listener_pids() -> list[int]:
-    script = (
-        f"$items=Get-NetTCPConnection -LocalPort {ENGINE_PORT} -State Listen "
-        "-ErrorAction SilentlyContinue;"
-        "foreach($item in $items){"
-        "$process=Get-CimInstance Win32_Process "
-        "-Filter (\"ProcessId=\" + $item.OwningProcess) -ErrorAction SilentlyContinue;"
-        "if($process -and $process.CommandLine -like '*local_dub_server.py*'){"
-        "Write-Output $process.ProcessId"
-        "}}"
-    )
+def normalized_identity_path(value: Any) -> str:
+    try:
+        return os.path.normcase(str(Path(str(value)).resolve()))
+    except (OSError, ValueError):
+        return ""
+
+
+def health_matches_expected_engine(
+    payload: Any,
+    identity: dict[str, Any] | None = None,
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    expected = identity or load_expected_engine_identity()
+    if not expected:
+        return False
+    for key in (
+        "service",
+        "engineVersion",
+        "protocolVersion",
+        "platform",
+        "architecture",
+    ):
+        if payload.get(key) != expected.get(key):
+            return False
+    if normalized_identity_path(payload.get("runtimeRoot")) != normalized_identity_path(
+        expected.get("runtimeRoot")
+    ):
+        return False
+    expected_instance = str(expected.get("instanceId") or "")
+    return bool(expected_instance) and payload.get("instanceId") == expected_instance
+
+
+def parse_manager_payload(output: str) -> dict[str, Any] | None:
+    for line in reversed(output.splitlines()):
+        try:
+            payload = json.loads(line.strip())
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def run_windows_engine_manager(action: str) -> dict[str, Any]:
+    manager_path = PROJECT_ROOT / "manage-engine.ps1"
+    identity = load_expected_engine_identity()
+    if not manager_path.is_file() or not identity:
+        return {
+            "ok": False,
+            "error": "Windows Engine 生命周期组件不完整，请重新安装 Engine。",
+        }
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(manager_path),
+        "-Action",
+        action,
+        "-ExpectedVersion",
+        str(identity["engineVersion"]),
+        "-ExpectedRuntimeRoot",
+        str(PROJECT_ROOT),
+        "-StateRootOverride",
+        str(windows_engine_state_path().parent),
+        "-LocalAppDataOverride",
+        os.environ.get("LOCALAPPDATA", ""),
+        "-Port",
+        str(ENGINE_PORT),
+        "-Json",
+    ]
     try:
         completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", script],
+            command,
+            cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=max(15.0, ENGINE_START_WAIT_SECONDS + 10.0),
         )
-    except Exception:
-        return []
+    except Exception as error:
+        return {"ok": False, "error": f"Windows Engine 生命周期操作失败：{error}"}
+    payload = parse_manager_payload(completed.stdout or "")
     if completed.returncode != 0:
-        return []
-    pids: list[int] = []
-    for line in completed.stdout.splitlines():
-        try:
-            pids.append(int(line.strip()))
-        except ValueError:
-            continue
-    return pids
+        detail = (
+            (payload or {}).get("error")
+            or completed.stderr.strip()
+            or completed.stdout.strip()
+            or f"PowerShell exited with {completed.returncode}"
+        )
+        return {"ok": False, "error": f"Windows Engine 生命周期操作失败：{detail}"}
+    if not payload or payload.get("ok") is not True:
+        return {"ok": False, "error": "Windows Engine 生命周期组件返回了无效响应。"}
+    return {"transport": "native", **payload}
 
 
 def wait_for_port_release() -> None:
@@ -619,7 +710,11 @@ def http_engine_running() -> bool:
     try:
         with urllib.request.urlopen(f"{ENGINE_BASE_URL}/api/health", timeout=0.8) as response:
             payload = json.loads(response.read().decode("utf-8"))
-            return response.status == 200 and int(payload.get("protocolVersion") or 0) >= ENGINE_PROTOCOL_VERSION
+            if response.status != 200:
+                return False
+            if os.name == "nt":
+                return health_matches_expected_engine(payload)
+            return int(payload.get("protocolVersion") or 0) >= ENGINE_PROTOCOL_VERSION
     except Exception:
         return False
 

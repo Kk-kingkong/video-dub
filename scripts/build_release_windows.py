@@ -42,7 +42,8 @@ def render_template(source: Path, destination: Path) -> None:
     if "__EXTENSION_ID__" in text or "__VERSION__" in text:
         raise WindowsBuildError(f"unrendered placeholder in {source}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(text, encoding="utf-8-sig", newline="\r\n")
+    with destination.open("w", encoding="utf-8-sig", newline="\r\n") as output:
+        output.write(text)
 
 
 def find_csharp_compiler() -> Path:
@@ -157,6 +158,10 @@ def build(output_dir: Path, cache_dir: Path) -> Path:
         render_template(
             ROOT_DIR / "packaging" / "windows" / "install-engine.ps1.in",
             stage / "install-engine.ps1",
+        )
+        render_template(
+            ROOT_DIR / "packaging" / "windows" / "manage-engine.ps1.in",
+            stage / "manage-engine.ps1",
         )
         render_template(
             ROOT_DIR / "packaging" / "windows" / "uninstall-engine.ps1.in",
