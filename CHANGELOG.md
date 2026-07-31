@@ -1,5 +1,11 @@
 # LocalTube Dub Changelog
 
+## 0.2.1 - 2026-07-31
+
+- Added automatic temporary lightweight mode when the companion Engine is unavailable.
+- Lightweight mode uses readable YouTube page captions, Chrome on-device translation, and browser system speech without changing saved settings.
+- Added a clear customer notice and one-click full-mode retry while keeping YouTube rate limits, no-caption results, and Provider errors outside the Engine-failure fallback.
+
 ## 0.2.0 - 2026-07-30
 
 - Added optional Kokoro high-quality local speech for Chinese and English. Model installation is an explicit user action, the fixed archive is verified before activation, and synthesis stays on the same computer.

@@ -1,7 +1,15 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-07-30
-Current reviewed version: 0.2.0
+Last reviewed: 2026-07-31
+Current reviewed version: 0.2.1
+
+## 0.2.1 Verification Evidence
+
+- Full Engine-backed playback remains the default for every new operation. Only an unavailable companion Engine can temporarily activate lightweight mode; the existing saved Provider and Microsoft voice settings are left unchanged.
+- Lightweight mode reads captions from the active YouTube page, uses Chrome on-device translation, and speaks through browser `speechSynthesis`. It does not call Engine TTS.
+- YouTube rate limits, no-caption and restricted-video results, empty tracks, and Provider authentication failures remain outside the Engine-failure fallback. Customer fallback copy excludes raw Native Messaging, HTTP, port, process, and stack-trace details.
+- The customer notice provides a one-click `重试完整模式` path after the Engine returns, and deterministic extension-flow checks lock the activation, recovery, and non-activation boundaries.
+- Release metadata, Windows package identifiers, deterministic release checks, and the host-architecture macOS release package are synchronized to `0.2.1`.
 
 ## 0.2.0 Verification Evidence
 
