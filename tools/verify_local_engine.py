@@ -1882,23 +1882,43 @@ def test_native_autostart_installer(native_host):
     original_run = native_host.subprocess.run
     original_health = native_host.http_engine_running
     original_log_path = native_host.AUTOSTART_INSTALL_LOG_PATH
+    original_project_root = native_host.PROJECT_ROOT
     with tempfile.TemporaryDirectory() as temp_dir_name:
+        project_root = Path(temp_dir_name) / "project"
         log_path = Path(temp_dir_name) / "autostart.log"
+        if native_host.os.name == "nt":
+            script_path = project_root / "install-engine.ps1"
+            expected_command = [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                "-Repair",
+            ]
+        else:
+            script_path = project_root / "scripts" / "install_engine_autostart_macos.sh"
+            expected_command = [str(script_path)]
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("# test installer\n", encoding="utf-8")
 
         def fake_run(command, **kwargs):
-            assert command == [str(ROOT / "scripts" / "install_engine_autostart_macos.sh")]
-            assert kwargs["cwd"] == str(ROOT)
+            assert command == expected_command
+            assert kwargs["cwd"] == str(project_root)
             return native_host.subprocess.CompletedProcess(command, 0, "service ready\n", "")
 
         native_host.subprocess.run = fake_run
         native_host.http_engine_running = lambda: True
         native_host.AUTOSTART_INSTALL_LOG_PATH = log_path
+        native_host.PROJECT_ROOT = project_root
         try:
             result = native_host.install_engine_autostart()
         finally:
             native_host.subprocess.run = original_run
             native_host.http_engine_running = original_health
             native_host.AUTOSTART_INSTALL_LOG_PATH = original_log_path
+            native_host.PROJECT_ROOT = original_project_root
 
         assert result["ok"] is True
         assert result["installed"] is True
