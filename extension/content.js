@@ -158,6 +158,7 @@ const state = {
   settings: { ...DEFAULT_SETTINGS },
   runtimeProfile: createRuntimeProfile(DEFAULT_SETTINGS, "full"),
   engineHealth: { checked: false, ok: false, code: "", payload: null },
+  engineHealthRequestGeneration: 0,
   lightweightNoticeShown: false,
   fullModeRetryInFlight: false,
   providerOptions: [...PROVIDER_OPTIONS],
@@ -659,10 +660,10 @@ async function refreshEngineStatus() {
   if (state.fullModeRetryInFlight) {
     return state.engineHealth;
   }
+  const requestGeneration = beginEngineHealthRequest();
   const node = state.root?.querySelector("[data-engine-status]");
   const textNode = state.root?.querySelector("[data-engine-status-text]");
-  const lightweight = isLightweightProfile(state.runtimeProfile);
-  if (node && textNode && !lightweight) {
+  if (node && textNode && !isLightweightProfile(state.runtimeProfile)) {
     node.classList.remove("is-lightweight", "is-ok", "is-warn", "is-error");
     node.classList.add("is-checking");
     textNode.textContent = "正在检查字幕 Engine...";
@@ -676,12 +677,15 @@ async function refreshEngineStatus() {
     error: friendlyErrorMessage(error)
   }));
 
+  if (!isCurrentEngineHealthRequest(requestGeneration) || state.fullModeRetryInFlight) {
+    return state.engineHealth;
+  }
   applyEnginePlatformPolicy(response?.ok ? response.payload?.platform : "");
   state.engineHealth = normalizeEngineHealth(response);
   if (!node || !textNode) {
     return state.engineHealth;
   }
-  if (lightweight) {
+  if (isLightweightProfile(state.runtimeProfile)) {
     renderRuntimeProfileState();
     return state.engineHealth;
   }
@@ -725,6 +729,19 @@ async function refreshEngineStatus() {
   return state.engineHealth;
 }
 
+function beginEngineHealthRequest() {
+  state.engineHealthRequestGeneration += 1;
+  return state.engineHealthRequestGeneration;
+}
+
+function invalidateEngineHealthRequests() {
+  state.engineHealthRequestGeneration += 1;
+}
+
+function isCurrentEngineHealthRequest(requestGeneration) {
+  return requestGeneration === state.engineHealthRequestGeneration;
+}
+
 function normalizeEngineHealth(response = {}) {
   const payload = response?.payload || null;
   let code = String(response?.code || "");
@@ -747,6 +764,7 @@ function normalizeEngineHealth(response = {}) {
 }
 
 function resetRuntimeProfileForOperation() {
+  invalidateEngineHealthRequests();
   state.runtimeProfile = createRuntimeProfile(state.settings, "full");
   state.lightweightNoticeShown = false;
   renderRuntimeProfileState();
@@ -773,6 +791,7 @@ function activateLightweightMode(failure = {}) {
   cancelQueuedVoiceAudio();
   invalidateVoicePlayback();
   stopActiveVoiceAudio();
+  invalidateEngineHealthRequests();
   state.runtimeProfile = createRuntimeProfile(state.settings, "lightweight");
   renderRuntimeProfileState();
   if (!state.lightweightNoticeShown) {
@@ -843,29 +862,32 @@ async function retryFullModeFromWidget() {
 
   state.fullModeRetryInFlight = true;
   renderRuntimeProfileState();
-  const response = await sendRuntimeMessage({
-    type: "localtube.captionEngineHealth",
-    settings: state.settings
-  }).catch((error) => ({ ok: false, error: friendlyErrorMessage(error) }));
-  state.engineHealth = normalizeEngineHealth(response);
-  if (!state.engineHealth.ok) {
-    state.fullModeRetryInFlight = false;
-    renderRuntimeProfileState();
-    setStatus("Engine 暂未恢复，继续使用免安装轻量模式。", "working");
-    return;
-  }
-
-  state.enginePlatform = response.payload?.platform || "";
-  renderAvailableTtsEngineOptions(state.settings.ttsEngine);
-  resetRuntimeProfileForOperation();
-  const engineStatus = state.root?.querySelector("[data-engine-status]");
-  const engineStatusText = state.root?.querySelector("[data-engine-status-text]");
-  if (engineStatus && engineStatusText) {
-    engineStatus.classList.remove("is-lightweight", "is-checking", "is-warn", "is-error");
-    engineStatus.classList.add("is-ok");
-    engineStatusText.textContent = "Engine 已恢复，正在切换完整模式。";
-  }
+  const requestGeneration = beginEngineHealthRequest();
   try {
+    const response = await sendRuntimeMessage({
+      type: "localtube.captionEngineHealth",
+      settings: state.settings
+    }).catch((error) => ({ ok: false, error: friendlyErrorMessage(error) }));
+    if (!isCurrentEngineHealthRequest(requestGeneration)) {
+      return;
+    }
+    state.engineHealth = normalizeEngineHealth(response);
+    if (!state.engineHealth.ok) {
+      renderRuntimeProfileState();
+      setStatus("Engine 暂未恢复，继续使用免安装轻量模式。", "working");
+      return;
+    }
+
+    state.enginePlatform = response.payload?.platform || "";
+    renderAvailableTtsEngineOptions(state.settings.ttsEngine);
+    resetRuntimeProfileForOperation();
+    const engineStatus = state.root?.querySelector("[data-engine-status]");
+    const engineStatusText = state.root?.querySelector("[data-engine-status-text]");
+    if (engineStatus && engineStatusText) {
+      engineStatus.classList.remove("is-lightweight", "is-checking", "is-warn", "is-error");
+      engineStatus.classList.add("is-ok");
+      engineStatusText.textContent = "Engine 已恢复，正在切换完整模式。";
+    }
     await refreshAvailableVoiceOptions();
     stopDubbing({ silent: true });
     await startDubbing({ resumeOnSuccess: true });

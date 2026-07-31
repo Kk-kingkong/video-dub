@@ -1781,6 +1781,132 @@ function testEngineVoiceFailureHarness() {
   assert.equal(activationCount, 1, "late Engine failures must not invalidate active lightweight browser speech again");
 }
 
+async function testEngineHealthResponseOrdering() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const approvedNotice = "Engine 暂不可用，已切换免安装轻量模式：Chrome 翻译 + 系统配音。本次播放有效。";
+
+  function createHarness(initialMode = "full") {
+    const node = {
+      classList: {
+        add() {},
+        remove() {},
+        toggle() {}
+      }
+    };
+    const textNode = { textContent: "" };
+    let resolveOldHealth;
+    const oldHealth = new Promise((resolve) => {
+      resolveOldHealth = resolve;
+    });
+    let healthRequests = 0;
+    const state = {
+      fullModeRetryInFlight: false,
+      engineHealthRequestGeneration: 0,
+      engineHealth: { checked: false, ok: false, code: "", payload: null },
+      runtimeProfile: { mode: initialMode },
+      settings: { ttsEngine: "edge" },
+      enginePlatform: "",
+      fullModeStarted: false,
+      root: {
+        querySelector(selector) {
+          if (selector === "[data-engine-status]") {
+            return node;
+          }
+          if (selector === "[data-engine-status-text]") {
+            return textNode;
+          }
+          return null;
+        }
+      }
+    };
+    const context = {
+      state,
+      isLightweightProfile: (profile) => profile.mode === "lightweight",
+      beginEngineHealthRequest: () => ++state.engineHealthRequestGeneration,
+      invalidateEngineHealthRequests: () => ++state.engineHealthRequestGeneration,
+      isCurrentEngineHealthRequest: (generation) => generation === state.engineHealthRequestGeneration,
+      sendRuntimeMessage: () => {
+        healthRequests += 1;
+        return healthRequests === 1
+          ? oldHealth
+          : Promise.resolve({ ok: true, payload: { platform: "macos", ytDlp: true, edgeTts: true } });
+      },
+      friendlyErrorMessage: (error) => String(error || ""),
+      normalizeEngineHealth: (response) => ({
+        checked: true,
+        ok: Boolean(response?.ok),
+        code: response?.ok ? "" : "CAPTION_ENGINE_UNAVAILABLE",
+        payload: response?.payload || null
+      }),
+      shortEngineError: (error) => String(error || ""),
+      applyEnginePlatformPolicy() {},
+      renderRuntimeProfileState() {
+        if (state.runtimeProfile.mode === "lightweight") {
+          textNode.textContent = approvedNotice;
+        }
+      },
+      renderAvailableTtsEngineOptions() {},
+      refreshAvailableVoiceOptions: async () => {},
+      stopDubbing() {},
+      startDubbing: async () => {
+        state.fullModeStarted = true;
+      },
+      setStatus() {},
+      lightweightFallbackDecision: () => ({ activate: true }),
+      cancelQueuedVoiceAudio() {},
+      invalidateVoicePlayback() {},
+      stopActiveVoiceAudio() {},
+      createRuntimeProfile: (_, mode) => ({ mode })
+    };
+    context.resetRuntimeProfileForOperation = vm.runInNewContext(
+      `(function resetRuntimeProfileForOperation() {${extractFunctionBody(content, "resetRuntimeProfileForOperation")}})`,
+      context
+    );
+    return {
+      state,
+      textNode,
+      resolveOldHealth,
+      refreshEngineStatus: vm.runInNewContext(
+        `(async function refreshEngineStatus() {${extractFunctionBody(content, "refreshEngineStatus")}})`,
+        context
+      ),
+      retryFullModeFromWidget: vm.runInNewContext(
+        `(async function retryFullModeFromWidget() {${extractFunctionBody(content, "retryFullModeFromWidget")}})`,
+        context
+      ),
+      activateLightweightMode: vm.runInNewContext(
+        `(function activateLightweightMode(failure) {${extractFunctionBody(content, "activateLightweightMode")}})`,
+        context
+      )
+    };
+  }
+
+  const lightweight = createHarness();
+  const oldFullFailure = lightweight.refreshEngineStatus();
+  assert.equal(lightweight.activateLightweightMode({ code: "CAPTION_ENGINE_UNAVAILABLE" }), true);
+  lightweight.resolveOldHealth({ ok: false, error: "stale native failure" });
+  await oldFullFailure;
+  assert.equal(
+    lightweight.textNode.textContent,
+    approvedNotice,
+    "a stale full-mode health failure must not overwrite the lightweight customer notice"
+  );
+
+  const recovered = createHarness("lightweight");
+  const oldFailureAfterRetry = recovered.refreshEngineStatus();
+  await recovered.retryFullModeFromWidget();
+  assert.equal(recovered.state.runtimeProfile.mode, "full");
+  assert.equal(recovered.state.fullModeStarted, true);
+  assert.equal(recovered.state.engineHealth.ok, true);
+  recovered.resolveOldHealth({ ok: false, error: "stale native failure" });
+  await oldFailureAfterRetry;
+  assert.equal(
+    recovered.state.engineHealth.ok,
+    true,
+    "a stale health failure must not undo a successful full-mode recovery"
+  );
+}
+
 function testManifestAndFlowGuards() {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension", "manifest.json"), "utf8"));
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
@@ -1810,6 +1936,11 @@ function testManifestAndFlowGuards() {
   assert.match(content, /Engine 暂不可用，已切换免安装轻量模式：Chrome 翻译 \+ 系统配音。本次播放有效。/);
   assert.match(content, /data-action="retry-full-mode"/);
   assert.match(content, /async function retryFullModeFromWidget\(/);
+  assert.match(content, /engineHealthRequestGeneration/);
+  assert.match(content, /function invalidateEngineHealthRequests\(/);
+  const engineHealthRefreshBody = extractFunctionBody(content, "refreshEngineStatus");
+  assert.match(engineHealthRefreshBody, /const requestGeneration = beginEngineHealthRequest\(\)/);
+  assert.match(engineHealthRefreshBody, /!isCurrentEngineHealthRequest\(requestGeneration\)/);
   assert.doesNotMatch(content, /轻量模式[^\n]*(Native|HTTP|127\.0\.0\.1|端口|stack)/i);
   const runtimeProfileStateBody = extractFunctionBody(content, "renderRuntimeProfileState");
   assert.match(runtimeProfileStateBody, /isLightweightProfile\(state\.runtimeProfile\)/);
@@ -2899,6 +3030,7 @@ async function main() {
   testTranscriptionRequestRegistry();
   testNoCaptionStartupOrder();
   testEngineVoiceFailureHarness();
+  await testEngineHealthResponseOrdering();
   testManifestAndFlowGuards();
   console.log("extension flow checks ok");
 }
