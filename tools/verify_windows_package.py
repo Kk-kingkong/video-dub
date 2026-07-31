@@ -843,11 +843,18 @@ def verify_install_smoke(package: Path) -> None:
                 str(task.get("execute") or "").lower().endswith("powershell.exe"),
                 "scheduled task does not execute PowerShell",
             )
+            task_arguments = str(task.get("arguments") or "").replace("/", "\\").casefold()
+            expected_task_paths = (
+                runtime_root / "manage-engine.ps1",
+                runtime_root,
+                state_root,
+            )
             require(
-                f'"{runtime_root / "manage-engine.ps1"}"' in str(task.get("arguments") or "")
-                and f'"{runtime_root}"' in str(task.get("arguments") or "")
-                and f'"{state_root}"' in str(task.get("arguments") or ""),
-                "scheduled task did not preserve quoted paths with spaces/Chinese",
+                all(
+                    str(path).replace("/", "\\").casefold() in task_arguments
+                    for path in expected_task_paths
+                ),
+                f"scheduled task did not preserve paths with spaces/Chinese: {task}",
             )
             require(
                 str(task.get("runLevel") or "").lower() == "limited",
