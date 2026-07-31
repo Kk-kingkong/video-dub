@@ -6,7 +6,7 @@
 
 LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕时，再使用 Chrome 免费本地翻译或用户自己选择的翻译服务。没有字幕的视频可以使用可选的本地 Whisper Engine 转写。
 
-> **当前版本：** `0.1.98` 开发预览版。Chrome 插件商店版本和已签名的桌面 Engine 安装包正在准备中。
+> **当前版本：** `0.2.0` 发布候选版。Chrome 商店更新仍待提交；可选的桌面 Engine 安装包目前仍是未签名、未公证的开发版本。
 
 ## 主要功能
 
@@ -14,7 +14,7 @@ LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕
 - 支持 Chrome 端侧免费翻译，不需要 API Key。
 - 支持用户自己的 Microsoft、Google、OpenAI、Gemini、Claude、DeepSeek、OpenRouter 等 API Key。
 - 中文字幕和中文配音跟随视频播放、暂停、跳转和倍速。
-- 支持 Microsoft 自然在线音色和 macOS 本地系统音色。
+- 默认使用 Microsoft 自然在线音色，也支持可选的离线 Kokoro 音色，以及仅限 macOS 的系统音色保底。
 - 可选用 yt-dlp、FFmpeg 和 whisper.cpp 在本地转写无字幕视频。
 - 可以导出 SRT/WebVTT 字幕和 M4A/WAV 配音音轨。
 - API Key 保存在本机；项目没有 LocalTube 账号、广告、统计、订阅或支付系统。
@@ -33,7 +33,9 @@ LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕
 3. 点击“加载已解压的扩展程序”，选择项目中的 `extension/` 文件夹。
 4. 打开一个 YouTube 视频，选择目标语言并点击“开始翻译”。
 
-基础的页面字幕翻译可以不安装 Engine。为了更稳定地使用 yt-dlp 读取字幕、自然/本地配音、无字幕转写和音轨导出，推荐安装配套 Engine，具体步骤见 [Engine 安装说明](companion/README.md)。
+基础的页面字幕翻译可以不安装 Engine。为了更稳定地使用 yt-dlp 读取字幕、自然/本地配音、无字幕转写和音轨导出，推荐安装配套 Engine。项目提供 **macOS Apple Silicon**、**macOS Intel** 和 **Windows 10/11 x64** 固定依赖安装包，具体步骤见 [Engine 安装说明](companion/README.md)。
+
+Kokoro 是可选功能。用户选择它以后，需要主动点击模型安装按钮；固定模型校验并下载完成后，中英文配音会在同一台电脑上生成。
 
 ## 隐私说明
 
@@ -41,7 +43,8 @@ LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕
 - API Key 和字幕缓存保存在扩展本地存储中。
 - 只有用户主动选择云端 Provider 后，数据才会发送到该 Provider。
 - Microsoft 自然在线语音只接收合成语音所需的翻译文本和音色设置。
-- 本地系统语音和本地 Whisper 转写在用户电脑上处理。
+- 用户必须先在扩展界面明确同意这项传输，Microsoft 在线配音才会开始请求。
+- Kokoro、macOS 系统语音和本地 Whisper 转写都在用户电脑上处理。
 
 完整说明请阅读公开的 [隐私政策](https://kk-kingkong.github.io/video-dub/privacy-policy.html) 和 [Chrome 权限说明](docs/chrome-web-store-permissions.md)。
 
@@ -53,6 +56,7 @@ node tools/verify_provider_registry.js
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_local_engine.py
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_native_messaging.py
 python3 tools/verify_open_source_compliance.py
+python3 tools/verify_windows_package.py --source
 ```
 
 ## 项目文档
@@ -70,8 +74,8 @@ python3 tools/verify_open_source_compliance.py
 
 ## 当前限制
 
-- 公开版 macOS Engine 尚未完成签名和公证。
-- Windows Engine 正式安装程序尚未完成。
+- macOS 和 Windows Engine 安装包目前都尚未签名或公证。
+- Windows 完整安装冒烟需要 Windows 10/11 x64 电脑或项目 CI。
 - 混合音轨不会自动分离原视频对白和背景音。
 - 暂不包含最终视频合成和声音克隆。
 

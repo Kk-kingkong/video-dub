@@ -24,6 +24,7 @@ from assemble_engine_runtime import assemble_runtime, load_runtime_manifest  # n
 EXTENSION_ID = "ikoenamldegccnhmjjnlkffocdkbbbmo"
 PACKAGE_VERSION = "0.2.0"
 PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.0-Windows-x64.zip"
+CHECKSUM_NAME = "LocalTube-Dub-v0.2.0-Windows-x64-SHA256SUMS.txt"
 ENGINE_FOLDER = "LocalTube-Dub-Engine-v0.2.0-Windows-x64"
 
 
@@ -133,6 +134,19 @@ def write_zip(source: Path, output: Path) -> None:
             archive.write(path, relative.as_posix())
 
 
+def write_checksum(package: Path) -> Path:
+    digest = hashlib.sha256()
+    with package.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    checksum = package.with_name(CHECKSUM_NAME)
+    checksum.write_text(
+        f"{digest.hexdigest()}  {package.name}\n",
+        encoding="ascii",
+    )
+    return checksum
+
+
 def build(output_dir: Path, cache_dir: Path) -> Path:
     if os.name != "nt":
         raise WindowsBuildError("the Windows runtime package must be built on Windows x64")
@@ -171,6 +185,7 @@ def build(output_dir: Path, cache_dir: Path) -> Path:
         assert_model_not_bundled(stage)
         package = output_dir / PACKAGE_NAME
         write_zip(stage, package)
+        write_checksum(package)
         return package
 
 
@@ -189,7 +204,8 @@ def main() -> int:
     args = parse_args()
     try:
         package = build(args.output.resolve(), args.cache.resolve())
-        print(package)
+        print(f"Windows Engine: {package}")
+        print(f"SHA-256: {package.with_name(CHECKSUM_NAME)}")
         return 0
     except (OSError, WindowsBuildError) as error:
         print(f"Windows release build failed: {error}", file=sys.stderr)

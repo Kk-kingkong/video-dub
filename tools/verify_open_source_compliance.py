@@ -9,7 +9,7 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.1.98"
+EXPECTED_VERSION = "0.2.0"
 CHROME_WEB_STORE_ITEM_ID = "ikoenamldegccnhmjjnlkffocdkbbbmo"
 PUBLIC_SITE = "https://kk-kingkong.github.io/video-dub/"
 PUBLIC_PRIVACY = f"{PUBLIC_SITE}privacy-policy.html"
@@ -47,6 +47,7 @@ def verify_repository_files() -> None:
         "docs/store-listing-draft.md",
         "docs/chrome-web-store-permissions.md",
         "docs/release-process.md",
+        ".github/workflows/cross-platform-engine.yml",
     )
     for relative_path in required:
         read(relative_path)
@@ -77,6 +78,11 @@ def verify_public_claims() -> None:
         "YouTube cookies",
         "tabCapture",
         "Microsoft natural online",
+        "prominent consent control",
+        "Kokoro",
+        "explicitly installs",
+        "same computer",
+        "macOS-only",
         "does not sell user data",
         "no LocalTube Dub account system",
     ):
@@ -98,18 +104,56 @@ def verify_public_claims() -> None:
     for link in (PUBLIC_SITE, PUBLIC_PRIVACY, PUBLIC_SUPPORT, PUBLIC_REPOSITORY):
         require(link in listing, f"store listing public link missing: {link}")
     require(CHROME_WEB_STORE_ITEM_ID in listing, "Chrome Web Store item ID missing from listing draft")
+    for phrase in ("Kokoro", "Windows 10/11 x64", "macOS Intel", "macOS Apple Silicon"):
+        require(phrase.casefold() in listing.casefold(), f"store listing disclosure missing: {phrase}")
 
     release_process = read("docs/release-process.md")
     require(CHROME_WEB_STORE_ITEM_ID in release_process, "Chrome Web Store item ID missing from release process")
+    for phrase in ("Windows x64", "macOS Intel", "macOS Apple Silicon", "unsigned", "notarized"):
+        require(phrase.casefold() in release_process.casefold(), f"release process missing: {phrase}")
 
     readme = read("README.md")
     for link in ("README.zh-CN.md", PUBLIC_PRIVACY, PUBLIC_SUPPORT, "CONTRIBUTING.md", "SECURITY.md", "THIRD_PARTY_NOTICES.md"):
         require(link in readme, f"README link missing: {link}")
     require("not affiliated" in readme.casefold(), "README non-affiliation disclosure missing")
+    for phrase in ("Kokoro", "Windows 10/11 x64", "macOS Intel", "macOS Apple Silicon", EXPECTED_VERSION):
+        require(phrase.casefold() in readme.casefold(), f"README content missing: {phrase}")
 
     chinese_readme = read("README.zh-CN.md")
-    for phrase in ("YouTube 中文翻译与配音", "隐私政策", "当前限制", EXPECTED_VERSION):
+    for phrase in (
+        "YouTube 中文翻译与配音",
+        "隐私政策",
+        "当前限制",
+        "Kokoro",
+        "Windows 10/11 x64",
+        "macOS Intel",
+        "macOS Apple Silicon",
+        EXPECTED_VERSION,
+    ):
         require(phrase in chinese_readme, f"Chinese README content missing: {phrase}")
+
+    notices = read("THIRD_PARTY_NOTICES.md")
+    for phrase in ("sherpa-onnx", "Apache-2.0", "Kokoro-82M", "explicit model installation"):
+        require(phrase.casefold() in notices.casefold(), f"third-party notice missing: {phrase}")
+
+    permissions = read("docs/chrome-web-store-permissions.md")
+    for phrase in ("Kokoro", "model data", "same computer", "macOS-only", "prominent in-product checkbox"):
+        require(phrase.casefold() in permissions.casefold(), f"permission disclosure missing: {phrase}")
+
+
+def verify_cross_platform_ci() -> None:
+    workflow = read(".github/workflows/cross-platform-engine.yml")
+    for phrase in (
+        "macos-15",
+        "macos-15-intel",
+        "windows-2022",
+        "https://github.com/Kk-kingkong/video-dub/releases",
+        "verify_release_packages.py",
+        "verify_windows_package.py --source",
+        "verify_windows_package.py --install-smoke",
+        "build_release_windows.py",
+    ):
+        require(phrase.casefold() in workflow.casefold(), f"cross-platform CI missing: {phrase}")
 
 
 def verify_no_obvious_secrets() -> None:
@@ -134,6 +178,7 @@ def main() -> None:
     verify_repository_files()
     verify_release_metadata()
     verify_public_claims()
+    verify_cross_platform_ci()
     verify_no_obvious_secrets()
     print("Open-source and Chrome Web Store compliance checks passed.")
 

@@ -26,13 +26,15 @@ Features available in this release:
 - Chrome on-device caption translation with downloadable local language packs.
 - Optional bring-your-own-key translation and transcription Providers.
 - Synchronized translated subtitle overlay and voice playback.
-- Microsoft natural online voices without a separate TTS API key, or local system voices for private on-device speech.
+- Microsoft natural online voices without a separate TTS API key, after an explicit in-product text-transfer consent.
+- Optional offline Kokoro Chinese/English voices with an explicit verified model install.
+- A macOS-only system voice for private on-device speech.
 - Local, bounded caption caching with a visible disable and clear control.
 - SRT and WebVTT caption export.
 - Complete M4A or WAV voice-track rendering for complete caption timelines.
 - Optional local no-caption transcription with whisper.cpp.
 
-The separate open-source LocalTube Dub Engine is recommended for reliable yt-dlp caption extraction, natural or system speech generation, local transcription, and complete audio export. Chrome extensions cannot install native software silently, so Engine installation is a separate, explicit user action. Basic page-caption translation can work without the Engine when YouTube exposes a readable caption track and Chrome supports the required language pair.
+The separate open-source LocalTube Dub Engine is recommended for reliable yt-dlp caption extraction, natural or local speech generation, local transcription, and complete audio export. Chrome extensions cannot install native software silently, so Engine installation is a separate, explicit user action. Optional pinned packages support Windows 10/11 x64, macOS Intel, and macOS Apple Silicon. Basic page-caption translation can work without the Engine when YouTube exposes a readable caption track and Chrome supports the required language pair.
 
 No-caption transcription is opt-in. Local mode processes audio on the user's computer. Users who select Groq, Deepgram, or OpenAI transcription send a bounded active-video audio segment directly to that Provider with their own key.
 
@@ -63,7 +65,7 @@ Chinese (Simplified) for the first listing, followed by an English localization.
 - Optional 1400 x 560 marquee tile.
 - Optional public YouTube demonstration video.
 
-Screenshots must show the shipping `0.1.98` UI and must not contain API keys, private videos, account information, or unavailable features.
+Screenshots must show the shipping `0.2.0` UI and must not contain API keys, private videos, account information, or unavailable features.
 
 ## Publisher URLs
 
@@ -71,14 +73,15 @@ Screenshots must show the shipping `0.1.98` UI and must not contain API keys, pr
 - Source repository: `https://github.com/Kk-kingkong/video-dub`
 - Privacy policy: `https://kk-kingkong.github.io/video-dub/privacy-policy.html`
 - Support page: `https://kk-kingkong.github.io/video-dub/support.html`
-- Matching signed Engine download page and checksum, when the Engine is publicly distributed.
+- Matching Engine download page, checksum, and accurate signing status when the Engine is distributed.
 
 ## Reviewer instructions
 
 1. Test first with a public YouTube video that has captions and select Chrome local translation.
 2. Confirm that a target-language YouTube track is used directly when available.
 3. Confirm that cloud host permission is requested only after selecting a cloud Provider.
-4. Test Engine-only features with the signed companion installer matching the submitted extension ID and version.
+4. Test Engine-only features with the reviewed companion package matching the submitted extension ID and version.
 5. Enable no-caption transcription only for the separate opt-in capture/local transcription test.
+6. On Windows 10/11 x64 or macOS Intel / macOS Apple Silicon, select Kokoro, explicitly install the model, wait for Ready, and confirm local Chinese speech. Current review packages are unsigned and unnotarized development artifacts and must not be represented as signed.
 
 Provide the reviewer with public test video URLs, the matching Engine installer URL and checksum, and exact fresh-profile steps. Do not provide a personal API key in listing text or screenshots.

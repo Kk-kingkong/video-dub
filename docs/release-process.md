@@ -6,8 +6,9 @@ Chrome Web Store Item ID: `ikoenamldegccnhmjjnlkffocdkbbbmo`
 
 - A version already synchronized across `extension/manifest.json`, popup fallback text, tests, and `CHANGELOG.md`.
 - The final 32-character Chrome Web Store extension ID. Chrome IDs contain only letters `a` through `p`.
-- A macOS build machine with `python3`, `zip`, `unzip`, `ditto`, and `shasum`.
-- Public HTTPS URLs for the [source repository](https://github.com/Kk-kingkong/video-dub), [project homepage](https://kk-kingkong.github.io/video-dub/), [privacy policy](https://kk-kingkong.github.io/video-dub/privacy-policy.html), [support page](https://kk-kingkong.github.io/video-dub/support.html), and signed Engine download.
+- macOS Apple Silicon and macOS Intel build/CI machines with `python3`, `zip`, `unzip`, `ditto`, and `shasum`.
+- A Windows 10/11 x64 or Windows Server 2022 build/CI machine with Python 3.11, PowerShell, .NET Framework `csc.exe`, and ZIP support.
+- Public HTTPS URLs for the [source repository](https://github.com/Kk-kingkong/video-dub), [project homepage](https://kk-kingkong.github.io/video-dub/), [privacy policy](https://kk-kingkong.github.io/video-dub/privacy-policy.html), [support page](https://kk-kingkong.github.io/video-dub/support.html), and Engine downloads with accurate signing status.
 - A Chrome Web Store developer account with two-step verification enabled.
 
 The Engine package must be rebuilt whenever the Web Store extension ID changes because Native Messaging `allowed_origins` is bound to that ID.
@@ -22,33 +23,44 @@ From the repository root:
 ./scripts/build_release_macos.sh FINAL_CHROME_EXTENSION_ID
 ```
 
-For a customer-facing build, inject the hosted Engine and support pages at build time. Both values are optional for an offline private beta, but any configured URL must use HTTPS:
+Build the Windows x64 Engine on Windows:
+
+```powershell
+py scripts\build_release_windows.py
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.0-Windows-x64.zip
+```
+
+For a customer-facing build, inject a platform-neutral Engine download index and the support page at build time. The download URL must let users choose macOS Apple Silicon, macOS Intel, or Windows x64; it must not point every platform to one architecture-specific ZIP. Both values are optional for an offline private beta, but any configured URL must use HTTPS:
 
 ```bash
-LOCAL_DUB_ENGINE_DOWNLOAD_URL=https://downloads.example.com/LocalTube-Dub-Engine.zip \
+LOCAL_DUB_ENGINE_DOWNLOAD_URL=https://github.com/Kk-kingkong/video-dub/releases \
 LOCAL_DUB_SUPPORT_URL=https://kk-kingkong.github.io/video-dub/support.html \
 ./scripts/build_release_macos.sh FINAL_CHROME_EXTENSION_ID
 ```
 
-The command creates three files under `dist/`:
+The default release channel is `store`. For an offline private beta, also set `LOCAL_DUB_RELEASE_CHANNEL=private-beta`.
+
+The macOS command creates three files under `dist/`:
 
 - `LocalTube-Dub-extension-vVERSION.zip`: upload this file to Chrome Web Store. `manifest.json` is at the ZIP root.
-- `LocalTube-Dub-Engine-vVERSION-macOS.zip`: distribute this optional local Engine package from the product download/support page.
+- `LocalTube-Dub-Engine-vVERSION-macOS-ARCH.zip`: distribute the matching macOS Apple Silicon or macOS Intel Engine package.
 - `LocalTube-Dub-vVERSION-SHA256SUMS.txt`: publish beside both ZIP files.
+
+The Windows builder creates `LocalTube-Dub-Engine-vVERSION-Windows-x64.zip` and `LocalTube-Dub-vVERSION-Windows-x64-SHA256SUMS.txt`. Its real install smoke verifies the published digest before extraction. Publish both beside the macOS artifacts. Each Engine archive contains a fixed private runtime and excludes the optional Kokoro model.
 
 The build automatically verifies manifest references, secrets, unsafe ZIP paths, extension-ID binding, release metadata, executable permissions, isolated Native Host/LaunchAgent generation, and uninstall dry-run.
 
-The source install page remains in development mode. During release assembly, `release-info.json` is replaced with the exact channel, version, extension ID, Engine filename, and HTTPS links for that build. Customer packages hide source checkout paths, Terminal commands, and developer-only diagnostics; an offline beta with no hosted URL tells the tester to obtain the matching Engine ZIP from the same release.
+The source install page remains in development mode. During release assembly, `release-info.json` is replaced with the exact channel, version, extension ID, the complete macOS ARM/Intel and Windows x64 Engine package catalog, and HTTPS download/support links. The package catalog is platform-neutral, so an extension ZIP produced on one build runner never points another platform to the wrong Engine. Customer packages hide source checkout paths, Terminal commands, and developer-only diagnostics; an offline beta with no hosted URL tells the tester to obtain the matching Engine ZIP from the same release.
 
 ## Private Beta Customer Flow
 
 1. Install the Chrome extension.
-2. Download the matching macOS Engine ZIP from the same release.
-3. Unzip it and double-click `Install LocalTube Dub Engine.command`.
+2. Download the matching macOS or Windows Engine ZIP from the same release.
+3. On macOS, unzip it and double-click `Install LocalTube Dub Engine.command`. On Windows x64, unzip it and run `Install LocalTube Dub Engine.cmd`.
 4. Restart Chrome and click “检查 Engine”.
 5. Only users who need no-caption local transcription double-click `Install No-Caption Whisper.command`.
 
-The private-beta package is deliberately marked `signed: false` and `notarized: false`. Customers may need to right-click the `.command` file and choose Open.
+The development packages are deliberately marked `signed: false` and `notarized: false`. macOS customers may need to right-click the `.command` file and choose Open. Windows may display an unsigned-app warning. Do not describe either package as signed until the relevant platform signing gate is complete.
 
 ## Public Release Gates
 
@@ -58,7 +70,7 @@ Do not describe the Engine bundle as a signed public installer until all items b
 2. Notarize and staple the public artifact.
 3. Host the Engine package and SHA-256 file on a stable HTTPS support/download page.
 4. Replace all placeholder support and privacy-policy values.
-5. Build and test a signed Windows Native Messaging installer.
+5. Build and test the Windows x64 Native Messaging installer, then sign it before describing it as a production signed installer.
 6. Rebuild the Engine package with the final Web Store ID and verify `allowed_origins`.
 7. Run the full release checks in `docs/development-audit.md`.
 8. Publish `LICENSE`, `SECURITY.md`, `SUPPORT.md`, `THIRD_PARTY_NOTICES.md`, and the final `docs/privacy-policy.md` from the same public source revision.
@@ -66,6 +78,7 @@ Do not describe the Engine bundle as a signed public installer until all items b
 10. Prepare the 128 x 128 icon, at least one 1280 x 800 screenshot, the 440 x 280 promotional tile, and localized listing copy.
 11. Run a clean-profile acceptance test with no saved cache, no API key, and no preinstalled Engine, then repeat with the matching Engine installer.
 12. Confirm the repository and generated archives contain no keys, cookies, logs, models, generated media, absolute checkout paths, or copied proprietary extension assets.
+13. Require the `cross-platform-engine.yml` macOS Apple Silicon, macOS Intel, and Windows x64 jobs to pass. Windows reviewer instructions must include install, repair, Native Messaging, Kokoro model, and uninstall checks.
 
 ## Recommended Store Sequence
 
@@ -85,6 +98,10 @@ python3 tools/verify_release_packages.py \
   FINAL_CHROME_EXTENSION_ID \
   VERSION
 
-cd dist
-shasum -a 256 -c LocalTube-Dub-vVERSION-SHA256SUMS.txt
+(
+  cd dist
+  shasum -a 256 -c LocalTube-Dub-vVERSION-SHA256SUMS.txt
+)
+
+python3 tools/verify_windows_package.py --source
 ```

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 
 def fail(message: str) -> None:
@@ -137,12 +138,55 @@ def verify_extension(path: Path, extension_id: str, expected_version: str, expec
             fail("extension ZIP release-info has an invalid customer channel")
         if release_info.get("version") != expected_version or release_info.get("extensionId") != extension_id:
             fail("extension ZIP release-info does not match version and extension ID")
-        if release_info.get("engineBundleName") != expected_engine_name:
-            fail("extension ZIP release-info has the wrong Engine bundle name")
+        packages = release_info.get("enginePackages")
+        expected_packages = {
+            ("macos", "arm64"): (
+                "macOS Apple Silicon",
+                f"LocalTube-Dub-Engine-v{expected_version}-macOS-arm64.zip",
+            ),
+            ("macos", "x64"): (
+                "macOS Intel",
+                f"LocalTube-Dub-Engine-v{expected_version}-macOS-x64.zip",
+            ),
+            ("windows", "x64"): (
+                "Windows 10/11 x64",
+                f"LocalTube-Dub-Engine-v{expected_version}-Windows-x64.zip",
+            ),
+        }
+        if not isinstance(packages, list):
+            fail("extension ZIP release-info must list every supported Engine package")
+        actual_packages: dict[tuple[str, str], tuple[str, str]] = {}
+        for package in packages:
+            if not isinstance(package, dict):
+                fail("extension ZIP release-info has an invalid Engine package entry")
+            target = (
+                str(package.get("platform") or ""),
+                str(package.get("architecture") or ""),
+            )
+            if target in actual_packages:
+                fail("extension ZIP release-info has a duplicate Engine target")
+            actual_packages[target] = (
+                str(package.get("label") or ""),
+                str(package.get("bundleName") or ""),
+            )
+            value = str(package.get("downloadUrl") or "")
+            if value and not value.startswith("https://"):
+                fail("extension ZIP Engine package URL must use HTTPS")
+        if actual_packages != expected_packages:
+            fail("extension ZIP release-info must list every supported Engine package")
+        if expected_engine_name not in {
+            bundle_name for _, bundle_name in expected_packages.values()
+        }:
+            fail("extension ZIP release-info does not include the verified Engine bundle")
         for key in ("engineDownloadUrl", "supportUrl"):
             value = str(release_info.get(key) or "")
             if value and not value.startswith("https://"):
                 fail(f"extension ZIP {key} must use HTTPS")
+        download_url = str(release_info.get("engineDownloadUrl") or "")
+        if release_info.get("channel") == "store" and not download_url:
+            fail("Store extension ZIP must include a platform-neutral Engine download URL")
+        if download_url and urlsplit(download_url).path.lower().endswith(".zip"):
+            fail("extension ZIP Engine download URL must not target one architecture-specific ZIP")
         if release_info.get("signed") is not False or release_info.get("notarized") is not False:
             fail("private beta extension metadata must match the unsigned Engine bundle")
 

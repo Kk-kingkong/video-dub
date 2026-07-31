@@ -6,7 +6,7 @@ An open-source Chrome extension that translates YouTube captions into Chinese an
 
 LocalTube Dub prefers an existing Chinese YouTube caption track. When Chinese captions are unavailable, it can use Chrome's free on-device Translator or a translation Provider chosen by the user. Videos without captions can use the optional local Whisper Engine.
 
-> **Status:** `0.1.98` developer preview. The Chrome Web Store release and signed desktop Engine installer are being prepared.
+> **Status:** `0.2.0` release candidate. The Chrome Web Store update is pending; optional desktop Engine packages remain unsigned and unnotarized development builds.
 
 ## Highlights
 
@@ -14,7 +14,7 @@ LocalTube Dub prefers an existing Chinese YouTube caption track. When Chinese ca
 - Supports Chrome on-device translation with no API key.
 - Supports user-provided Microsoft, Google, OpenAI, Gemini, Claude, DeepSeek, OpenRouter, and compatible API keys.
 - Synchronizes translated subtitles and generated speech with play, pause, seek, and playback speed.
-- Provides Microsoft natural online voices and private macOS system voices.
+- Provides Microsoft natural online voices by default, optional offline Kokoro voices, and a macOS-only system-voice fallback.
 - Supports optional local no-caption transcription with yt-dlp, FFmpeg, and whisper.cpp.
 - Exports translated subtitles as SRT/WebVTT and complete voice tracks as M4A/WAV.
 - Stores API keys locally and contains no LocalTube account, advertising, analytics, or payment system.
@@ -33,7 +33,9 @@ LocalTube Dub prefers an existing Chinese YouTube caption track. When Chinese ca
 3. Select **Load unpacked** and choose the `extension/` directory.
 4. Open a YouTube video, choose a target language, and click **Start translation**.
 
-The companion Engine is optional for basic page-caption translation and recommended for reliable yt-dlp caption extraction, natural/local TTS, no-caption transcription, and audio export. See [companion setup](companion/README.md).
+The companion Engine is optional for basic page-caption translation and recommended for reliable yt-dlp caption extraction, natural/local TTS, no-caption transcription, and audio export. Pinned packages are available for **macOS Apple Silicon**, **macOS Intel**, and **Windows 10/11 x64**. See [companion setup](companion/README.md).
+
+Kokoro is optional. Selecting it exposes an explicit model-install button; after the verified model is downloaded, Chinese and English speech generation stays on the same computer.
 
 ## Privacy
 
@@ -41,7 +43,8 @@ The companion Engine is optional for basic page-caption translation and recommen
 - API keys and caption caches remain in local extension storage.
 - Cloud requests go only to the Provider explicitly selected by the user.
 - Microsoft natural speech receives only the translated text and voice settings required for synthesis.
-- Local system speech and local Whisper processing remain on the user's computer.
+- Microsoft natural speech remains blocked until the user explicitly accepts that transfer in the extension UI.
+- Kokoro, macOS system speech, and local Whisper processing remain on the user's computer.
 
 Read the public [privacy policy](https://kk-kingkong.github.io/video-dub/privacy-policy.html) and [permission explanation](docs/chrome-web-store-permissions.md).
 
@@ -53,6 +56,7 @@ node tools/verify_provider_registry.js
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_local_engine.py
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_native_messaging.py
 python3 tools/verify_open_source_compliance.py
+python3 tools/verify_windows_package.py --source
 ```
 
 ## Documentation
@@ -70,8 +74,8 @@ python3 tools/verify_open_source_compliance.py
 
 ## Current limitations
 
-- The public macOS Engine installer is not yet signed or notarized.
-- A production Windows Engine installer is not yet available.
+- The macOS and Windows Engine packages are not yet signed or notarized.
+- Windows installation smoke tests require a Windows 10/11 x64 machine or the project CI job.
 - Mixed audio export does not separate original dialogue from background sound.
 - Final video muxing and voice cloning are not included.
 

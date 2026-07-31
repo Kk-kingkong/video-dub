@@ -1264,6 +1264,50 @@ function testVoiceDeadlineRateBudget() {
   assert.ok(preparedFitRate * measuredNaturalClip.playbackRate <= 1.34 + 0.001);
 }
 
+function testNaturalVoiceFailurePolicy() {
+  assert.deepEqual(helpers.voiceFailurePolicy("edge"), {
+    allowBrowserFallback: false,
+    requestAttempts: 2,
+    retryDelayMs: 350,
+    unavailableCooldownMs: 0
+  });
+  assert.deepEqual(helpers.voiceFailurePolicy("system"), {
+    allowBrowserFallback: true,
+    requestAttempts: 1,
+    retryDelayMs: 0,
+    unavailableCooldownMs: 60000
+  });
+  assert.deepEqual(helpers.voiceFailurePolicy("kokoro"), {
+    allowBrowserFallback: false,
+    requestAttempts: 1,
+    retryDelayMs: 0,
+    unavailableCooldownMs: 0
+  });
+}
+
+function testKokoroPrefetchWindow() {
+  const segments = [
+    { key: "old", start: 0, end: 1 },
+    { key: "current", start: 1, end: 2.4 },
+    { key: "next-1", start: 2.4, end: 3.4 },
+    { key: "next-2", start: 3.4, end: 4.4 },
+    { key: "next-3", start: 4.4, end: 5.4 }
+  ];
+  assert.deepEqual(
+    helpers.selectKokoroPrefetchSegments(segments, 1.4, "").map((segment) => segment.key),
+    ["current", "next-1", "next-2"]
+  );
+  assert.deepEqual(
+    helpers.selectKokoroPrefetchSegments(segments, 1.4, "current").map((segment) => segment.key),
+    ["next-1", "next-2"]
+  );
+  assert.deepEqual(
+    helpers.selectKokoroPrefetchSegments(segments, 1.4, "old").map((segment) => segment.key),
+    ["current", "next-1"],
+    "a stale active request must leave only two queued slots"
+  );
+}
+
 function testNaturalVoiceStartupReanchor() {
   const timing = helpers.computeVoiceSyncTiming("edge");
   assert.equal(timing.startEarly, 0.12);
@@ -1342,7 +1386,29 @@ function testInstallReleaseInfo() {
     channel: "development",
     version: "0.1.82",
     extensionId: "",
-    engineBundleName: "LocalTube-Dub-Engine-v0.1.82-macOS.zip",
+    enginePackages: [
+      {
+        platform: "macos",
+        architecture: "arm64",
+        label: "macOS Apple Silicon",
+        bundleName: "LocalTube-Dub-Engine-v0.1.82-macOS-arm64.zip",
+        downloadUrl: ""
+      },
+      {
+        platform: "macos",
+        architecture: "x64",
+        label: "macOS Intel",
+        bundleName: "LocalTube-Dub-Engine-v0.1.82-macOS-x64.zip",
+        downloadUrl: ""
+      },
+      {
+        platform: "windows",
+        architecture: "x64",
+        label: "Windows 10/11 x64",
+        bundleName: "LocalTube-Dub-Engine-v0.1.82-Windows-x64.zip",
+        downloadUrl: ""
+      }
+    ],
     engineDownloadUrl: "",
     supportUrl: "",
     signed: false,
@@ -1353,8 +1419,23 @@ function testInstallReleaseInfo() {
       channel: "private-beta",
       version: "0.1.82",
       extensionId: "abcdefghijklmnopabcdefghijklmnop",
-      engineBundleName: "engine.zip",
-      engineDownloadUrl: "http://unsafe.example/engine.zip",
+      enginePackages: [
+        {
+          platform: "macos",
+          architecture: "arm64",
+          label: "Mac",
+          bundleName: "engine.zip",
+          downloadUrl: "https://downloads.example/engine.zip"
+        },
+        {
+          platform: "linux",
+          architecture: "x64",
+          label: "Unsupported",
+          bundleName: "../unsafe.zip",
+          downloadUrl: "https://downloads.example/unsafe.zip"
+        }
+      ],
+      engineDownloadUrl: "https://unsafe.example/one-architecture.zip",
       supportUrl: "https://support.example/help",
       signed: false,
       notarized: false
@@ -1364,6 +1445,15 @@ function testInstallReleaseInfo() {
   assert.equal(customer.channel, "private-beta");
   assert.equal(customer.engineDownloadUrl, "");
   assert.equal(customer.supportUrl, "https://support.example/help");
+  assert.deepEqual(customer.enginePackages, [
+    {
+      platform: "macos",
+      architecture: "arm64",
+      label: "Mac",
+      bundleName: "engine.zip",
+      downloadUrl: "https://downloads.example/engine.zip"
+    }
+  ]);
 }
 
 function testTranscriptionRequestRegistry() {
@@ -1486,7 +1576,7 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
   assert.equal(manifest.content_scripts[0].world, "MAIN");
   assert.deepEqual(manifest.content_scripts[1].js, ["voice_helpers.js", "content_helpers.js", "content.js"]);
-  assert.equal(manifest.version, "0.1.98");
+  assert.equal(manifest.version, "0.2.0");
   assert.equal(manifest.permissions.includes("downloads"), false);
   assert.deepEqual(manifest.permissions, ["activeTab", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.optional_permissions, ["offscreen", "tabCapture"]);
@@ -1510,6 +1600,45 @@ function testManifestAndFlowGuards() {
   assert.match(kokoroBackground, /\/api\/tts-model\/kokoro\/cancel/);
   assert.match(kokoroBackground, /\/api\/tts-model\/kokoro\/uninstall/);
   assert.doesNotMatch(kokoroBackground, /payload\.(?:url|path|checksum|package|command)/);
+  assert.match(content, /data-kokoro-model-status/);
+  assert.match(content, /localtube\.getKokoroModelStatus/);
+  assert.match(content, /localtube\.installKokoroModel/);
+  assert.match(content, /localtube\.cancelKokoroModelInstall/);
+  assert.match(content, /localtube\.uninstallKokoroModel/);
+  assert.match(content, /state\.kokoroModelStatus\.state !== "ready"/);
+  assert.match(content, /ttsEngineSupportsLanguage\("kokoro", state\.settings\.targetLanguage\)/);
+  assert.match(content, /Kokoro 当前仅支持中文和英文/);
+  assert.match(content, /data-field="microsoftTtsConsent"/);
+  assert.match(content, /请先同意 Microsoft 在线配音的数据传输说明/);
+  assert.match(
+    content,
+    /querySelector\("\[data-action='start'\]"\)\.addEventListener\("click", async \(\) => \{\s*await saveSettingsFromWidget\(\);\s*await startDubbing\(\);/
+  );
+  assert.match(content, /当前音色不可用，已切换为/);
+  assert.match(content, /payload\.actualVoice/);
+  assert.match(content, /voiceFallback/);
+  assert.match(content, /state\.settings\.voiceId \|\| "auto"[\s\S]*requestedVoice \|\| "auto"/);
+  assert.match(content, /selectKokoroPrefetchSegments/);
+  assert.match(content, /syncKokoroVoiceQueueWindow/);
+  assert.match(content, /task\.segmentKey/);
+  assert.match(content, /state\.settings\.ttsEngine === "kokoro" \? 1 : VOICE_AUDIO_MAX_CONCURRENCY/);
+  assert.match(content, /kokoroModelPollingStopped/);
+  assert.match(content, /state:\s*"unavailable"/);
+  assert.match(content, /扩展刚刚更新，请刷新 YouTube 页面/);
+  assert.match(content, /retryKokoroModelStatusFromWidget/);
+  const overlayKokoroScheduleBody = extractFunctionBody(content, "scheduleKokoroModelStatusRefresh");
+  assert.match(overlayKokoroScheduleBody, /state\.kokoroModelPollingStopped/);
+  const overlayKokoroRefreshBody = extractFunctionBody(content, "refreshKokoroModelStatus");
+  assert.match(overlayKokoroRefreshBody, /contextInvalidated/);
+  assert.match(overlayKokoroRefreshBody, /state:\s*"unavailable"/);
+  const overlayKokoroFallbackBody = extractFunctionBody(content, "applyKokoroVoiceFallback");
+  assert.match(
+    overlayKokoroFallbackBody,
+    /String\(state\.settings\.voiceId \|\| "auto"\) !== String\(requestedVoice \|\| "auto"\)/
+  );
+  const overlayKokoroQueueBody = extractFunctionBody(content, "syncKokoroVoiceQueueWindow");
+  assert.match(overlayKokoroQueueBody, /task\.cancel\?\.\(\)/);
+  assert.match(overlayKokoroQueueBody, /state\.voiceAudioQueue\.sort/);
   assert.match(content, /const EXTENSION_VERSION = chrome\.runtime\.getManifest\(\)\.version/);
   assert.match(content, /LocalTube Dub <span>\$\{EXTENSION_VERSION\}<\/span>/);
   assert.match(content, /handleWidgetVolumeInput/);
@@ -1602,6 +1731,16 @@ function testManifestAndFlowGuards() {
   assert.match(content, /Microsoft 自然在线/);
   assert.match(content, /ttsEngine: state\.settings\.ttsEngine \|\| DEFAULT_SETTINGS\.ttsEngine/);
   assert.match(content, /ttsEngine: "edge"/);
+  const voicePlaybackBody = extractFunctionBody(content, "maybeSpeakVoiceSegment");
+  assert.match(voicePlaybackBody, /failurePolicy\.allowBrowserFallback/);
+  assert.doesNotMatch(voicePlaybackBody, /ttsEngine\s*=\s*"edge"/);
+  assert.match(voicePlaybackBody, /Microsoft 自然在线暂时未生成当前片段/);
+  assert.match(voicePlaybackBody, /Kokoro 本地语音暂时未生成当前片段/);
+  assert.match(voicePlaybackBody, /markVoiceSegmentSkipped\(segment\)/);
+  const voiceRequestBody = extractFunctionBody(content, "requestVoiceSegmentAudio");
+  assert.match(voiceRequestBody, /failurePolicy\.requestAttempts/);
+  assert.match(voiceRequestBody, /failurePolicy\.retryDelayMs/);
+  assert.doesNotMatch(voiceRequestBody, /Date\.now\(\) \+ 60000/);
   assert.match(content, /loadCachedTimeline\(videoId, operationId, "youtube-captions"\)/);
   assert.match(content, /providerCachedTimeline = await loadCachedTimeline\(videoId, operationId, state\.settings\.provider\)/);
   assert.match(content, /audio\.preservesPitch = true/);
@@ -1623,6 +1762,8 @@ function testManifestAndFlowGuards() {
   assert.match(content, /const VOICE_AUDIO_MAX_CONCURRENCY = 3/);
   assert.match(content, /beginVoiceEngineWarmup\(operationId\)/);
   assert.match(content, /function voiceWarmupText/);
+  const voiceWarmupBody = extractFunctionBody(content, "beginVoiceEngineWarmup");
+  assert.match(voiceWarmupBody, /state\.settings\.ttsEngine === "kokoro"/);
   assert.match(content, /function pruneQueuedVoiceAudioTasks/);
   assert.match(content, /scheduleVoicePrefetchWindow\(state\.video\.currentTime \|\| 0\)/);
   assert.match(content, /VOICE_TIMEBOX_END_GRACE_SECONDS/);
@@ -1897,6 +2038,10 @@ function testManifestAndFlowGuards() {
   assert.match(content, /state\.activeDubRequestIds\.delete\(requestId\)/);
 
   const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+  assert.match(background, /microsoftTtsConsent: false/);
+  assert.match(background, /MICROSOFT_TTS_CONSENT_REQUIRED/);
+  assert.match(background, /!storedSettings\.microsoftTtsConsent/);
+  assert.doesNotMatch(background, /!nextSettings\.microsoftTtsConsent/);
   assert.match(background, /allowAudioTranscription: false/);
   assert.match(background, /allowAudioTranscription: Boolean\(merged\.allowAudioTranscription\)/);
   assert.match(background, /localtube\.resolveCaptions/);
@@ -2044,7 +2189,7 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /localtube\.clearTranslationCache/);
   assert.match(popupHtml, /id="cacheTranslations"/);
   assert.match(popupHtml, /id="clearTranslationCache"/);
-  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.1\.98<\/span>/);
+  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.0<\/span>/);
   assert.match(popupHtml, /id="testProvider"[^>]*>验证翻译 Key<\/button>/);
   assert.match(popup, /saveAndValidateApiKey/);
   assert.match(popupHtml, /免费 \/ 自带 Key/);
@@ -2060,9 +2205,13 @@ function testManifestAndFlowGuards() {
   assert.match(popupHtml, /id="voiceId"/);
   assert.match(popupHtml, /id="ttsEngine"/);
   assert.match(popupHtml, /Microsoft 自然在线（默认）/);
+  assert.match(popupHtml, /id="microsoftTtsConsent"/);
+  assert.match(popupHtml, /翻译字幕文本、所选音色和语速发送给 Microsoft/);
   assert.match(popupHtml, /Kokoro 高质量本地/);
   assert.doesNotMatch(popupHtml, /<option value="system">/);
   assert.match(popup, /ttsEngine: "edge"/);
+  assert.match(popup, /microsoftTtsConsent: false/);
+  assert.match(popup, /microsoftTtsConsent: nodes\.microsoftTtsConsent\.checked/);
   assert.match(popup, /function applyEnginePlatformPolicy/);
   assert.match(popup, /ttsEngineOptionsForPlatform/);
   assert.match(popup, /localtube\.setSettings/);
@@ -2077,6 +2226,29 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /selectVoiceOptions/);
   assert.match(popupHtml, /id="originalVolume"/);
   assert.match(popupHtml, /engineStatus/);
+  assert.match(popupHtml, /id="kokoroModelCard"/);
+  assert.match(popupHtml, /id="kokoroModelInstall"/);
+  assert.match(popupHtml, /id="kokoroModelCancel"/);
+  assert.match(popupHtml, /id="kokoroModelRetry"/);
+  assert.match(popupHtml, /id="kokoroModelUninstall"/);
+  assert.match(popupHtml, /id="kokoroModelProgress"/);
+  assert.match(popup, /localtube\.getKokoroModelStatus/);
+  assert.match(popup, /localtube\.installKokoroModel/);
+  assert.match(popup, /localtube\.cancelKokoroModelInstall/);
+  assert.match(popup, /localtube\.uninstallKokoroModel/);
+  assert.match(popup, /ttsEngineSupportsLanguage\("kokoro", currentSettings\.targetLanguage\)/);
+  assert.match(popup, /当前目标语言暂不支持 Kokoro/);
+  assert.match(popup, /setTimeout\(refreshKokoroModelStatus,\s*installing \? 1000 : 5000\)/);
+  assert.match(popup, /kokoroModelPollingStopped/);
+  assert.match(popup, /state:\s*"unavailable"/);
+  assert.match(popup, /扩展刚刚更新，请关闭并重新打开弹窗/);
+  assert.match(popup, /retryKokoroModelStatus/);
+  const popupKokoroScheduleBody = extractFunctionBody(popup, "scheduleKokoroModelStatusRefresh");
+  assert.match(popupKokoroScheduleBody, /kokoroModelPollingStopped/);
+  const popupKokoroRefreshBody = extractFunctionBody(popup, "refreshKokoroModelStatus");
+  assert.match(popupKokoroRefreshBody, /contextInvalidated/);
+  assert.match(popupKokoroRefreshBody, /state:\s*"unavailable"/);
+  assert.match(popup, /confirm\([^)]*删除[^)]*Kokoro/);
   const pageProbe = fs.readFileSync(path.join(root, "extension", "page_probe.js"), "utf8");
   assert.match(pageProbe, /moviePlayer\?\.getPlayerResponse/);
   assert.match(pageProbe, /watchFlexy\?\.playerData/);
@@ -2088,10 +2260,16 @@ function testManifestAndFlowGuards() {
   const installHtml = fs.readFileSync(path.join(root, "extension", "install.html"), "utf8");
   const releaseInfo = JSON.parse(fs.readFileSync(path.join(root, "extension", "release-info.json"), "utf8"));
   assert.equal(releaseInfo.channel, "development");
+  assert.ok(Array.isArray(releaseInfo.enginePackages));
   assert.match(installHtml, /本地 Engine 体检/);
   assert.match(installHtml, /第一次使用要准备什么/);
   assert.match(installHtml, /升级开发版后要刷新/);
   assert.match(installHtml, /Install LocalTube Dub Engine\.command/);
+  assert.match(installHtml, /Install LocalTube Dub Engine\.cmd/);
+  assert.match(installHtml, /Windows 10\/11 x64/);
+  assert.match(installHtml, /id="enginePackageList"/);
+  assert.match(installHtml, /Kokoro/);
+  assert.match(installHtml, /仅限 macOS/);
   assert.match(installHtml, /尚未签名和公证/);
   assert.match(installHtml, /install_helpers\.js[\s\S]*install\.js/);
   assert.match(installHtml, /data-audience="customer"/);
@@ -2111,6 +2289,8 @@ function testManifestAndFlowGuards() {
   assert.match(installJs, /localtube\.startEngine/);
   assert.match(installJs, /localtube\.restartEngine/);
   assert.match(installJs, /localtube\.installLocalWhisper/);
+  assert.match(installJs, /normalized\.enginePackages/);
+  assert.match(installJs, /enginePackage\.bundleName/);
   assert.match(installJs, /localtube\.installEngineAutostart/);
   assert.match(installJs, /install_engine_autostart_macos\.sh/);
   assert.match(installJs, /install_local_whisper_macos\.sh/);
@@ -2292,7 +2472,14 @@ function testManifestAndFlowGuards() {
   assert.match(releaseBuild, /LocalTube-Dub-Engine-v\$VERSION-macOS/);
   assert.match(releaseBuild, /LOCAL_DUB_ENGINE_DOWNLOAD_URL/);
   assert.match(releaseBuild, /LOCAL_DUB_SUPPORT_URL/);
+  assert.match(releaseBuild, /LOCAL_DUB_RELEASE_CHANNEL/);
+  assert.match(releaseBuild, /store or private-beta/);
+  assert.match(releaseBuild, /Store releases require LOCAL_DUB_ENGINE_DOWNLOAD_URL/);
+  assert.match(releaseBuild, /architecture-specific ZIP/);
   assert.match(releaseBuild, /release-info\.json/);
+  assert.match(releaseBuild, /LocalTube-Dub-Engine-v\{version\}-macOS-arm64\.zip/);
+  assert.match(releaseBuild, /LocalTube-Dub-Engine-v\{version\}-macOS-x64\.zip/);
+  assert.match(releaseBuild, /LocalTube-Dub-Engine-v\{version\}-Windows-x64\.zip/);
   assert.match(releaseBuild, /must use HTTPS/);
   assert.match(releaseBuild, /verify_release_packages\.py/);
   assert.match(releaseBuild, /smoke_release_macos\.sh/);
@@ -2371,7 +2558,7 @@ function testManifestAndFlowGuards() {
   assert.match(changelog, /Native Host/);
   assert.match(changelog, /0\.1\.91/);
   assert.match(changelog, /single customer workflow/);
-  assert.match(developmentAudit, /Current reviewed version: 0\.1\.98/);
+  assert.match(developmentAudit, /Current reviewed version: 0\.2\.0/);
   assert.match(developmentAudit, /ikoenamldegccnhmjjnlkffocdkbbbmo/);
   assert.match(developmentAudit, /Dubbed voice-track export/);
   assert.match(developmentAudit, /Subtitle export/);
@@ -2412,6 +2599,8 @@ async function main() {
   testFullTrackMediaElements();
   testLiveVoiceSync();
   testVoiceDeadlineRateBudget();
+  testNaturalVoiceFailurePolicy();
+  testKokoroPrefetchWindow();
   testNaturalVoiceStartupReanchor();
   testLiveVoiceMediaElements();
   testInstallReleaseInfo();

@@ -6,10 +6,19 @@ EXTENSION_ID="${1:-}"
 OUTPUT_DIR="${2:-$ROOT_DIR/dist}"
 ENGINE_DOWNLOAD_URL="${LOCAL_DUB_ENGINE_DOWNLOAD_URL:-}"
 SUPPORT_URL="${LOCAL_DUB_SUPPORT_URL:-}"
+RELEASE_CHANNEL="${LOCAL_DUB_RELEASE_CHANNEL:-store}"
 
 if [[ ! "$EXTENSION_ID" =~ ^[a-p]{32}$ ]]; then
   echo "Usage: ./scripts/build_release_macos.sh <32-character-chrome-extension-id> [output-directory]"
   echo "Chrome extension IDs contain only letters a through p."
+  exit 1
+fi
+if [[ "$RELEASE_CHANNEL" != "store" && "$RELEASE_CHANNEL" != "private-beta" ]]; then
+  echo "LOCAL_DUB_RELEASE_CHANNEL must be store or private-beta."
+  exit 1
+fi
+if [[ "$RELEASE_CHANNEL" == "store" && -z "$ENGINE_DOWNLOAD_URL" ]]; then
+  echo "Store releases require LOCAL_DUB_ENGINE_DOWNLOAD_URL."
   exit 1
 fi
 for command in python3 zip unzip ditto shasum; do
@@ -50,22 +59,46 @@ ditto --norsrc "$ROOT_DIR/extension" "$EXTENSION_STAGE"
 find "$EXTENSION_STAGE" -name '.DS_Store' -delete
 install -m 0644 "$ROOT_DIR/LICENSE" "$EXTENSION_STAGE/LICENSE"
 install -m 0644 "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$EXTENSION_STAGE/THIRD_PARTY_NOTICES.md"
-python3 - "$EXTENSION_STAGE/release-info.json" "$VERSION" "$EXTENSION_ID" "$ENGINE_NAME.zip" "$ENGINE_DOWNLOAD_URL" "$SUPPORT_URL" <<'PY'
+python3 - "$EXTENSION_STAGE/release-info.json" "$VERSION" "$EXTENSION_ID" "$RELEASE_CHANNEL" "$ENGINE_DOWNLOAD_URL" "$SUPPORT_URL" <<'PY'
 import json
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
 target = Path(sys.argv[1])
-version, extension_id, engine_name, download_url, support_url = sys.argv[2:]
+version, extension_id, channel, download_url, support_url = sys.argv[2:]
 for label, value in (("Engine download URL", download_url), ("support URL", support_url)):
     if value and urlsplit(value).scheme.lower() != "https":
         raise SystemExit(f"{label} must use HTTPS: {value}")
+if download_url and urlsplit(download_url).path.lower().endswith(".zip"):
+    raise SystemExit("Engine download URL must be a platform-neutral index, not an architecture-specific ZIP.")
 payload = {
-    "channel": "private-beta",
+    "channel": channel,
     "version": version,
     "extensionId": extension_id,
-    "engineBundleName": engine_name,
+    "enginePackages": [
+        {
+            "platform": "macos",
+            "architecture": "arm64",
+            "label": "macOS Apple Silicon",
+            "bundleName": f"LocalTube-Dub-Engine-v{version}-macOS-arm64.zip",
+            "downloadUrl": "",
+        },
+        {
+            "platform": "macos",
+            "architecture": "x64",
+            "label": "macOS Intel",
+            "bundleName": f"LocalTube-Dub-Engine-v{version}-macOS-x64.zip",
+            "downloadUrl": "",
+        },
+        {
+            "platform": "windows",
+            "architecture": "x64",
+            "label": "Windows 10/11 x64",
+            "bundleName": f"LocalTube-Dub-Engine-v{version}-Windows-x64.zip",
+            "downloadUrl": "",
+        },
+    ],
     "engineDownloadUrl": download_url,
     "supportUrl": support_url,
     "signed": False,

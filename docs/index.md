@@ -7,16 +7,18 @@ title: LocalTube Dub
 
 An open-source Chrome extension for translating YouTube captions into Chinese and playing synchronized Chinese dubbing.
 
-[Source code](https://github.com/Kk-kingkong/video-dub) | [Privacy policy](privacy-policy.html) | [Support](support.html) | [Security](https://github.com/Kk-kingkong/video-dub/security/policy)
+[Chrome Web Store](https://chromewebstore.google.com/detail/localtube-dub/ikoenamldegccnhmjjnlkffocdkbbbmo) | [Source code](https://github.com/Kk-kingkong/video-dub) | [Privacy policy](privacy-policy.html) | [Support](support.html) | [Security](https://github.com/Kk-kingkong/video-dub/security/policy)
 
 ## What it does
 
 - Uses an existing Chinese YouTube caption track when one is available.
 - Otherwise translates source captions with Chrome on-device translation or a Provider selected by the user.
 - Plays translated subtitles and speech on the original video timeline.
-- Optionally uses the local Engine for yt-dlp caption extraction, local transcription, natural speech, and export.
+- Optionally uses the local Engine for yt-dlp caption extraction, local transcription, offline Kokoro speech, and export.
 
-LocalTube Dub has no account system, subscription, advertising, analytics, payment processing, or hosted translation backend. The Chrome Web Store release and signed desktop Engine installer are still being prepared. Do not install unofficial packages claiming to be a LocalTube Dub release.
+Microsoft natural online speech remains the default. Kokoro is an explicit optional model download that synthesizes Chinese and English on the same computer. The packaged Engine supports macOS Apple Silicon, macOS Intel, and Windows 10/11 x64; the current desktop packages are unsigned development builds.
+
+LocalTube Dub has no account system, subscription, advertising, analytics, payment processing, or hosted translation backend. Install the extension from the Chrome Web Store or use source and Engine packages published by this repository.
 
 ## 简体中文
 
@@ -25,6 +27,8 @@ LocalTube Dub 是一个开源 Chrome 扩展，用于把 YouTube 字幕翻译成�
 - 优先使用 YouTube 已有的中文字幕。
 - 没有中文字幕时，使用 Chrome 端侧翻译或用户自己选择的翻译服务。
 - 中文字幕和配音会跟随视频播放、暂停、跳转和倍速。
-- 可选的本地 Engine 提供 yt-dlp 字幕提取、本地转写、自然语音和导出能力。
+- 可选的本地 Engine 提供 yt-dlp 字幕提取、本地转写、离线 Kokoro 配音和导出能力。
 
-项目没有账号、订阅、广告、统计、支付或托管翻译后台。Chrome 插件商店版本和已签名 Engine 安装包仍在准备中，请不要安装来源不明的所谓正式版本。
+Microsoft 自然在线配音仍是默认选项。Kokoro 需要用户主动下载可选模型，之后中英文配音都在同一台电脑上生成。Engine 支持 macOS Apple Silicon、macOS Intel 和 Windows 10/11 x64；当前桌面安装包仍是未签名的开发版本。
+
+项目没有账号、订阅、广告、统计、支付或托管翻译后台。请从 Chrome 插件商店安装扩展，或只使用本仓库发布的源码和 Engine 安装包。

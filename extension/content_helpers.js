@@ -550,6 +550,45 @@
     return end - start;
   }
 
+  function voiceFailurePolicy(ttsEngine) {
+    const engine = String(ttsEngine || "").trim().toLowerCase();
+    if (engine === "edge") {
+      return {
+        allowBrowserFallback: false,
+        requestAttempts: 2,
+        retryDelayMs: 350,
+        unavailableCooldownMs: 0
+      };
+    }
+    if (engine === "kokoro") {
+      return {
+        allowBrowserFallback: false,
+        requestAttempts: 1,
+        retryDelayMs: 0,
+        unavailableCooldownMs: 0
+      };
+    }
+    return {
+      allowBrowserFallback: true,
+      requestAttempts: 1,
+      retryDelayMs: 0,
+      unavailableCooldownMs: 60000
+    };
+  }
+
+  function selectKokoroPrefetchSegments(segments, currentTime, activeSegmentKey = "") {
+    const now = Math.max(0, Number(currentTime || 0));
+    const activeKey = String(activeSegmentKey || "");
+    const candidates = (Array.isArray(segments) ? segments : []).filter((segment) => {
+      const end = Math.max(Number(segment?.timeboxEnd || 0), Number(segment?.end || 0));
+      return end >= now - 0.1;
+    });
+    const queuedSlots = activeKey ? 2 : 3;
+    return candidates
+      .filter((segment) => String(segment?.key || "") !== activeKey)
+      .slice(0, queuedSlots);
+  }
+
   function captionEngineWaitTimeout(pageResult, pageFallbackMs = 2000, totalMs = 23000) {
     const fallback = clampInteger(pageFallbackMs, 100, 30000, 2000);
     const total = clampInteger(totalMs, fallback, 120000, 23000);
@@ -1139,7 +1178,9 @@
     responseMatchesVideo,
     resolveVoiceCaptionText,
     selectNewRollingCues,
-    serializeSubtitleCues
+    selectKokoroPrefetchSegments,
+    serializeSubtitleCues,
+    voiceFailurePolicy
   };
 
   globalScope.LocalTubeDubHelpers = api;

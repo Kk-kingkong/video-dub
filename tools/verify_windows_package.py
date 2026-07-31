@@ -8,6 +8,7 @@ under a LocalAppData path containing spaces and non-ASCII characters.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -35,6 +36,7 @@ REGISTRY_ROOT = (
     rf"\{NATIVE_HOST_NAME}"
 )
 WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.0-Windows-x64.zip"
+WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.0-Windows-x64-SHA256SUMS.txt"
 WINDOWS_TEMPLATES = {
     "launcher": ROOT_DIR / "packaging" / "windows" / "Install LocalTube Dub Engine.cmd.in",
     "installer": ROOT_DIR / "packaging" / "windows" / "install-engine.ps1.in",
@@ -341,6 +343,12 @@ def verify_packaging_sources() -> None:
         "Windows builder does not package the lifecycle manager",
     )
     require(
+        "Windows-x64-SHA256SUMS.txt" in builder
+        and "sha256" in builder
+        and "checksum" in builder.casefold(),
+        "Windows builder does not create a publishable SHA-256 file",
+    )
+    require(
         "RedirectStandardInput = true" in launcher_source
         and "RedirectStandardOutput = true" in launcher_source
         and r'Path.Combine(runtimeRoot, ".venv", "python.exe")' in launcher_source,
@@ -559,6 +567,21 @@ def invoke_native_launcher(launcher: Path, env: dict[str, str]) -> dict[str, Any
 def verify_install_smoke(package: Path) -> None:
     require(os.name == "nt", "--install-smoke must run on Windows")
     require(package.is_file(), f"Windows package does not exist: {package}")
+    checksum_path = package.with_name(WINDOWS_CHECKSUM_NAME)
+    require(checksum_path.is_file(), f"Windows checksum does not exist: {checksum_path}")
+    checksum_parts = checksum_path.read_text(encoding="ascii").strip().split()
+    require(
+        len(checksum_parts) == 2 and checksum_parts[1] == package.name,
+        "Windows checksum file has an invalid format or filename",
+    )
+    digest = hashlib.sha256()
+    with package.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    require(
+        digest.hexdigest() == checksum_parts[0].lower(),
+        "Windows package SHA-256 does not match its published checksum",
+    )
     import winreg
 
     with tempfile.TemporaryDirectory(prefix="LocalTube Dub 测试 ") as temporary:

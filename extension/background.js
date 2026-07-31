@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
   muteOriginal: false,
   originalVolume: 0.25,
   ttsEngine: "edge",
+  microsoftTtsConsent: false,
   voiceId: "auto",
   voiceRate: 1,
   voicePitch: 1,
@@ -506,6 +507,7 @@ function sanitizeSettings(settings) {
     muteOriginal: Boolean(merged.muteOriginal),
     originalVolume: clamp(Number(merged.originalVolume ?? DEFAULT_SETTINGS.originalVolume), 0, 1),
     ttsEngine: sanitizeTtsEngine(merged.ttsEngine),
+    microsoftTtsConsent: Boolean(merged.microsoftTtsConsent),
     voiceId: sanitizeVoiceId(merged.voiceId),
     voiceRate: clamp(Number(merged.voiceRate || DEFAULT_SETTINGS.voiceRate), 0.6, 1.4),
     voicePitch: clamp(Number(merged.voicePitch || DEFAULT_SETTINGS.voicePitch), 0.7, 1.3),
@@ -982,6 +984,13 @@ async function synthesizeSpeechWithEngine(payload = {}, settings = {}) {
   };
   if (!requestPayload.text.trim()) {
     return { ok: false, error: "Missing TTS text" };
+  }
+  if (requestPayload.ttsEngine === "edge" && !storedSettings.microsoftTtsConsent) {
+    return {
+      ok: false,
+      code: "MICROSOFT_TTS_CONSENT_REQUIRED",
+      error: "请先在扩展界面同意 Microsoft 在线配音的数据传输说明。"
+    };
   }
 
   const errors = [];

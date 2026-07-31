@@ -5,7 +5,7 @@ title: LocalTube Dub Privacy Policy
 
 # LocalTube Dub Privacy Policy
 
-**Effective date:** July 23, 2026
+**Effective date:** July 30, 2026
 
 [Home](index.html) | [Support](support.html) | [Source code](https://github.com/Kk-kingkong/video-dub)
 
@@ -37,7 +37,7 @@ Non-secret preferences are stored with `chrome.storage.sync`. If the user has Ch
 
 The optional caption cache is also stored in `chrome.storage.local`. It may contain the YouTube video ID, language identifiers, caption text, translated text, cue timestamps, and the Provider/model identity used for an AI translation. It does not contain video, audio, cookies, or API keys. Cache entries expire after seven days and are limited to 12 timelines or approximately 4 MB. Users can disable caching or select **Clear caption cache** at any time.
 
-Removing the extension clears its Chrome extension storage. The optional desktop Engine keeps runtime files, logs, models, and user-requested exports separately on the computer. Its uninstall command removes the runtime; the `--purge` option also removes Engine caches and logs. Local Whisper models are retained unless the user deletes them.
+Removing the extension clears its Chrome extension storage. The optional desktop Engine keeps runtime files, logs, models, and user-requested exports separately on the same computer. Its uninstall command removes the runtime; the `--purge` option also removes Engine caches and logs. Kokoro and Local Whisper models are retained unless the user removes them with the supplied control or deletes them.
 
 ## YouTube captions and active-video requests
 
@@ -69,9 +69,11 @@ If a user selects Groq, Deepgram, or OpenAI transcription, the captured audio se
 
 ## Speech generation
 
-The default **Microsoft natural online** speech mode sends only the translated subtitle text being spoken, the selected voice, and speech-rate settings through the companion Engine to Microsoft Edge's text-to-speech service. It does not send the source video, captured audio, API keys, YouTube cookies, or unrelated browsing history.
+The default **Microsoft natural online** speech mode remains blocked until the user checks the prominent consent control in the extension UI. After that explicit action, it sends only the translated subtitle text being spoken, the selected voice, and speech-rate settings through the companion Engine to Microsoft Edge's text-to-speech service. It does not send the source video, captured audio, API keys, YouTube cookies, or unrelated browsing history. The user can withdraw consent by clearing the same control or switch to a local speech engine.
 
-Selecting **local system voice** generates speech with the operating system's local speech service and stops sending subtitle text to Microsoft text-to-speech. Chrome browser speech may be used as a local playback fallback when Engine speech is unavailable.
+Selecting **Kokoro high-quality local** keeps subtitle text and generated speech on the same computer. The user explicitly installs the optional model from the extension UI. The Engine downloads a fixed model-data archive over HTTPS, checks its exact size and SHA-256 digest, and activates it only after validating the archive layout. The model is data for the separately installed local Engine, not remotely hosted extension code. Kokoro never falls back to Microsoft or operating-system speech; if one Kokoro voice is unavailable, it may switch only to a disclosed same-language Kokoro voice.
+
+Selecting **local system voice** generates speech with the operating system's local speech service and stops sending subtitle text to Microsoft text-to-speech. This option is macOS-only. Chrome browser speech may be used as a local playback fallback only for that system-speech mode.
 
 ## Local Engine communication
 
@@ -90,7 +92,9 @@ Third-party Providers and platforms may retain requests under their own policies
 Users can:
 
 - choose Chrome on-device translation instead of a cloud translation Provider;
-- choose local system speech instead of Microsoft natural online speech;
+- choose Kokoro local speech, or the macOS-only system voice, instead of Microsoft natural online speech;
+- explicitly grant or withdraw Microsoft natural-online text-transfer consent;
+- explicitly install, cancel, retry, or remove the optional Kokoro model;
 - keep no-caption transcription disabled;
 - deny optional Provider, tab capture, or offscreen permissions;
 - disable or clear the caption cache;

@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
   muteOriginal: false,
   originalVolume: 0.25,
   ttsEngine: "edge",
+  microsoftTtsConsent: false,
   voiceId: "auto",
   voiceRate: 1,
   voicePitch: 1,
@@ -30,7 +31,8 @@ const {
   resolveConfiguredTtsEngineSelection,
   selectVoiceOptions,
   transitionTtsEnginePlatformState,
-  ttsEngineOptionsForPlatform
+  ttsEngineOptionsForPlatform,
+  ttsEngineSupportsLanguage
 } = globalThis.LocalTubeDubVoiceHelpers;
 const { collectOptionalOrigins, optionalCapturePermissions } = globalThis.LocalTubeDubPermissionHelpers;
 
@@ -152,6 +154,16 @@ const MODE_COPY = {
   }
 };
 
+const EMPTY_KOKORO_MODEL_STATUS = Object.freeze({
+  state: "unknown",
+  version: "",
+  downloadedBytes: 0,
+  totalBytes: 0,
+  progress: 0,
+  installedBytes: 0,
+  error: ""
+});
+
 const nodes = {
   enabled: document.querySelector("#enabled"),
   appVersion: document.querySelector("#appVersion"),
@@ -176,6 +188,8 @@ const nodes = {
   transcriptionNote: document.querySelector("#transcriptionNote"),
   targetLanguage: document.querySelector("#targetLanguage"),
   ttsEngine: document.querySelector("#ttsEngine"),
+  microsoftTtsConsent: document.querySelector("#microsoftTtsConsent"),
+  microsoftTtsConsentField: document.querySelector("#microsoftTtsConsentField"),
   voiceId: document.querySelector("#voiceId"),
   voiceEnabled: document.querySelector("#voiceEnabled"),
   muteOriginal: document.querySelector("#muteOriginal"),
@@ -185,6 +199,15 @@ const nodes = {
   engineStatusText: document.querySelector("#engineStatusText"),
   engineStatusMeta: document.querySelector("#engineStatusMeta"),
   engineInstallInline: document.querySelector("#engineInstallInline"),
+  kokoroModelCard: document.querySelector("#kokoroModelCard"),
+  kokoroModelStatus: document.querySelector("#kokoroModelStatus"),
+  kokoroModelDetail: document.querySelector("#kokoroModelDetail"),
+  kokoroModelProgress: document.querySelector("#kokoroModelProgress"),
+  kokoroModelProgressText: document.querySelector("#kokoroModelProgressText"),
+  kokoroModelInstall: document.querySelector("#kokoroModelInstall"),
+  kokoroModelCancel: document.querySelector("#kokoroModelCancel"),
+  kokoroModelRetry: document.querySelector("#kokoroModelRetry"),
+  kokoroModelUninstall: document.querySelector("#kokoroModelUninstall"),
   testProvider: document.querySelector("#testProvider"),
   clearApiKey: document.querySelector("#clearApiKey"),
   clearTranscriptionApiKey: document.querySelector("#clearTranscriptionApiKey"),
@@ -194,10 +217,14 @@ const nodes = {
 
 let currentSettings = { ...DEFAULT_SETTINGS };
 let engineStatusTimer = 0;
+let kokoroModelStatusTimer = 0;
 let volumeSaveTimer = 0;
 let availableVoiceOptions = [];
 let enginePlatform = "";
 let renderedTtsEngine = "edge";
+let kokoroModelStatus = { ...EMPTY_KOKORO_MODEL_STATUS };
+let kokoroModelOperationInFlight = false;
+let kokoroModelPollingStopped = false;
 const fallbackVoiceOptions = Array.from(nodes.voiceId.options).map((option) => ({
   id: option.value,
   name: option.textContent,
@@ -317,6 +344,7 @@ async function init() {
     "transcriptionApiKey",
     "voiceId",
     "voiceEnabled",
+    "microsoftTtsConsent",
     "muteOriginal",
     "originalVolume"
   ]) {
@@ -334,6 +362,7 @@ async function init() {
     nodes.voiceId.value = "auto";
     await saveFromForm();
     await refreshVoiceOptions();
+    await refreshKokoroModelStatus();
   });
 
   nodes.provider.addEventListener("change", handleProviderChange);
@@ -343,8 +372,17 @@ async function init() {
   nodes.clearTranscriptionApiKey.addEventListener("click", clearTranscriptionApiKey);
   nodes.clearTranslationCache.addEventListener("click", clearTranslationCache);
   nodes.engineInstallInline.addEventListener("click", openInstallGuide);
+  nodes.kokoroModelInstall.addEventListener("click", () => runKokoroModelOperation("localtube.installKokoroModel"));
+  nodes.kokoroModelCancel.addEventListener("click", () => runKokoroModelOperation("localtube.cancelKokoroModelInstall"));
+  nodes.kokoroModelRetry.addEventListener("click", retryKokoroModelStatus);
+  nodes.kokoroModelUninstall.addEventListener("click", uninstallKokoroModel);
   refreshEngineStatus();
   engineStatusTimer = setInterval(refreshEngineStatus, 5000);
+  refreshKokoroModelStatus();
+  window.addEventListener("unload", () => {
+    clearInterval(engineStatusTimer);
+    clearTimeout(kokoroModelStatusTimer);
+  }, { once: true });
 }
 
 async function refreshVoiceOptions() {
@@ -474,13 +512,184 @@ function render(settings) {
   renderTtsEngineOptions(currentSettings.ttsEngine);
   renderVoiceOptions(currentSettings.voiceId);
   nodes.voiceEnabled.checked = currentSettings.voiceEnabled;
+  nodes.microsoftTtsConsent.checked = Boolean(currentSettings.microsoftTtsConsent);
+  nodes.microsoftTtsConsentField.hidden =
+    currentSettings.ttsEngine !== "edge" || !currentSettings.voiceEnabled;
   nodes.muteOriginal.checked = currentSettings.muteOriginal;
   nodes.originalVolume.value = String(Math.round(clampNumber(currentSettings.originalVolume, 0, 1, DEFAULT_SETTINGS.originalVolume) * 100));
   nodes.originalVolumeValue.textContent = `${nodes.originalVolume.value}%`;
 
   nodes.clearApiKey.hidden = setupMode !== "byok";
   nodes.clearTranscriptionApiKey.hidden = setupMode !== "byok";
+  renderKokoroModelStatus();
   refreshEngineStatus();
+}
+
+function renderKokoroModelStatus() {
+  if (!nodes.kokoroModelCard) {
+    return;
+  }
+  const selected = currentSettings.ttsEngine === "kokoro";
+  nodes.kokoroModelCard.hidden = !selected;
+  if (!selected) {
+    return;
+  }
+
+  const status = kokoroModelStatus || EMPTY_KOKORO_MODEL_STATUS;
+  const state = String(status.state || "unknown");
+  const languageSupported = ttsEngineSupportsLanguage("kokoro", currentSettings.targetLanguage);
+  const progress = Math.min(1, Math.max(0, Number(status.progress || 0)));
+  const percent = Math.round(progress * 100);
+  nodes.kokoroModelProgress.value = progress;
+  nodes.kokoroModelProgressText.textContent = `${percent}%`;
+  nodes.kokoroModelInstall.hidden = state !== "not-installed";
+  nodes.kokoroModelCancel.hidden = state !== "installing";
+  nodes.kokoroModelRetry.hidden = !["failed", "unavailable"].includes(state) || kokoroModelPollingStopped;
+  nodes.kokoroModelUninstall.hidden = state !== "ready";
+
+  const labels = {
+    unknown: "正在检查本机模型...",
+    "not-installed": "尚未安装",
+    installing: `正在下载与校验 ${percent}%`,
+    ready: "已安装，可以离线配音",
+    failed: "安装失败",
+    unavailable: "模型状态暂不可用"
+  };
+  nodes.kokoroModelStatus.textContent = languageSupported
+    ? labels[state] || "模型状态未知"
+    : "当前目标语言暂不支持 Kokoro";
+  if (!languageSupported) {
+    nodes.kokoroModelDetail.textContent = "Kokoro 当前仅支持中文和英文；请切换目标语言或改用 Microsoft 自然在线。";
+  } else if (state === "ready") {
+    nodes.kokoroModelDetail.textContent = `版本 ${status.version || "1.1"} · 占用 ${formatModelBytes(status.installedBytes)} · 本机处理`;
+  } else if (state === "installing") {
+    nodes.kokoroModelDetail.textContent = `${formatModelBytes(status.downloadedBytes)} / ${formatModelBytes(status.totalBytes)}，安装期间可以关闭此弹窗。`;
+  } else if (state === "failed" || state === "unavailable") {
+    nodes.kokoroModelDetail.textContent = status.error || "请检查网络后重试，已下载的临时文件会被安全清理。";
+  } else {
+    nodes.kokoroModelDetail.textContent = "首次使用需要下载约 140 MB，下载后完全在本机生成语音。";
+  }
+
+  for (const button of [
+    nodes.kokoroModelInstall,
+    nodes.kokoroModelCancel,
+    nodes.kokoroModelRetry,
+    nodes.kokoroModelUninstall
+  ]) {
+    button.disabled = kokoroModelOperationInFlight;
+  }
+}
+
+function scheduleKokoroModelStatusRefresh() {
+  clearTimeout(kokoroModelStatusTimer);
+  if (currentSettings.ttsEngine !== "kokoro" || kokoroModelPollingStopped) {
+    return;
+  }
+  const installing = kokoroModelStatus.state === "installing";
+  kokoroModelStatusTimer = setTimeout(refreshKokoroModelStatus, installing ? 1000 : 5000);
+}
+
+async function refreshKokoroModelStatus() {
+  clearTimeout(kokoroModelStatusTimer);
+  renderKokoroModelStatus();
+  if (currentSettings.ttsEngine !== "kokoro") {
+    return;
+  }
+  const response = await chrome.runtime
+    .sendMessage({ type: "localtube.getKokoroModelStatus" })
+    .catch((error) => ({
+      ok: false,
+      error: error.message || String(error),
+      contextInvalidated: isKokoroContextInvalidated(error)
+    }));
+  if (response?.ok && response.payload?.model) {
+    kokoroModelPollingStopped = false;
+    kokoroModelStatus = { ...EMPTY_KOKORO_MODEL_STATUS, ...response.payload.model };
+  } else {
+    kokoroModelPollingStopped = Boolean(
+      response?.contextInvalidated || isKokoroContextInvalidated(response?.error)
+    );
+    kokoroModelStatus = {
+      ...EMPTY_KOKORO_MODEL_STATUS,
+      state: "unavailable",
+      error: kokoroModelPollingStopped
+        ? "扩展刚刚更新，请关闭并重新打开弹窗。"
+        : response?.error || "本地 Engine 暂时没有返回模型状态；请先启动 Engine，或点重试。"
+    };
+  }
+  renderKokoroModelStatus();
+  scheduleKokoroModelStatusRefresh();
+}
+
+async function runKokoroModelOperation(type) {
+  if (kokoroModelOperationInFlight) {
+    return;
+  }
+  kokoroModelPollingStopped = false;
+  kokoroModelOperationInFlight = true;
+  renderKokoroModelStatus();
+  const response = await chrome.runtime
+    .sendMessage({ type })
+    .catch((error) => ({
+      ok: false,
+      error: error.message || String(error),
+      contextInvalidated: isKokoroContextInvalidated(error)
+    }));
+  kokoroModelOperationInFlight = false;
+  if (response?.ok && response.payload?.model) {
+    kokoroModelStatus = { ...EMPTY_KOKORO_MODEL_STATUS, ...response.payload.model };
+    nodes.status.textContent =
+      type === "localtube.cancelKokoroModelInstall"
+        ? "已取消 Kokoro 模型下载"
+        : "Kokoro 模型任务已提交";
+  } else {
+    kokoroModelPollingStopped = Boolean(
+      response?.contextInvalidated || isKokoroContextInvalidated(response?.error)
+    );
+    kokoroModelStatus = {
+      ...kokoroModelStatus,
+      state: kokoroModelPollingStopped ? "unavailable" : "failed",
+      error: kokoroModelPollingStopped
+        ? "扩展刚刚更新，请关闭并重新打开弹窗。"
+        : response?.error || "Kokoro 模型操作失败"
+    };
+    nodes.status.textContent = kokoroModelStatus.error;
+  }
+  renderKokoroModelStatus();
+  scheduleKokoroModelStatusRefresh();
+  if (kokoroModelStatus.state === "ready") {
+    await refreshVoiceOptions();
+  }
+}
+
+async function retryKokoroModelStatus() {
+  if (kokoroModelStatus.state === "unavailable") {
+    kokoroModelPollingStopped = false;
+    await refreshKokoroModelStatus();
+    return;
+  }
+  await runKokoroModelOperation("localtube.installKokoroModel");
+}
+
+async function uninstallKokoroModel() {
+  if (!confirm("确认删除本机 Kokoro 语音模型？之后可以重新安装。")) {
+    return;
+  }
+  await runKokoroModelOperation("localtube.uninstallKokoroModel");
+}
+
+function isKokoroContextInvalidated(errorOrMessage) {
+  return /Extension context invalidated|context invalidated|Extension context was invalidated/i.test(
+    String(errorOrMessage?.message || errorOrMessage || "")
+  );
+}
+
+function formatModelBytes(value) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (!bytes) {
+    return "0 MB";
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MB`;
 }
 
 async function refreshEngineStatus() {
@@ -752,6 +961,7 @@ function buildSettingsFromForm() {
     ),
     voiceId: nodes.voiceId.value,
     voiceEnabled: nodes.voiceEnabled.checked,
+    microsoftTtsConsent: nodes.microsoftTtsConsent.checked,
     muteOriginal: nodes.muteOriginal.checked,
     originalVolume: Number(nodes.originalVolume.value || 0) / 100
   };
