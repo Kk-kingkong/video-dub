@@ -352,8 +352,9 @@ def verify_packaging_sources() -> None:
     require(
         "RedirectStandardInput = true" in launcher_source
         and "RedirectStandardOutput = true" in launcher_source
+        and "StandardInputEncoding = new UTF8Encoding(false)" in launcher_source
         and r'Path.Combine(runtimeRoot, ".venv", "python.exe")' in launcher_source,
-        "Native Messaging launcher does not bridge Chrome to the bundled Python host",
+        "Native Messaging launcher does not preserve binary framing to the bundled Python host",
     )
 
 

@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 
 internal static class LocalTubeDubNativeHostLauncher
@@ -31,6 +32,7 @@ internal static class LocalTubeDubNativeHostLauncher
         startInfo.RedirectStandardInput = true;
         startInfo.RedirectStandardOutput = true;
         startInfo.RedirectStandardError = false;
+        startInfo.StandardInputEncoding = new UTF8Encoding(false);
 
         using (Process child = Process.Start(startInfo))
         {
