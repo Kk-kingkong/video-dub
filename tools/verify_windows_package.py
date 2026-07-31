@@ -604,7 +604,13 @@ def invoke_native_launcher(launcher: Path, env: dict[str, str]) -> dict[str, Any
     )
     require(len(stdout) >= 4, "compiled Native Messaging launcher returned no frame")
     length = struct.unpack("<I", stdout[:4])[0]
-    require(len(stdout) == length + 4, "compiled Native Messaging launcher returned a broken frame")
+    require(
+        len(stdout) == length + 4,
+        "compiled Native Messaging launcher returned a broken frame: "
+        f"declared={length}, actual={len(stdout) - 4}, "
+        f"head={stdout[:64].hex()}, trailing={stdout[length + 4:length + 68].hex()}, "
+        f"stderr={stderr.decode(errors='replace')}",
+    )
     payload = json.loads(stdout[4:].decode("utf-8"))
     require(isinstance(payload, dict), "compiled Native Messaging response is invalid")
     return payload
