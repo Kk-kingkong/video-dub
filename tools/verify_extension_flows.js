@@ -389,6 +389,7 @@ function testLightweightRuntimePolicy() {
   assert.equal(helpers.isLightweightProfile(helpers.createRuntimeProfile(saved, "full")), false);
 
   for (const code of [
+    "CAPTION_ENGINE_OFFLINE",
     "CAPTION_ENGINE_UNAVAILABLE",
     "ENGINE_TIMEOUT",
     "ENGINE_UPGRADE_REQUIRED",
@@ -1816,6 +1817,7 @@ function testManifestAndFlowGuards() {
   assert.match(content, /ttsEngine: state\.settings\.ttsEngine \|\| DEFAULT_SETTINGS\.ttsEngine/);
   assert.match(content, /ttsEngine: "edge"/);
   const voicePlaybackBody = extractFunctionBody(content, "maybeSpeakVoiceSegment");
+  assert.match(voicePlaybackBody, /!state\.runtimeProfile\.useEngineTts/);
   assert.match(voicePlaybackBody, /failurePolicy\.allowBrowserFallback/);
   assert.doesNotMatch(voicePlaybackBody, /ttsEngine\s*=\s*"edge"/);
   assert.match(voicePlaybackBody, /Microsoft 自然在线暂时未生成当前片段/);
@@ -1847,7 +1849,12 @@ function testManifestAndFlowGuards() {
   assert.match(content, /beginVoiceEngineWarmup\(operationId\)/);
   assert.match(content, /function voiceWarmupText/);
   const voiceWarmupBody = extractFunctionBody(content, "beginVoiceEngineWarmup");
+  assert.match(voiceWarmupBody, /!state\.runtimeProfile\.useEngineTts/);
   assert.match(voiceWarmupBody, /state\.settings\.ttsEngine === "kokoro"/);
+  const voicePrefetchBody = extractFunctionBody(content, "scheduleVoicePrefetchWindow");
+  assert.match(voicePrefetchBody, /!state\.runtimeProfile\.useEngineTts/);
+  const voicePrewarmBody = extractFunctionBody(content, "prewarmVoiceAroundTime");
+  assert.match(voicePrewarmBody, /!state\.runtimeProfile\.useEngineTts/);
   assert.match(content, /function pruneQueuedVoiceAudioTasks/);
   assert.match(content, /scheduleVoicePrefetchWindow\(state\.video\.currentTime \|\| 0\)/);
   assert.match(content, /VOICE_TIMEBOX_END_GRACE_SECONDS/);
@@ -2122,6 +2129,7 @@ function testManifestAndFlowGuards() {
   assert.match(content, /state\.activeDubRequestIds\.delete\(requestId\)/);
 
   const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+  assert.match(background, /code: "CAPTION_ENGINE_OFFLINE"/);
   assert.match(background, /microsoftTtsConsent: false/);
   assert.match(background, /MICROSOFT_TTS_CONSENT_REQUIRED/);
   assert.match(background, /!storedSettings\.microsoftTtsConsent/);

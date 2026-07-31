@@ -3463,6 +3463,7 @@ function findVoiceSegmentAtOrAfter(time) {
 function maybeSpeakVoiceSegment(segment) {
   if (
     state.dubTrackPreviewActive ||
+    !state.runtimeProfile.useEngineTts ||
     !state.settings.voiceEnabled ||
     !segment ||
     state.spokenVoiceSegmentKeys.has(segment.key) ||
@@ -3531,7 +3532,7 @@ function maybeSpeakVoiceSegment(segment) {
 }
 
 async function playVoiceSegment(segment, playbackGeneration) {
-  if (state.dubTrackPreviewActive) {
+  if (state.dubTrackPreviewActive || !state.runtimeProfile.useEngineTts) {
     return;
   }
   const hadCachedAudio = hasVoiceSegmentAudioReady(segment);
@@ -4115,7 +4116,7 @@ function rememberVoiceAudio(key, payload) {
 }
 
 function scheduleVoicePrefetchWindow(currentTime) {
-  if (!state.settings.voiceEnabled || !state.voiceSegments.length) {
+  if (!state.runtimeProfile.useEngineTts || !state.settings.voiceEnabled || !state.voiceSegments.length) {
     return;
   }
   if (state.settings.ttsEngine === "kokoro") {
@@ -4160,7 +4161,7 @@ function syncKokoroVoiceQueueWindow(currentTime) {
 }
 
 async function prewarmVoiceAroundTime(time, operationId) {
-  if (!state.settings.voiceEnabled || !state.voiceSegments.length) {
+  if (!state.runtimeProfile.useEngineTts || !state.settings.voiceEnabled || !state.voiceSegments.length) {
     return;
   }
   const firstSegment = findVoiceSegmentAtOrAfter(time);
@@ -4205,6 +4206,7 @@ function voiceWarmupText(language) {
 function beginVoiceEngineWarmup(operationId) {
   if (
     state.operationId !== operationId ||
+    !state.runtimeProfile.useEngineTts ||
     !state.settings.voiceEnabled ||
     state.settings.ttsEngine === "kokoro" ||
     Date.now() < state.localTtsUnavailableUntil
