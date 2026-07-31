@@ -1,7 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Threading.Tasks;
 
 internal static class LocalTubeDubNativeHostLauncher
 {
@@ -28,10 +27,9 @@ internal static class LocalTubeDubNativeHostLauncher
         startInfo.WorkingDirectory = runtimeRoot;
         startInfo.UseShellExecute = false;
         startInfo.CreateNoWindow = true;
-        startInfo.RedirectStandardInput = true;
-        startInfo.RedirectStandardOutput = true;
+        startInfo.RedirectStandardInput = false;
+        startInfo.RedirectStandardOutput = false;
         startInfo.RedirectStandardError = false;
-        startInfo.EnvironmentVariables["LOCAL_DUB_NATIVE_INPUT_UTF8_BOM_COMPAT"] = "1";
 
         using (Process child = Process.Start(startInfo))
         {
@@ -40,12 +38,7 @@ internal static class LocalTubeDubNativeHostLauncher
                 Console.Error.WriteLine("LocalTube Dub Native Host failed to start.");
                 return 3;
             }
-            Task input = Console.OpenStandardInput()
-                .CopyToAsync(child.StandardInput.BaseStream)
-                .ContinueWith(delegate { child.StandardInput.Close(); });
-            Task output = child.StandardOutput.BaseStream.CopyToAsync(Console.OpenStandardOutput());
             child.WaitForExit();
-            output.Wait();
             return child.ExitCode;
         }
     }

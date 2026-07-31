@@ -155,12 +155,6 @@ def verify_native_host_source() -> None:
         "Native Host does not configure binary stdio before entering its message loop",
     )
     require(
-        "normalize_initial_native_length_header" in source
-        and "NATIVE_INPUT_FIRST_FRAME" in source
-        and "LOCAL_DUB_NATIVE_INPUT_UTF8_BOM_COMPAT" in source,
-        "Native Host does not handle the Windows launcher UTF-8 preamble",
-    )
-    require(
         "manage-engine.ps1" in source
         and "run_windows_engine_manager" in source,
         "Native Host does not use the shared Windows Engine lifecycle manager",
@@ -356,11 +350,12 @@ def verify_packaging_sources() -> None:
         "Windows builder does not create a publishable SHA-256 file",
     )
     require(
-        "RedirectStandardInput = true" in launcher_source
-        and "RedirectStandardOutput = true" in launcher_source
-        and "LOCAL_DUB_NATIVE_INPUT_UTF8_BOM_COMPAT" in launcher_source
+        "UseShellExecute = false" in launcher_source
+        and "RedirectStandardInput = false" in launcher_source
+        and "RedirectStandardOutput = false" in launcher_source
+        and "CopyToAsync" not in launcher_source
         and r'Path.Combine(runtimeRoot, ".venv", "python.exe")' in launcher_source,
-        "Native Messaging launcher does not bridge Chrome to the bundled Python host",
+        "Native Messaging launcher does not pass Chrome's binary stdio directly to Python",
     )
 
 
@@ -592,19 +587,36 @@ def task_fixture_exists(env: dict[str, str]) -> bool:
 def invoke_native_launcher(launcher: Path, env: dict[str, str]) -> dict[str, Any]:
     request = json.dumps({"type": "start"}).encode("utf-8")
     framed = struct.pack("<I", len(request)) + request
-    process = subprocess.Popen(
-        [str(launcher)],
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = process.communicate(framed, timeout=30)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
-        raise VerificationError("compiled Native Messaging launcher timed out")
+    with tempfile.TemporaryFile(mode="w+b") as stdin_file:
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file:
+            with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+                stdin_file.write(framed)
+                stdin_file.seek(0)
+                process = subprocess.Popen(
+                    [str(launcher)],
+                    env=env,
+                    stdin=stdin_file,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                )
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    subprocess.run(
+                        ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=15,
+                    )
+                    process.wait(timeout=10)
+                    raise VerificationError(
+                        "compiled Native Messaging launcher timed out"
+                    )
+                stdout_file.seek(0)
+                stderr_file.seek(0)
+                stdout = stdout_file.read()
+                stderr = stderr_file.read()
     require(
         process.returncode == 0,
         f"compiled Native Messaging launcher failed: {stderr.decode(errors='replace')}",

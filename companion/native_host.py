@@ -30,11 +30,6 @@ from local_dub_server import ENGINE_PROTOCOL_VERSION, PORT as DEFAULT_ENGINE_POR
 
 
 MAX_CHROME_MESSAGE_BYTES = 64 * 1024 * 1024
-UTF8_BOM = b"\xef\xbb\xbf"
-NATIVE_INPUT_FIRST_FRAME = True
-NATIVE_INPUT_UTF8_BOM_COMPAT = (
-    os.environ.get("LOCAL_DUB_NATIVE_INPUT_UTF8_BOM_COMPAT", "").strip() == "1"
-)
 ENGINE_LOG_PATH = Path(tempfile.gettempdir()) / "localtube-dub-engine.log"
 NATIVE_LOG_PATH = Path(tempfile.gettempdir()) / "localtube-dub-native-host.log"
 WHISPER_INSTALL_LOG_PATH = Path(tempfile.gettempdir()) / "localtube-dub-whisper-install.log"
@@ -100,8 +95,6 @@ KOKORO_MODEL_ENDPOINTS = {
 def configure_native_stdio() -> None:
     """Use Chrome's required binary framing on Windows."""
 
-    global NATIVE_INPUT_FIRST_FRAME
-    NATIVE_INPUT_FIRST_FRAME = True
     if os.name != "nt" or msvcrt is None:
         return
     msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
@@ -117,29 +110,12 @@ def native_log(message: str) -> None:
         pass
 
 
-def normalize_initial_native_length_header(raw_length: bytes, reader) -> bytes:
-    if not raw_length.startswith(UTF8_BOM):
-        return raw_length
-    continuation = reader(3)
-    if len(continuation) != 3:
-        raise RuntimeError("Incomplete Native Messaging length header after UTF-8 BOM")
-    return raw_length[len(UTF8_BOM):] + continuation
-
-
 def read_native_message() -> dict[str, Any] | None:
-    global NATIVE_INPUT_FIRST_FRAME
     raw_length = sys.stdin.buffer.read(4)
     if not raw_length:
         return None
     if len(raw_length) != 4:
         raise RuntimeError("Incomplete Native Messaging length header")
-    if NATIVE_INPUT_FIRST_FRAME:
-        NATIVE_INPUT_FIRST_FRAME = False
-        if NATIVE_INPUT_UTF8_BOM_COMPAT:
-            raw_length = normalize_initial_native_length_header(
-                raw_length,
-                sys.stdin.buffer.read,
-            )
 
     message_length = struct.unpack("@I", raw_length)[0]
     if message_length > MAX_CHROME_MESSAGE_BYTES:
