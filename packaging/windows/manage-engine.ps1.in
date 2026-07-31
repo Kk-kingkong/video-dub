@@ -258,22 +258,24 @@ function Start-VerifiedEngine {
     } else {
         [Guid]::NewGuid().ToString("N")
     }
-    $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $StartInfo.FileName = $PythonPath
-    $StartInfo.Arguments = Quote-WindowsArgument $ServerPath
-    $StartInfo.WorkingDirectory = $RuntimeRoot
-    $StartInfo.UseShellExecute = $false
-    $StartInfo.CreateNoWindow = $true
-    $StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-    $StartInfo.EnvironmentVariables["LOCAL_DUB_PORT"] = [string]$EnginePort
-    $StartInfo.EnvironmentVariables["LOCAL_DUB_ENGINE_INSTANCE_ID"] = $InstanceId
-    $StartInfo.EnvironmentVariables["LOCAL_DUB_ENGINE_RUNTIME_ROOT"] = (Normalize-Path $RuntimeRoot)
-    $StartInfo.EnvironmentVariables["LOCAL_DUB_ENGINE_VERSION"] = $ExpectedVersion
-    $StartInfo.EnvironmentVariables["LOCALAPPDATA"] = $EngineLocalAppData
+    $env:LOCAL_DUB_PORT = [string]$EnginePort
+    $env:LOCAL_DUB_ENGINE_INSTANCE_ID = $InstanceId
+    $env:LOCAL_DUB_ENGINE_RUNTIME_ROOT = (Normalize-Path $RuntimeRoot)
+    $env:LOCAL_DUB_ENGINE_VERSION = $ExpectedVersion
+    $env:LOCALAPPDATA = $EngineLocalAppData
     $RuntimeBin = Split-Path -Parent $PythonPath
-    $StartInfo.EnvironmentVariables["PATH"] = $RuntimeBin + ";" + $StartInfo.EnvironmentVariables["PATH"]
-
-    $Engine = [System.Diagnostics.Process]::Start($StartInfo)
+    $env:PATH = $RuntimeBin + ";" + $env:PATH
+    New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
+    $EngineStdoutPath = Join-Path $StateRoot "engine.stdout.log"
+    $EngineStderrPath = Join-Path $StateRoot "engine.stderr.log"
+    $Engine = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList (Quote-WindowsArgument $ServerPath) `
+        -WorkingDirectory $RuntimeRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $EngineStdoutPath `
+        -RedirectStandardError $EngineStderrPath `
+        -PassThru
     if ($null -eq $Engine) {
         throw "Engine process could not be created."
     }

@@ -14,6 +14,7 @@
 - Documented Microsoft online text transfer, optional local model data, macOS-only system speech, Windows review steps, third-party licenses, and unsigned/unnotarized development-package status.
 - Added macOS ARM/Intel and Windows x64 CI release gates and synchronized Store-facing metadata to `0.2.0`.
 - Store release builds now require a public platform-neutral Engine download page and reject a common download URL that points to one architecture-specific ZIP.
+- Fixed the first cross-platform CI run: Engine tests now isolate optional local prerequisites and use platform-native paths, PowerShell stops on failed native commands, and the Windows Engine detaches its output into local state logs so installer and Native Messaging checks cannot hang on inherited CI pipes.
 
 ## 0.1.99 - 2026-07-30
 

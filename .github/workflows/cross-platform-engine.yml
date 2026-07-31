@@ -75,6 +75,7 @@ jobs:
       - name: Verify source
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           node tools/verify_extension_flows.js
           node tools/verify_provider_registry.js
           py tools/verify_kokoro_engine.py

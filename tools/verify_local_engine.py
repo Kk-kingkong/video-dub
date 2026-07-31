@@ -233,15 +233,16 @@ def test_ytdlp_audio_window_command(server):
 
 
 def test_ytdlp_full_audio_command(server):
+    output_dir = Path("/tmp/full")
     command = server.build_ytdlp_full_audio_command(
         ["yt-dlp"],
         "https://www.youtube.com/watch?v=abc",
-        Path("/tmp/full"),
+        output_dir,
         "chrome",
     )
     assert command[0] == "yt-dlp"
     assert command[command.index("-f") + 1] == "bestaudio[abr<=96]/bestaudio/best"
-    assert command[command.index("-o") + 1] == "/tmp/full/full-audio.%(ext)s"
+    assert command[command.index("-o") + 1] == str(output_dir / "full-audio.%(ext)s")
     assert "--download-sections" not in command
     assert command[command.index("--cookies-from-browser") + 1] == "chrome"
     assert command[-1] == "https://www.youtube.com/watch?v=abc"
@@ -319,18 +320,26 @@ def test_full_transcript_job_validation(server):
     )
     assert invalid_duration["code"] == "INVALID_VIDEO_DURATION"
 
-    server.FULL_TRANSCRIPT_JOBS.clear()
-    server.FULL_TRANSCRIPT_JOBS["busy"] = {
-        "id": "busy",
-        "key": "different|en|base",
-        "status": "transcribing",
-        "updatedAt": server.time.time(),
-    }
-    busy = server.start_full_transcript_job(
-        {"videoUrl": "https://www.youtube.com/watch?v=test", "durationSeconds": 30, "language": "en"}
-    )
-    assert busy["code"] == "FULL_TRANSCRIPT_BUSY"
-    server.FULL_TRANSCRIPT_JOBS.clear()
+    original_ytdlp = server.check_ytdlp
+    original_whisper = server.check_whisper
+    server.check_ytdlp = lambda: True
+    server.check_whisper = lambda: True
+    try:
+        server.FULL_TRANSCRIPT_JOBS.clear()
+        server.FULL_TRANSCRIPT_JOBS["busy"] = {
+            "id": "busy",
+            "key": "different|en|base",
+            "status": "transcribing",
+            "updatedAt": server.time.time(),
+        }
+        busy = server.start_full_transcript_job(
+            {"videoUrl": "https://www.youtube.com/watch?v=test", "durationSeconds": 30, "language": "en"}
+        )
+        assert busy["code"] == "FULL_TRANSCRIPT_BUSY"
+    finally:
+        server.check_ytdlp = original_ytdlp
+        server.check_whisper = original_whisper
+        server.FULL_TRANSCRIPT_JOBS.clear()
 
 
 def test_build_tts_payload(server):

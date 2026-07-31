@@ -323,10 +323,11 @@ def verify_packaging_sources() -> None:
         "lifecycle manager does not serialize concurrent Task/installer/Native Host operations",
     )
     require(
-        "Start-Process" not in manager
-        and "System.Diagnostics.ProcessStartInfo" in manager
+        "Start-Process" in manager
+        and "-RedirectStandardOutput" in manager
+        and "-RedirectStandardError" in manager
         and "Quote-WindowsArgument" in manager,
-        "lifecycle manager does not provide robust quoted startup",
+        "lifecycle manager does not detach Engine output from caller pipes",
     )
     for identity_check in (
         '$Health.service -eq "localtube-dub"',

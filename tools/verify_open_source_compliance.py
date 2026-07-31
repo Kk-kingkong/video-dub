@@ -152,6 +152,7 @@ def verify_cross_platform_ci() -> None:
         "verify_windows_package.py --source",
         "verify_windows_package.py --install-smoke",
         "build_release_windows.py",
+        "$PSNativeCommandUseErrorActionPreference = $true",
     ):
         require(phrase.casefold() in workflow.casefold(), f"cross-platform CI missing: {phrase}")
 
