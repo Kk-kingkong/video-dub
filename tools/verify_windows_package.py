@@ -587,6 +587,7 @@ def task_fixture_exists(env: dict[str, str]) -> bool:
 def invoke_native_launcher(launcher: Path, env: dict[str, str]) -> dict[str, Any]:
     request = json.dumps({"type": "start"}).encode("utf-8")
     framed = struct.pack("<I", len(request)) + request
+    timed_out = False
     with tempfile.TemporaryFile(mode="w+b") as stdin_file:
         with tempfile.TemporaryFile(mode="w+b") as stdout_file:
             with tempfile.TemporaryFile(mode="w+b") as stderr_file:
@@ -610,13 +611,24 @@ def invoke_native_launcher(launcher: Path, env: dict[str, str]) -> dict[str, Any
                         timeout=15,
                     )
                     process.wait(timeout=10)
-                    raise VerificationError(
-                        "compiled Native Messaging launcher timed out"
-                    )
+                    timed_out = True
                 stdout_file.seek(0)
                 stderr_file.seek(0)
                 stdout = stdout_file.read()
                 stderr = stderr_file.read()
+    if timed_out:
+        native_log_path = Path(tempfile.gettempdir()) / "localtube-dub-native-host.log"
+        native_log = (
+            native_log_path.read_text(encoding="utf-8", errors="replace")
+            if native_log_path.is_file()
+            else ""
+        )
+        raise VerificationError(
+            "compiled Native Messaging launcher timed out: "
+            f"stdout={stdout[:512].hex()}, "
+            f"stderr={stderr[:1024].decode(errors='replace')}, "
+            f"nativeLog={native_log[-4000:]}"
+        )
     require(
         process.returncode == 0,
         f"compiled Native Messaging launcher failed: {stderr.decode(errors='replace')}",
