@@ -133,6 +133,7 @@ def read_native_message() -> dict[str, Any] | None:
         return None
     if len(raw_length) != 4:
         raise RuntimeError("Incomplete Native Messaging length header")
+    native_log(f"native frame header={raw_length.hex()}")
     if NATIVE_INPUT_FIRST_FRAME:
         NATIVE_INPUT_FIRST_FRAME = False
         if NATIVE_INPUT_UTF8_BOM_COMPAT:
@@ -148,6 +149,7 @@ def read_native_message() -> dict[str, Any] | None:
     raw_message = sys.stdin.buffer.read(message_length)
     if len(raw_message) != message_length:
         raise RuntimeError("Incomplete Native Messaging payload")
+    native_log(f"native frame payload bytes={message_length}")
 
     message = json.loads(raw_message.decode("utf-8"))
     if not isinstance(message, dict):
@@ -751,7 +753,11 @@ def native_loop() -> int:
             if message is None:
                 native_log("native host stopped: stdin closed")
                 return 0
-            write_native_message(handle_message(message))
+            native_log(f"native request type={message.get('type')}")
+            response = handle_message(message)
+            native_log("native request handled")
+            write_native_message(response)
+            native_log("native response written")
         except Exception as exc:
             native_log(f"native host error: {exc}")
             write_native_message({"ok": False, "error": str(exc)})
