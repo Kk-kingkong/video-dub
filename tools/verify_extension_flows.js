@@ -1669,6 +1669,12 @@ function testManifestAndFlowGuards() {
 
   const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
   const kokoroBackground = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+  assert.match(content, /runtimeProfile:\s*createRuntimeProfile\(DEFAULT_SETTINGS,\s*"full"\)/);
+  assert.match(content, /function activateLightweightMode\(/);
+  assert.match(content, /function resetRuntimeProfileForOperation\(/);
+  assert.match(content, /if\s*\(!state\.runtimeProfile\.useCaptionEngine\)/);
+  assert.match(content, /resolveEffectiveProvider\(\)\s*===\s*"chrome-translator"/);
+  assert.doesNotMatch(content, /state\.settings\.(provider|ttsEngine)\s*=\s*["'](?:chrome-translator|browser)["']/);
   assert.match(kokoroBackground, /localtube\.getKokoroModelStatus/);
   assert.match(kokoroBackground, /localtube\.installKokoroModel/);
   assert.match(kokoroBackground, /localtube\.cancelKokoroModelInstall/);
@@ -1754,7 +1760,7 @@ function testManifestAndFlowGuards() {
   assert.match(content, /localtube\.saveCachedTimeline/);
   assert.match(content, /saveTimelineCacheIfComplete/);
   assert.match(content, /makeTimelineCacheLookupRequests/);
-  assert.match(content, /targetCaptionsReady \? "youtube-captions" : state\.settings\.provider/);
+  assert.match(content, /targetCaptionsReady \? "youtube-captions" : resolveEffectiveProvider\(\)/);
   assert.match(content, /engineResult\.cues\?\.length &&\s*isTargetLanguageTrack\(engineResult\.track, state\.settings\.targetLanguage\)/);
   assert.match(content, /payload\.translatedByYouTube\s*\? state\.settings\.targetLanguage/);
   assert.match(content, /fallbackToChromeTranslator/);
@@ -1820,7 +1826,7 @@ function testManifestAndFlowGuards() {
   assert.match(voiceRequestBody, /failurePolicy\.retryDelayMs/);
   assert.doesNotMatch(voiceRequestBody, /Date\.now\(\) \+ 60000/);
   assert.match(content, /loadCachedTimeline\(videoId, operationId, "youtube-captions"\)/);
-  assert.match(content, /providerCachedTimeline = await loadCachedTimeline\(videoId, operationId, state\.settings\.provider\)/);
+  assert.match(content, /providerCachedTimeline = await loadCachedTimeline\(videoId, operationId, resolveEffectiveProvider\(\)\)/);
   assert.match(content, /audio\.preservesPitch = true/);
   assert.match(content, /naturalOnline \? 6\.2/);
   assert.match(content, /state\.settings\.ttsEngine === "edge"/);
@@ -2011,7 +2017,7 @@ function testManifestAndFlowGuards() {
   );
   const startDubbingBody = extractFunctionBody(content, "startDubbing");
   const targetCacheIndex = startDubbingBody.indexOf('loadCachedTimeline(videoId, operationId, "youtube-captions")');
-  const providerCacheIndex = startDubbingBody.indexOf("loadCachedTimeline(videoId, operationId, state.settings.provider)");
+  const providerCacheIndex = startDubbingBody.indexOf("loadCachedTimeline(videoId, operationId, resolveEffectiveProvider())");
   const sourceCacheIndex = startDubbingBody.indexOf('loadCachedTimeline(videoId, operationId, "youtube-source")');
   const liveCaptionIndex = startDubbingBody.indexOf("resolveVideoCaptions(operationId)");
   assert.ok(targetCacheIndex >= 0 && providerCacheIndex > targetCacheIndex);
@@ -2112,7 +2118,7 @@ function testManifestAndFlowGuards() {
   assert.doesNotMatch(content, /本地 Engine 转写还没有接入/);
   assert.match(content, /translateQueuedCues/);
   assert.match(content, /已同步首段/);
-  assert.match(content, /requestId,\s*\n\s*settings: state\.settings/);
+  assert.match(content, /requestId,\s*\n\s*settings: \{ \.\.\.state\.settings, provider: resolveEffectiveProvider\(\) \}/);
   assert.match(content, /state\.activeDubRequestIds\.delete\(requestId\)/);
 
   const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");

@@ -128,9 +128,12 @@ const {
   computeVoiceSyncTiming,
   createCueTranslationTracker,
   cueKey,
+  createRuntimeProfile,
   extractBalancedJson,
   extendSemanticVoiceSegments,
+  isLightweightProfile,
   limitCaptionTrackAttempts,
+  lightweightFallbackDecision,
   makeCaptionFetchCandidates,
   makeInnertubePlayerRequest,
   makePlaybackTranslationBatches,
@@ -153,6 +156,9 @@ const {
 
 const state = {
   settings: { ...DEFAULT_SETTINGS },
+  runtimeProfile: createRuntimeProfile(DEFAULT_SETTINGS, "full"),
+  engineHealth: { checked: false, ok: false, code: "", payload: null },
+  lightweightNoticeShown: false,
   providerOptions: [...PROVIDER_OPTIONS],
   root: null,
   caption: null,
@@ -246,6 +252,7 @@ boot();
 
 async function boot() {
   state.settings = await loadSettings();
+  resetRuntimeProfileForOperation();
   installNavigationWatcher();
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "localtube.settingsChanged") {
@@ -331,6 +338,7 @@ function mountWidget() {
   root.innerHTML = renderWidget();
   document.documentElement.append(root);
   state.root = root;
+  resetRuntimeProfileForOperation();
 
   state.caption = document.createElement("div");
   state.caption.className = "ltd-caption";
@@ -548,7 +556,7 @@ function updateControlsFromSettings() {
 
   const providerLabel = state.root.querySelector("[data-provider-label]");
   if (providerLabel) {
-    providerLabel.textContent = providerHint(state.settings.provider || "openai", state.settings);
+    providerLabel.textContent = providerHint(resolveEffectiveProvider(), state.settings);
   }
   renderKokoroModelStatus();
   refreshEngineStatus();
@@ -643,18 +651,13 @@ function startEngineStatusPolling() {
 }
 
 async function refreshEngineStatus() {
-  if (!state.root) {
-    return;
+  const node = state.root?.querySelector("[data-engine-status]");
+  const textNode = state.root?.querySelector("[data-engine-status-text]");
+  if (node && textNode) {
+    node.classList.remove("is-ok", "is-warn", "is-error");
+    node.classList.add("is-checking");
+    textNode.textContent = "正在检查字幕 Engine...";
   }
-  const node = state.root.querySelector("[data-engine-status]");
-  const textNode = state.root.querySelector("[data-engine-status-text]");
-  if (!node || !textNode) {
-    return;
-  }
-
-  node.classList.remove("is-ok", "is-warn", "is-error");
-  node.classList.add("is-checking");
-  textNode.textContent = "正在检查字幕 Engine...";
 
   const response = await sendRuntimeMessage({
     type: "localtube.captionEngineHealth",
@@ -664,26 +667,31 @@ async function refreshEngineStatus() {
     error: friendlyErrorMessage(error)
   }));
 
+  applyEnginePlatformPolicy(response?.ok ? response.payload?.platform : "");
+  state.engineHealth = normalizeEngineHealth(response);
+  if (!node || !textNode) {
+    return state.engineHealth;
+  }
+
   node.classList.remove("is-checking", "is-ok", "is-warn", "is-error");
   if (response?.ok) {
     const payload = response.payload || {};
-    applyEnginePlatformPolicy(payload.platform);
     const transport = payload.transport === "native" ? "Native" : "HTTP";
     if (payload.upgradeRequired) {
       node.classList.add("is-error");
       textNode.textContent = `Engine 版本过旧（${payload.engineVersion || "未知"} / 协议 ${payload.protocolVersion || 0}），请安装与扩展 ${EXTENSION_VERSION} 匹配的 Engine`;
-      return;
+      return state.engineHealth;
     }
     if (state.settings.ttsEngine === "edge" && !payload.edgeTts) {
       node.classList.add("is-warn");
       textNode.textContent = "自然在线语音尚未安装，请打开说明重新安装 Engine 依赖";
-      return;
+      return state.engineHealth;
     }
     if (payload.ytDlp) {
       if (state.settings.allowAudioTranscription && state.settings.transcriptionProvider === "native" && !payload.whisper) {
         node.classList.add("is-warn");
         textNode.textContent = `字幕 Engine 已启动，但本地 Whisper 尚未安装`;
-        return;
+        return state.engineHealth;
       }
       node.classList.add(payload.versionMismatch ? "is-warn" : "is-ok");
       textNode.textContent =
@@ -692,16 +700,89 @@ async function refreshEngineStatus() {
           : state.settings.transcriptionProvider === "native" && payload.whisper
           ? `字幕 Engine 已启动（${transport} / yt-dlp + Whisper 就绪）`
           : `字幕 Engine 已启动（${transport} / yt-dlp 就绪）`;
-      return;
+      return state.engineHealth;
     }
     node.classList.add("is-warn");
     textNode.textContent = `Engine 已启动，但还缺少 yt-dlp 依赖`;
-    return;
+    return state.engineHealth;
   }
 
-  applyEnginePlatformPolicy("");
   node.classList.add("is-error");
   textNode.textContent = `字幕 Engine 未连接：${shortEngineError(response?.error)}`;
+  return state.engineHealth;
+}
+
+function normalizeEngineHealth(response = {}) {
+  const payload = response?.payload || null;
+  let code = String(response?.code || "");
+  let ok = Boolean(response?.ok);
+
+  if (!ok) {
+    code = code || "CAPTION_ENGINE_UNAVAILABLE";
+  } else if (payload?.upgradeRequired || payload?.compatible === false || payload?.serviceMatches === false) {
+    ok = false;
+    code = "ENGINE_UPGRADE_REQUIRED";
+  } else if (payload?.ytDlp === false) {
+    ok = false;
+    code = "CAPTION_ENGINE_UNAVAILABLE";
+  } else if (state.settings.ttsEngine === "edge" && payload?.edgeTts === false) {
+    ok = false;
+    code = "TTS_ENGINE_UNAVAILABLE";
+  }
+
+  return { checked: true, ok, code, payload };
+}
+
+function resetRuntimeProfileForOperation() {
+  state.runtimeProfile = createRuntimeProfile(state.settings, "full");
+  state.lightweightNoticeShown = false;
+  renderEffectiveRuntimeProfile();
+}
+
+function reapplyLightweightModeForKnownEngineHealth() {
+  if (!state.engineHealth.checked || state.engineHealth.ok) {
+    return false;
+  }
+  return activateLightweightMode(state.engineHealth);
+}
+
+function activateLightweightMode(failure = {}) {
+  const payload = failure?.payload || {};
+  const decision = lightweightFallbackDecision({
+    ...failure,
+    ttsEngine: state.settings.ttsEngine,
+    edgeTtsAvailable: payload.edgeTts
+  });
+  if (!decision.activate) {
+    return false;
+  }
+
+  cancelQueuedVoiceAudio();
+  invalidateVoicePlayback();
+  stopActiveVoiceAudio();
+  state.runtimeProfile = createRuntimeProfile(state.settings, "lightweight");
+  renderEffectiveRuntimeProfile();
+  if (!state.lightweightNoticeShown) {
+    state.lightweightNoticeShown = true;
+    setStatus("本次会话已切换到免安装轻量模式：仅使用当前页面公开 YouTube 字幕和 Chrome 本地翻译。", "working");
+  }
+  return true;
+}
+
+function resolveEffectiveProvider() {
+  return state.runtimeProfile.provider || state.settings.provider;
+}
+
+function renderEffectiveRuntimeProfile() {
+  if (!state.root) {
+    return;
+  }
+  state.root.dataset.runtimeProfile = isLightweightProfile(state.runtimeProfile) ? "lightweight" : "full";
+  const providerLabel = state.root.querySelector("[data-provider-label]");
+  if (providerLabel) {
+    providerLabel.textContent = providerHint(resolveEffectiveProvider(), state.settings);
+  }
+  updateWidgetState();
 }
 
 function shortEngineError(error) {
@@ -1057,7 +1138,10 @@ async function startDubbing(options = {}) {
     return;
   }
   state.settings = readSettingsFromWidget();
+  resetRuntimeProfileForOperation();
+  reapplyLightweightModeForKnownEngineHealth();
   if (
+    state.runtimeProfile.useEngineTts &&
     state.settings.voiceEnabled &&
     state.settings.ttsEngine === "edge" &&
     !state.settings.microsoftTtsConsent
@@ -1066,13 +1150,18 @@ async function startDubbing(options = {}) {
     return;
   }
   if (
+    state.runtimeProfile.useEngineTts &&
     state.settings.ttsEngine === "kokoro" &&
     !ttsEngineSupportsLanguage("kokoro", state.settings.targetLanguage)
   ) {
     setStatus("Kokoro 当前仅支持中文和英文，请切换目标语言或配音引擎。", "error");
     return;
   }
-  if (state.settings.ttsEngine === "kokoro" && state.kokoroModelStatus.state !== "ready") {
+  if (
+    state.runtimeProfile.useEngineTts &&
+    state.settings.ttsEngine === "kokoro" &&
+    state.kokoroModelStatus.state !== "ready"
+  ) {
     setStatus("请先安装并准备好 Kokoro 本地语音模型。", "error");
     await refreshKokoroModelStatus();
     return;
@@ -1093,8 +1182,11 @@ async function startDubbing(options = {}) {
   try {
     state.settings = await loadSettings();
     updateControlsFromSettings();
+    resetRuntimeProfileForOperation();
+    reapplyLightweightModeForKnownEngineHealth();
     assertOperationActive(operationId);
     if (
+      state.runtimeProfile.useEngineTts &&
       state.settings.voiceEnabled &&
       state.settings.ttsEngine === "edge" &&
       !state.settings.microsoftTtsConsent
@@ -1102,12 +1194,17 @@ async function startDubbing(options = {}) {
       throw new Error("请先同意 Microsoft 在线配音的数据传输说明，或改用 Kokoro 本地配音。");
     }
     if (
+      state.runtimeProfile.useEngineTts &&
       state.settings.ttsEngine === "kokoro" &&
       !ttsEngineSupportsLanguage("kokoro", state.settings.targetLanguage)
     ) {
       throw new Error("Kokoro 当前仅支持中文和英文，请切换目标语言或配音引擎。");
     }
-    if (state.settings.ttsEngine === "kokoro" && state.kokoroModelStatus.state !== "ready") {
+    if (
+      state.runtimeProfile.useEngineTts &&
+      state.settings.ttsEngine === "kokoro" &&
+      state.kokoroModelStatus.state !== "ready"
+    ) {
       throw new Error("请先安装并准备好 Kokoro 本地语音模型。");
     }
 
@@ -1125,7 +1222,7 @@ async function startDubbing(options = {}) {
 
     attachCaptionOverlay();
     const videoId = getCurrentVideoId();
-    state.timelineCacheProvider = state.settings.provider;
+    state.timelineCacheProvider = resolveEffectiveProvider();
     const cachedTimeline = await loadCachedTimeline(videoId, operationId, "youtube-captions");
     assertOperationActive(operationId);
 
@@ -1139,19 +1236,19 @@ async function startDubbing(options = {}) {
 
     if (cachedTimeline?.cues?.length) {
       cacheHit = true;
-      state.timelineCacheProvider = cachedTimeline.provider || state.settings.provider;
+      state.timelineCacheProvider = cachedTimeline.provider || resolveEffectiveProvider();
       translatedCues = normalizeRollingCaptionCues(cachedTimeline.cues);
       originalCues = translatedCues.map(({ translatedText, ...cue }) => cue);
       detectedSourceLanguage = cachedTimeline.sourceLanguage || "auto";
       setStatus(`已从本机缓存读取 ${translatedCues.length} 条字幕`, "");
     } else {
       beginVoiceEngineWarmup(operationId);
-      const providerCachedTimeline = await loadCachedTimeline(videoId, operationId, state.settings.provider);
+      const providerCachedTimeline = await loadCachedTimeline(videoId, operationId, resolveEffectiveProvider());
       assertOperationActive(operationId);
 
       if (providerCachedTimeline?.cues?.length) {
         cacheHit = true;
-        state.timelineCacheProvider = providerCachedTimeline.provider || state.settings.provider;
+        state.timelineCacheProvider = providerCachedTimeline.provider || resolveEffectiveProvider();
         translatedCues = normalizeRollingCaptionCues(providerCachedTimeline.cues);
         originalCues = translatedCues.map(({ translatedText, ...cue }) => cue);
         detectedSourceLanguage = providerCachedTimeline.sourceLanguage || "auto";
@@ -1162,7 +1259,7 @@ async function startDubbing(options = {}) {
         if (sourceCachedTimeline?.cues?.length) {
           originalCues = restoreSourceCaptionCache(sourceCachedTimeline);
           detectedSourceLanguage = sourceCachedTimeline.sourceLanguage || "auto";
-          state.timelineCacheProvider = state.settings.provider;
+          state.timelineCacheProvider = resolveEffectiveProvider();
           setStatus(`已从本机缓存读取 ${originalCues.length} 条原字幕`, "");
         }
 
@@ -1172,7 +1269,7 @@ async function startDubbing(options = {}) {
 
           originalCues = normalizeRollingCaptionCues(captionResult.cues || []);
           if (!originalCues.length && captionResult.status === "no_captions") {
-            if (!state.settings.allowAudioTranscription) {
+            if (!state.runtimeProfile.allowTranscription) {
               throw new Error("已确认这个视频没有可读取的 YouTube 字幕。需要翻译无字幕视频时，请在扩展弹窗开启“无字幕时自动转写”。");
             }
             usedAudioTranscription = true;
@@ -1191,7 +1288,7 @@ async function startDubbing(options = {}) {
             ? state.detectedSourceLanguage || "auto"
             : captionResult.track?.languageCode || "auto";
           targetCaptionsReady = isTargetLanguageTrack(captionResult.track, state.settings.targetLanguage);
-          state.timelineCacheProvider = targetCaptionsReady ? "youtube-captions" : state.settings.provider;
+          state.timelineCacheProvider = targetCaptionsReady ? "youtube-captions" : resolveEffectiveProvider();
           if (!usedAudioTranscription && !targetCaptionsReady) {
             await saveSourceCaptionCache(videoId, operationId, originalCues, detectedSourceLanguage).catch(() => false);
             assertOperationActive(operationId);
@@ -1210,7 +1307,7 @@ async function startDubbing(options = {}) {
           setStatus("已读取目标语言字幕，直接同步配音", "");
         } else {
           setWidgetPhase("translating");
-          setStatus(`正在使用 ${providerName(state.settings.provider)} 翻译当前片段...`, "working");
+          setStatus(`正在使用 ${providerName(resolveEffectiveProvider())} 翻译当前片段...`, "working");
           translatedCues = await translateCues(firstBatch, detectedSourceLanguage);
         }
       }
@@ -1294,7 +1391,7 @@ async function startDubbing(options = {}) {
 }
 
 async function transcribeCurrentAudioWindow(operationId) {
-  if (!state.settings.allowAudioTranscription) {
+  if (!state.runtimeProfile.allowTranscription) {
     throw new Error(
       "未检测到 YouTube 字幕。为避免消耗转写额度，已停止；如果确认这个视频没有字幕，请在扩展弹窗开启“无字幕时自动转写”。"
     );
@@ -1754,8 +1851,8 @@ function clearStatusPulse() {
   state.statusPulseId = 0;
 }
 
-function timelineCacheRequest(videoId = getCurrentVideoId(), providerOverride = state.timelineCacheProvider || state.settings.provider) {
-  const provider = String(providerOverride || state.settings.provider || "");
+function timelineCacheRequest(videoId = getCurrentVideoId(), providerOverride = state.timelineCacheProvider || resolveEffectiveProvider()) {
+  const provider = String(providerOverride || resolveEffectiveProvider() || "");
   return {
     videoId: String(videoId || ""),
     targetLanguage: String(state.settings.targetLanguage || ""),
@@ -1768,7 +1865,7 @@ async function loadCachedTimeline(videoId, operationId, providerOverride = "") {
   if (!state.settings.cacheTranslations || !videoId) {
     return null;
   }
-  const request = timelineCacheRequest(videoId, providerOverride || state.settings.provider);
+  const request = timelineCacheRequest(videoId, providerOverride || resolveEffectiveProvider());
   const requests = providerOverride ? [request] : makeTimelineCacheLookupRequests(request);
   for (const request of requests) {
     const response = await sendRuntimeMessage({
@@ -2205,10 +2302,13 @@ function updateWidgetState() {
   const startButton = state.root.querySelector("[data-action='start']");
   const stopButton = state.root.querySelector("[data-action='stop']");
   if (startButton) {
+    const requiresEngineTts = state.runtimeProfile.useEngineTts;
     const kokoroLanguageUnavailable =
+      requiresEngineTts &&
       state.settings.ttsEngine === "kokoro" &&
       !ttsEngineSupportsLanguage("kokoro", state.settings.targetLanguage);
     const kokoroModelUnavailable =
+      requiresEngineTts &&
       state.settings.ttsEngine === "kokoro" && state.kokoroModelStatus.state !== "ready";
     startButton.disabled = state.busy || state.running || kokoroLanguageUnavailable || kokoroModelUnavailable;
     startButton.textContent = startButtonLabel(state.phase);
@@ -4320,6 +4420,22 @@ async function resolveVideoCaptions(operationId) {
     track: null,
     error: `页面字幕读取失败：${error.message || String(error)}`
   }));
+  if (!state.runtimeProfile.useCaptionEngine) {
+    const pageResult = await withTimeoutResult(
+      pageResultPromise,
+      CAPTION_TOTAL_TIMEOUT_MS,
+      "页面字幕读取超时"
+    );
+    return pageResult?.status === "captions"
+      ? pageResult
+      : {
+          status: pageResult?.status || "unknown",
+          cues: [],
+          track: null,
+          code: pageResult?.code || "LIGHTWEIGHT_CAPTIONS_UNAVAILABLE",
+          error: "免安装轻量模式需要当前视频提供公开的 YouTube 字幕。"
+        };
+  }
   const backoff = getCaptionFailureBackoff(videoId);
 
   const pageFastResult = await withTimeoutResult(pageResultPromise, CAPTION_FAST_TIMEOUT_MS, "页面字幕快速读取超时");
@@ -5186,7 +5302,7 @@ function beginChromeTranslationWarmupFromUserGesture() {
   if (targetLanguage !== "en") {
     const sourceLanguage = normalizeChromeTranslatorLanguage(state.settings.sourceLanguage) || "en";
     prepareChromeTranslator(sourceLanguage, targetLanguage, {
-      silent: state.settings.provider !== "chrome-translator"
+      silent: resolveEffectiveProvider() !== "chrome-translator"
     }).catch(() => null);
   }
   prepareChromeLanguageDetector().catch(() => null);
@@ -5347,7 +5463,7 @@ function normalizeChromeTranslatorError(error) {
 }
 
 async function translateCues(cues, detectedSourceLanguage) {
-  if (state.settings.provider === "chrome-translator") {
+  if (resolveEffectiveProvider() === "chrome-translator") {
     return translateCuesWithChromeTranslator(cues, detectedSourceLanguage);
   }
   const requestId = `dub-${state.operationId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -5356,7 +5472,7 @@ async function translateCues(cues, detectedSourceLanguage) {
     {
       type: "localtube.providerDub",
       requestId,
-      settings: state.settings,
+      settings: { ...state.settings, provider: resolveEffectiveProvider() },
       payload: {
         requestId,
         videoUrl: location.href,
@@ -5385,7 +5501,7 @@ async function translateCues(cues, detectedSourceLanguage) {
       error.name = "OperationStaleError";
       throw error;
     }
-    if ((state.settings.provider || "openai") === "native") {
+    if ((resolveEffectiveProvider() || "openai") === "native") {
       if (response.code === "OLLAMA_UNAVAILABLE" || /Ollama/i.test(response.error || "")) {
         throw new Error(response.error || "Ollama 本地翻译不可用，请启动 Ollama 或改用 Chrome 本地翻译。");
       }
@@ -5407,7 +5523,7 @@ async function translateCues(cues, detectedSourceLanguage) {
 }
 
 async function fallbackToChromeTranslator(cues, detectedSourceLanguage, response = {}) {
-  const providerLabel = providerName(state.settings.provider);
+  const providerLabel = providerName(resolveEffectiveProvider());
   const providerMessage = response.error || `${providerLabel} 暂时不可用。`;
   setStatus(`${providerMessage} 正在自动改用 Chrome 本地免费翻译...`, "working");
   try {
@@ -5521,6 +5637,7 @@ function installNavigationWatcher() {
 
     state.lastUrl = location.href;
     stopDubbing();
+    resetRuntimeProfileForOperation();
 
     if (isWatchPage() && state.settings.enabled) {
       mountWidget();
