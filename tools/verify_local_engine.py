@@ -1849,6 +1849,18 @@ def test_native_autostart_dispatch(native_host):
         native_host.install_engine_autostart = original
 
 
+def test_native_initial_bom_compatibility(native_host):
+    header = native_host.normalize_initial_native_length_header(
+        native_host.UTF8_BOM + b"\x11",
+        lambda size: b"\x00\x00\x00" if size == 3 else b"",
+    )
+    assert header == b"\x11\x00\x00\x00"
+    assert native_host.normalize_initial_native_length_header(
+        b"\x11\x00\x00\x00",
+        lambda _size: b"",
+    ) == b"\x11\x00\x00\x00"
+
+
 def test_native_restart_reuses_launchagent_engine(native_host):
     original_stop = native_host.stop_http_engine
     original_wait = native_host.wait_for_port_release
@@ -1984,6 +1996,7 @@ def main() -> None:
     test_whisper_cpp_command(server)
     test_ollama_translation_count_recovery(server)
     test_native_autostart_dispatch(native_host)
+    test_native_initial_bom_compatibility(native_host)
     test_native_restart_reuses_launchagent_engine(native_host)
     test_native_autostart_installer(native_host)
     print("local engine checks ok")

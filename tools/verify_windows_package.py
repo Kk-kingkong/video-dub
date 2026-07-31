@@ -155,6 +155,12 @@ def verify_native_host_source() -> None:
         "Native Host does not configure binary stdio before entering its message loop",
     )
     require(
+        "normalize_initial_native_length_header" in source
+        and "NATIVE_INPUT_FIRST_FRAME" in source
+        and "LOCAL_DUB_NATIVE_INPUT_UTF8_BOM_COMPAT" in source,
+        "Native Host does not handle the Windows launcher's text preamble",
+    )
+    require(
         "manage-engine.ps1" in source
         and "run_windows_engine_manager" in source,
         "Native Host does not use the shared Windows Engine lifecycle manager",
@@ -351,11 +357,13 @@ def verify_packaging_sources() -> None:
     )
     require(
         "UseShellExecute = false" in launcher_source
-        and "RedirectStandardInput = false" in launcher_source
-        and "RedirectStandardOutput = false" in launcher_source
+        and "RedirectStandardInput = true" in launcher_source
+        and "RedirectStandardOutput = true" in launcher_source
         and "CopyToAsync" not in launcher_source
+        and "ReadNativeFrame" in launcher_source
+        and "LOCAL_DUB_NATIVE_INPUT_UTF8_BOM_COMPAT" in launcher_source
         and r'Path.Combine(runtimeRoot, ".venv", "python.exe")' in launcher_source,
-        "Native Messaging launcher does not pass Chrome's binary stdio directly to Python",
+        "Native Messaging launcher does not bridge one bounded binary request to Python",
     )
 
 
