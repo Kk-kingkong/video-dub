@@ -3233,7 +3233,7 @@ function sendRuntimeMessageWithTimeout(message, timeoutMs, timeoutMessage) {
   });
 }
 
-function withTimeoutResult(promise, timeoutMs, timeoutMessage) {
+function withTimeoutResult(promise, timeoutMs, timeoutMessage, options = {}) {
   return new Promise((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -3245,6 +3245,7 @@ function withTimeoutResult(promise, timeoutMs, timeoutMessage) {
         status: "unknown",
         cues: [],
         track: null,
+        ...(options.timeoutCode ? { code: String(options.timeoutCode) } : {}),
         error: timeoutMessage
       });
     }, timeoutMs);
@@ -3710,6 +3711,15 @@ function maybeSpeakVoiceSegment(segment) {
 }
 
 function handleEngineVoiceFailure(error, segment, generation) {
+  const currentAttempt =
+    isVoicePlaybackAttemptCurrent(segment, generation) &&
+    state.voicePendingCueKey === segment.key &&
+    state.running &&
+    !state.dubTrackPreviewActive &&
+    isVoiceSegmentCurrent(segment);
+  if (!currentAttempt) {
+    return true;
+  }
   const failure = {
     code: error?.code,
     error: error?.message
@@ -4157,32 +4167,53 @@ async function getVoiceSegmentAudio(segment, options = {}) {
   if (cached) {
     return cached;
   }
+  const operationId = state.operationId;
+  const runtimeProfile = state.runtimeProfile;
   const pending = state.voiceAudioPending.get(key);
-  if (pending) {
+  if (
+    pending &&
+    pending.localtubeOperationId === operationId &&
+    pending.localtubeRuntimeProfile === runtimeProfile
+  ) {
     return pending;
   }
-  const operationId = state.operationId;
+  const requestContextIsCurrent = () =>
+    state.operationId === operationId &&
+    state.runtimeProfile === runtimeProfile &&
+    runtimeProfile.useEngineTts &&
+    state.runtimeProfile.useEngineTts;
 
-  const promise = new Promise((resolve, reject) => {
+  let promise;
+  promise = new Promise((resolve, reject) => {
     const task = async () => {
+      if (!requestContextIsCurrent()) {
+        resolve(null);
+        return;
+      }
       state.voiceAudioActiveCount += 1;
       state.voiceAudioActiveSegmentKey = segment.key;
       try {
         const payload = await requestVoiceSegmentAudio(segment);
-        if (state.operationId !== operationId || !state.runtimeProfile.useEngineTts) {
+        if (!requestContextIsCurrent()) {
           resolve(null);
           return;
         }
         rememberVoiceAudio(key, payload);
         resolve(payload);
       } catch (error) {
-        reject(error);
+        if (requestContextIsCurrent()) {
+          reject(error);
+        } else {
+          resolve(null);
+        }
       } finally {
         state.voiceAudioActiveCount = Math.max(0, state.voiceAudioActiveCount - 1);
         if (state.voiceAudioActiveSegmentKey === segment.key) {
           state.voiceAudioActiveSegmentKey = "";
         }
-        state.voiceAudioPending.delete(key);
+        if (state.voiceAudioPending.get(key) === promise) {
+          state.voiceAudioPending.delete(key);
+        }
         drainVoiceAudioQueue();
       }
     };
@@ -4199,6 +4230,8 @@ async function getVoiceSegmentAudio(segment, options = {}) {
     }
     drainVoiceAudioQueue();
   });
+  promise.localtubeOperationId = operationId;
+  promise.localtubeRuntimeProfile = runtimeProfile;
   state.voiceAudioPending.set(key, promise);
   return promise;
 }
@@ -4702,7 +4735,9 @@ async function resolveVideoCaptions(operationId) {
       CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS,
       CAPTION_TOTAL_TIMEOUT_MS
     );
-    engineResult = await withTimeoutResult(engineResultPromise, engineTimeoutMs, "本地字幕 Engine 读取超时");
+    engineResult = await withTimeoutResult(engineResultPromise, engineTimeoutMs, "本地字幕 Engine 读取超时", {
+      timeoutCode: "ENGINE_TIMEOUT"
+    });
     assertOperationActive(operationId);
     rememberCaptionFailure(videoId, engineResult);
   }

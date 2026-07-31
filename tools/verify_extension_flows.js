@@ -1863,6 +1863,11 @@ function testNormalizedEngineHealthCapabilities() {
 
 async function testCaptionEngineFailureFallbackHarness() {
   const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const withTimeoutResult = vm.runInNewContext(
+    `(function withTimeoutResult(promise, timeoutMs, timeoutMessage, options = {}) {${extractFunctionBody(content, "withTimeoutResult")}})`,
+    { setTimeout, clearTimeout }
+  );
+  let pageReadCount = 0;
   const resolveCaptions = vm.runInNewContext(
     `(async function resolveVideoCaptions(operationId) {${extractFunctionBody(content, "resolveVideoCaptions")}})`,
     {
@@ -1872,26 +1877,21 @@ async function testCaptionEngineFailureFallbackHarness() {
       },
       getCurrentVideoId: () => "video-1",
       setStatus() {},
-      resolveVideoCaptionsFromPage: async () => ({
-        status: "captions",
-        cues: [{ id: "page", start: 0, end: 1, text: "hello" }],
-        track: { languageCode: "en", source: "page-main-world" },
-        source: "page-main-world"
-      }),
-      withTimeoutResult: async (promise, _timeoutMs, timeoutMessage) =>
-        timeoutMessage === "页面字幕快速读取超时"
-          ? { status: "unknown", cues: [], track: null, error: timeoutMessage }
-          : promise,
+      resolveVideoCaptionsFromPage: async () => {
+        pageReadCount += 1;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return {
+          status: "captions",
+          cues: [{ id: "page", start: 0, end: 1, text: "hello" }],
+          track: { languageCode: "en", source: "page-main-world" },
+          source: "page-main-world"
+        };
+      },
+      withTimeoutResult,
       getCaptionFailureBackoff: () => null,
       assertOperationActive() {},
-      fetchEngineCaptions: async () => ({
-        status: "unknown",
-        cues: [],
-        track: null,
-        code: "CAPTION_ENGINE_UNAVAILABLE",
-        error: "Engine transport unavailable"
-      }),
-      captionEngineWaitTimeout: () => 100,
+      fetchEngineCaptions: () => new Promise(() => {}),
+      captionEngineWaitTimeout: () => 2,
       rememberCaptionFailure() {},
       isTargetLanguageTrack: () => false,
       lightweightFallbackDecision: helpers.lightweightFallbackDecision,
@@ -1902,14 +1902,15 @@ async function testCaptionEngineFailureFallbackHarness() {
       pickBestResolvedCaptionResult: () => null,
       buildCaptionReadFailureMessage: () => "caption failure",
       classifyCaptionErrorCode: () => "CAPTION_ENGINE_UNAVAILABLE",
-      CAPTION_FAST_TIMEOUT_MS: 6000,
-      CAPTION_TOTAL_TIMEOUT_MS: 23000,
-      CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS: 2000
+      CAPTION_FAST_TIMEOUT_MS: 1,
+      CAPTION_TOTAL_TIMEOUT_MS: 20,
+      CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS: 2
     }
   );
   let activationCount = 0;
   const result = await resolveCaptions(4);
   assert.equal(activationCount, 1, "a proven in-operation caption Engine failure must activate fallback");
+  assert.equal(pageReadCount, 1, "the active page caption read must be started only once");
   assert.equal(result.source, "page-main-world");
   assert.equal(result.cues[0].id, "page", "the already-started page caption result must complete the same operation");
 }
@@ -1962,18 +1963,24 @@ async function testEngineActionErrorSanitization() {
 async function testEngineVoiceFailureHarness() {
   const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
   let browserProfile = false;
+  let currentGeneration = 8;
   const handler = vm.runInNewContext(
     `(function(error, segment, generation) {${extractFunctionBody(content, "handleEngineVoiceFailure")}})`,
     {
       state: {
         settings: { ttsEngine: "edge" },
         running: true,
-        dubTrackPreviewActive: false
+        dubTrackPreviewActive: false,
+        voicePendingCueKey: "current-segment"
       },
       lightweightFallbackDecision: helpers.lightweightFallbackDecision,
       usesBrowserSpeechProfile: () => browserProfile,
+      isVoicePlaybackAttemptCurrent: (segment, generation) =>
+        segment.key === "current-segment" && generation === currentGeneration,
+      isVoiceSegmentCurrent: (segment) => segment.key === "current-segment",
       restartOperationInLightweightMode: () => {
         restartCount += 1;
+        browserProfile = true;
         return true;
       }
     }
@@ -1981,33 +1988,96 @@ async function testEngineVoiceFailureHarness() {
   let restartCount = 0;
   const handled = handler(
     Object.assign(new Error("本地 TTS 生成超时"), { code: "TTS_ENGINE_UNAVAILABLE" }),
-    { key: "stale-segment" },
+    { key: "current-segment" },
     7
   );
 
   assert.equal(handled, true);
-  assert.equal(restartCount, 1, "a qualifying Engine failure must restart the full pipeline in lightweight mode");
+  assert.equal(restartCount, 0, "an old playback generation must not restart the active full operation");
 
   const contentFailureHandled = handler(
     Object.assign(new Error("当前片段未能生成配音。"), { code: "TTS_SYNTHESIS_FAILED" }),
-    { key: "content-failure" },
+    { key: "current-segment" },
     8
   );
   assert.equal(contentFailureHandled, false);
-  assert.equal(restartCount, 1, "a content-specific failure must retain the same-provider segment policy");
+  assert.equal(restartCount, 0, "a content-specific failure must retain the same-provider segment policy");
 
-  const untypedTimeoutHandled = handler(new Error("本地 TTS 生成超时"), { key: "content-timeout" }, 9);
+  const untypedTimeoutHandled = handler(new Error("本地 TTS 生成超时"), { key: "current-segment" }, 8);
   assert.equal(untypedTimeoutHandled, false);
-  assert.equal(restartCount, 1, "a code-less content timeout must not change runtime semantics");
+  assert.equal(restartCount, 0, "a code-less content timeout must not change runtime semantics");
 
-  browserProfile = true;
+  const currentFailureHandled = handler(
+    Object.assign(new Error("Engine transport unavailable"), { code: "TTS_ENGINE_UNAVAILABLE" }),
+    { key: "current-segment" },
+    8
+  );
+  assert.equal(currentFailureHandled, true);
+  assert.equal(restartCount, 1, "a current qualifying Engine failure must restart exactly once");
+
   const alreadyActivatedHandled = handler(
     Object.assign(new Error("另一个旧请求稍后失败"), { code: "TTS_ENGINE_UNAVAILABLE" }),
-    { key: "older-engine-request" },
-    6
+    { key: "current-segment" },
+    8
   );
   assert.equal(alreadyActivatedHandled, true);
   assert.equal(restartCount, 1, "late Engine failures must not start another lightweight operation");
+
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+  }
+
+  const firstProfile = { mode: "full", useEngineTts: true };
+  const audioState = {
+    operationId: 21,
+    runtimeProfile: firstProfile,
+    localTtsUnavailableUntil: 0,
+    voiceAudioCache: new Map(),
+    voiceAudioPending: new Map(),
+    voiceAudioQueue: [],
+    voiceAudioActiveCount: 0,
+    voiceAudioActiveSegmentKey: "",
+    settings: { ttsEngine: "edge" }
+  };
+  let activeRequest = deferred();
+  const audioContext = {
+    state: audioState,
+    voiceFailurePolicy: helpers.voiceFailurePolicy,
+    voiceCacheKey: (segment) => segment.key,
+    requestVoiceSegmentAudio: () => activeRequest.promise,
+    rememberVoiceAudio: () => {
+      throw new Error("stale audio must not enter the cache");
+    }
+  };
+  audioContext.drainVoiceAudioQueue = () => {
+    const task = audioState.voiceAudioQueue.shift();
+    task?.();
+  };
+  const getVoiceSegmentAudio = vm.runInNewContext(
+    `(async function getVoiceSegmentAudio(segment, options = {}) {${extractFunctionBody(content, "getVoiceSegmentAudio")}})`,
+    audioContext
+  );
+
+  const staleAudio = getVoiceSegmentAudio({ key: "stale-audio" });
+  audioState.operationId = 22;
+  audioState.runtimeProfile = { mode: "full", useEngineTts: true };
+  activeRequest.reject(Object.assign(new Error("old Engine request failed"), { code: "TTS_ENGINE_UNAVAILABLE" }));
+  assert.equal(
+    await staleAudio,
+    null,
+    "a rejection from an old operation/profile must resolve as stale instead of reaching fallback activation"
+  );
+
+  activeRequest = deferred();
+  const currentAudio = getVoiceSegmentAudio({ key: "current-audio" });
+  activeRequest.reject(Object.assign(new Error("current Engine request failed"), { code: "TTS_ENGINE_UNAVAILABLE" }));
+  await assert.rejects(currentAudio, /current Engine request failed/);
 
   const restartState = {
     runtimeProfile: { mode: "full" },
@@ -2465,7 +2535,7 @@ function testManifestAndFlowGuards() {
   assert.ok(
     voicePlaybackBody.indexOf("handleEngineVoiceFailure(error, segment, playbackGeneration)") <
       voicePlaybackBody.indexOf("isVoicePlaybackAttemptCurrent(segment, playbackGeneration)"),
-    "Engine failure activation must run before stale-segment replay guards"
+    "the centralized Engine failure handler must own the generation guard before segment fallback policy"
   );
   const playVoiceSegmentBody = extractFunctionBody(content, "playVoiceSegment");
   assert.match(playVoiceSegmentBody, /^\s*if\s*\(state\.dubTrackPreviewActive \|\| !state\.runtimeProfile\.useEngineTts\)\s*\{\s*return;/);
@@ -2476,6 +2546,10 @@ function testManifestAndFlowGuards() {
   );
   const voiceAudioBody = extractFunctionBody(content, "getVoiceSegmentAudio");
   assert.match(voiceAudioBody, /if\s*\(!state\.runtimeProfile\.useEngineTts\)\s*\{\s*return null/);
+  assert.match(voiceAudioBody, /const operationId = state\.operationId/);
+  assert.match(voiceAudioBody, /const runtimeProfile = state\.runtimeProfile/);
+  assert.match(voiceAudioBody, /requestContextIsCurrent/);
+  assert.match(voiceAudioBody, /state\.voiceAudioPending\.get\(key\) === promise/);
   const voiceRequestBody = extractFunctionBody(content, "requestVoiceSegmentAudio");
   assert.match(voiceRequestBody, /if\s*\(!state\.runtimeProfile\.useEngineTts\)\s*\{\s*return null/);
   assert.match(voiceRequestBody, /failurePolicy\.requestAttempts/);
@@ -2493,6 +2567,11 @@ function testManifestAndFlowGuards() {
   assert.match(engineVoiceFailureBody, /lightweightFallbackDecision/);
   assert.match(engineVoiceFailureBody, /restartOperationInLightweightMode/);
   assert.doesNotMatch(engineVoiceFailureBody, /speakSegmentWithBrowserTts/);
+  assert.ok(
+    engineVoiceFailureBody.indexOf("isVoicePlaybackAttemptCurrent(segment, generation)") <
+      engineVoiceFailureBody.indexOf("lightweightFallbackDecision"),
+    "stale playback generations must be discarded before Engine failure classification or restart"
+  );
   const lightweightRestartBody = extractFunctionBody(content, "restartOperationInLightweightMode");
   assert.match(lightweightRestartBody, /stopDubbing\(\{ silent: true \}\)/);
   assert.match(lightweightRestartBody, /forceLightweight:\s*true/);
@@ -2687,6 +2766,10 @@ function testManifestAndFlowGuards() {
   const resolveCaptionsBody = extractFunctionBody(content, "resolveVideoCaptions");
   assert.match(resolveCaptionsBody, /lightweightFallbackDecision/);
   assert.match(resolveCaptionsBody, /activateLightweightMode\(engineResult\)/);
+  assert.match(
+    resolveCaptionsBody,
+    /withTimeoutResult\(engineResultPromise, engineTimeoutMs, "本地字幕 Engine 读取超时",\s*\{\s*timeoutCode: "ENGINE_TIMEOUT"/
+  );
   assert.match(
     resolveCaptionsBody,
     /pageFastResult\?\.status === "captions"[\s\S]*pageFastResult\?\.cues\?\.length[\s\S]*return pageFastResult/,
