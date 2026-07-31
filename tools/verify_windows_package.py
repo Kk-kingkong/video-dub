@@ -391,19 +391,64 @@ def powershell_executable() -> str:
     return "powershell.exe"
 
 
+def run_captured(
+    command: list[str],
+    env: dict[str, str],
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stdout_file:
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stderr_file:
+            process = subprocess.Popen(
+                command,
+                env=env,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+            )
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=15,
+                    )
+                else:
+                    process.kill()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                stdout_file.flush()
+                stderr_file.flush()
+                stdout_file.seek(0)
+                stderr_file.seek(0)
+                raise VerificationError(
+                    f"command timed out after {timeout:.0f}s: {' '.join(command)}\n"
+                    f"{stdout_file.read()}\n{stderr_file.read()}"
+                )
+            stdout_file.flush()
+            stderr_file.flush()
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            return subprocess.CompletedProcess(
+                command,
+                returncode,
+                stdout_file.read(),
+                stderr_file.read(),
+            )
+
+
 def run_checked(
     command: list[str],
     env: dict[str, str],
     timeout: float = 120,
 ) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        command,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
+    completed = run_captured(command, env, timeout)
     if completed.returncode != 0:
         raise VerificationError(
             f"command failed ({completed.returncode}): {' '.join(command)}\n"
@@ -568,6 +613,7 @@ def invoke_native_launcher(launcher: Path, env: dict[str, str]) -> dict[str, Any
 def verify_install_smoke(package: Path) -> None:
     require(os.name == "nt", "--install-smoke must run on Windows")
     require(package.is_file(), f"Windows package does not exist: {package}")
+    print("Windows smoke: validating package", flush=True)
     checksum_path = package.with_name(WINDOWS_CHECKSUM_NAME)
     require(checksum_path.is_file(), f"Windows checksum does not exist: {checksum_path}")
     checksum_parts = checksum_path.read_text(encoding="ascii").strip().split()
@@ -591,6 +637,7 @@ def verify_install_smoke(package: Path) -> None:
         local_app_data = root / "Local App Data 测试"
         with zipfile.ZipFile(package) as archive:
             archive.extractall(extract_root)
+        print("Windows smoke: package extracted", flush=True)
         installers = list(extract_root.rglob("install-engine.ps1"))
         uninstallers = list(extract_root.rglob("uninstall-engine.ps1"))
         managers = list(extract_root.rglob("manage-engine.ps1"))
@@ -631,7 +678,7 @@ def verify_install_smoke(package: Path) -> None:
             expect_success: bool = True,
         ) -> subprocess.CompletedProcess[str]:
             install_env = {**env, **(extra_env or {})}
-            completed = subprocess.run(
+            completed = run_captured(
                 [
                     powershell_executable(),
                     "-NoProfile",
@@ -641,11 +688,8 @@ def verify_install_smoke(package: Path) -> None:
                     str(installers[0]),
                     "-Repair",
                 ],
-                env=install_env,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=180,
+                install_env,
+                180,
             )
             if expect_success:
                 require(
@@ -732,7 +776,9 @@ def verify_install_smoke(package: Path) -> None:
             )
 
         try:
+            print("Windows smoke: initial install", flush=True)
             run_installer()
+            print("Windows smoke: initial health", flush=True)
             require((runtime_root / "release.json").is_file(), "real install did not activate runtime")
             health, initial_state = wait_for_exact_health(
                 port,
@@ -744,6 +790,7 @@ def verify_install_smoke(package: Path) -> None:
             stale_state = dict(initial_state)
             stale_state["pid"] = os.getpid()
             state_path.write_text(json.dumps(stale_state), encoding="utf-8")
+            print("Windows smoke: stale-state stop and restart", flush=True)
             invoke_manager(
                 runtime_root / "manage-engine.ps1",
                 "Stop",
@@ -812,6 +859,7 @@ def verify_install_smoke(package: Path) -> None:
                 "scheduled task is not bound to the current user",
             )
 
+            print("Windows smoke: scheduled-task startup", flush=True)
             invoke_manager(
                 runtime_root / "manage-engine.ps1",
                 "Stop",
@@ -835,6 +883,7 @@ def verify_install_smoke(package: Path) -> None:
                 "Scheduled Task did not create a fresh Engine instance",
             )
 
+            print("Windows smoke: compiled Native Messaging startup", flush=True)
             invoke_manager(
                 runtime_root / "manage-engine.ps1",
                 "Stop",
@@ -851,6 +900,7 @@ def verify_install_smoke(package: Path) -> None:
             _, native_state = wait_for_exact_health(port, runtime_root, state_path)
 
             before_repair = native_state["instanceId"]
+            print("Windows smoke: repair install", flush=True)
             run_installer()
             _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
             require(
@@ -858,6 +908,7 @@ def verify_install_smoke(package: Path) -> None:
                 "repair reused a stale Engine instance",
             )
 
+            print("Windows smoke: rollback after injected failure", flush=True)
             run_installer(
                 {"LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE": "1"},
                 expect_success=False,
@@ -875,6 +926,7 @@ def verify_install_smoke(package: Path) -> None:
             source_lock_bytes = source_lock.read_bytes()
             source_lock.unlink()
             try:
+                print("Windows smoke: fail-closed preflight", flush=True)
                 unchanged_instance = read_engine_state(state_path)["instanceId"]
                 run_installer(expect_success=False)
                 require(
@@ -884,6 +936,7 @@ def verify_install_smoke(package: Path) -> None:
             finally:
                 source_lock.write_bytes(source_lock_bytes)
 
+            print("Windows smoke: uninstall", flush=True)
             run_checked(
                 [
                     powershell_executable(),
@@ -913,6 +966,7 @@ def verify_install_smoke(package: Path) -> None:
             else:
                 raise VerificationError("real uninstall left the Engine listener running")
         finally:
+            print("Windows smoke: cleanup", flush=True)
             cleanup()
     print("Windows package install smoke ok")
 

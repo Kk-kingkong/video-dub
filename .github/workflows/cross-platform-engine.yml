@@ -92,6 +92,7 @@ jobs:
         run: py scripts/build_release_windows.py
       - name: Install, repair, health-check, and uninstall
         shell: pwsh
+        timeout-minutes: 15
         run: py tools/verify_windows_package.py --install-smoke dist/LocalTube-Dub-Engine-v0.2.0-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
