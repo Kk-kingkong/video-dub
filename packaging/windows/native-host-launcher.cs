@@ -58,6 +58,7 @@ internal static class LocalTubeDubNativeHostLauncher
         try
         {
             requestFrame = ReadNativeFrame(Console.OpenStandardInput());
+            Console.Error.WriteLine("LocalTube Dub Native Host bridge: request frame read.");
         }
         catch (Exception error)
         {
@@ -83,14 +84,17 @@ internal static class LocalTubeDubNativeHostLauncher
                 Console.Error.WriteLine("LocalTube Dub Native Host failed to start.");
                 return 3;
             }
+            Console.Error.WriteLine("LocalTube Dub Native Host bridge: Python started.");
             try
             {
                 Stream childInput = child.StandardInput.BaseStream;
                 childInput.Write(requestFrame, 0, requestFrame.Length);
                 childInput.Flush();
                 child.StandardInput.Close();
+                Console.Error.WriteLine("LocalTube Dub Native Host bridge: request frame forwarded.");
 
                 byte[] responseFrame = ReadNativeFrame(child.StandardOutput.BaseStream);
+                Console.Error.WriteLine("LocalTube Dub Native Host bridge: response frame read.");
                 Stream output = Console.OpenStandardOutput();
                 output.Write(responseFrame, 0, responseFrame.Length);
                 output.Flush();
