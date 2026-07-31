@@ -1807,6 +1807,21 @@ function testManifestAndFlowGuards() {
   assert.match(content, /if\s*\(!state\.runtimeProfile\.useCaptionEngine\)/);
   assert.match(content, /resolveEffectiveProvider\(\)\s*===\s*"chrome-translator"/);
   assert.doesNotMatch(content, /state\.settings\.(provider|ttsEngine)\s*=\s*["'](?:chrome-translator|browser)["']/);
+  assert.match(content, /Engine 暂不可用，已切换免安装轻量模式：Chrome 翻译 \+ 系统配音。本次播放有效。/);
+  assert.match(content, /data-action="retry-full-mode"/);
+  assert.match(content, /async function retryFullModeFromWidget\(/);
+  assert.doesNotMatch(content, /轻量模式[^\n]*(Native|HTTP|127\.0\.0\.1|端口|stack)/i);
+  const runtimeProfileStateBody = extractFunctionBody(content, "renderRuntimeProfileState");
+  assert.match(runtimeProfileStateBody, /isLightweightProfile\(state\.runtimeProfile\)/);
+  assert.match(runtimeProfileStateBody, /classList\.add\("is-lightweight", "is-warn"\)/);
+  assert.match(runtimeProfileStateBody, /免安装轻量模式暂不支持此功能/);
+  const lightweightRetryBody = extractFunctionBody(content, "retryFullModeFromWidget");
+  assert.match(lightweightRetryBody, /localtube\.captionEngineHealth/);
+  assert.equal((lightweightRetryBody.match(/localtube\.captionEngineHealth/g) || []).length, 1);
+  assert.doesNotMatch(lightweightRetryBody, /localtube\.setSettings|saveSettingsFromWidget/);
+  assert.match(lightweightRetryBody, /Engine 暂未恢复，继续使用免安装轻量模式。/);
+  assert.match(lightweightRetryBody, /stopDubbing\(\{ silent: true \}\)/);
+  assert.match(lightweightRetryBody, /await startDubbing\(/);
   assert.match(kokoroBackground, /localtube\.getKokoroModelStatus/);
   assert.match(kokoroBackground, /localtube\.installKokoroModel/);
   assert.match(kokoroBackground, /localtube\.cancelKokoroModelInstall/);
@@ -2438,6 +2453,7 @@ function testManifestAndFlowGuards() {
 
   const contentCss = fs.readFileSync(path.join(root, "extension", "content.css"), "utf8");
   assert.match(contentCss, /\.ltd-button:disabled/);
+  assert.match(contentCss, /\.ltd-engine-status\.is-lightweight/);
   assert.match(contentCss, /\.ltd-actions\s*\{[\s\S]*grid-template-columns: repeat\(2/);
   assert.match(contentCss, /\.ltd-status\s*\{[\s\S]*grid-column: 1 \/ -1/);
   assert.match(contentCss, /\.ltd-export/);

@@ -159,6 +159,7 @@ const state = {
   runtimeProfile: createRuntimeProfile(DEFAULT_SETTINGS, "full"),
   engineHealth: { checked: false, ok: false, code: "", payload: null },
   lightweightNoticeShown: false,
+  fullModeRetryInFlight: false,
   providerOptions: [...PROVIDER_OPTIONS],
   root: null,
   caption: null,
@@ -354,6 +355,7 @@ function mountWidget() {
   root.querySelector("[data-action='engine-guide']").addEventListener("click", openEngineInstallGuide);
   root.querySelector("[data-action='engine-start']").addEventListener("click", startEngineFromWidget);
   root.querySelector("[data-action='engine-restart']").addEventListener("click", restartEngineFromWidget);
+  root.querySelector("[data-action='retry-full-mode']").addEventListener("click", retryFullModeFromWidget);
   root.querySelector("[data-action='kokoro-install']").addEventListener("click", () => runKokoroModelOperation("localtube.installKokoroModel"));
   root.querySelector("[data-action='kokoro-cancel']").addEventListener("click", () => runKokoroModelOperation("localtube.cancelKokoroModelInstall"));
   root.querySelector("[data-action='kokoro-retry']").addEventListener("click", retryKokoroModelStatusFromWidget);
@@ -445,6 +447,7 @@ function renderWidget() {
           <span class="ltd-engine-actions">
             <button type="button" data-action="engine-start">启动</button>
             <button type="button" data-action="engine-restart">重启</button>
+            <button type="button" data-action="retry-full-mode" hidden>重试完整模式</button>
             <button type="button" data-action="engine-guide">说明</button>
           </span>
         </div>
@@ -559,7 +562,9 @@ function updateControlsFromSettings() {
     providerLabel.textContent = providerHint(resolveEffectiveProvider(), state.settings);
   }
   renderKokoroModelStatus();
-  refreshEngineStatus();
+  if (!state.fullModeRetryInFlight) {
+    refreshEngineStatus();
+  }
   updateWidgetState();
 }
 
@@ -651,10 +656,14 @@ function startEngineStatusPolling() {
 }
 
 async function refreshEngineStatus() {
+  if (state.fullModeRetryInFlight) {
+    return state.engineHealth;
+  }
   const node = state.root?.querySelector("[data-engine-status]");
   const textNode = state.root?.querySelector("[data-engine-status-text]");
-  if (node && textNode) {
-    node.classList.remove("is-ok", "is-warn", "is-error");
+  const lightweight = isLightweightProfile(state.runtimeProfile);
+  if (node && textNode && !lightweight) {
+    node.classList.remove("is-lightweight", "is-ok", "is-warn", "is-error");
     node.classList.add("is-checking");
     textNode.textContent = "正在检查字幕 Engine...";
   }
@@ -672,8 +681,12 @@ async function refreshEngineStatus() {
   if (!node || !textNode) {
     return state.engineHealth;
   }
+  if (lightweight) {
+    renderRuntimeProfileState();
+    return state.engineHealth;
+  }
 
-  node.classList.remove("is-checking", "is-ok", "is-warn", "is-error");
+  node.classList.remove("is-checking", "is-lightweight", "is-ok", "is-warn", "is-error");
   if (response?.ok) {
     const payload = response.payload || {};
     const transport = payload.transport === "native" ? "Native" : "HTTP";
@@ -736,7 +749,7 @@ function normalizeEngineHealth(response = {}) {
 function resetRuntimeProfileForOperation() {
   state.runtimeProfile = createRuntimeProfile(state.settings, "full");
   state.lightweightNoticeShown = false;
-  renderEffectiveRuntimeProfile();
+  renderRuntimeProfileState();
 }
 
 function reapplyLightweightModeForKnownEngineHealth() {
@@ -761,10 +774,10 @@ function activateLightweightMode(failure = {}) {
   invalidateVoicePlayback();
   stopActiveVoiceAudio();
   state.runtimeProfile = createRuntimeProfile(state.settings, "lightweight");
-  renderEffectiveRuntimeProfile();
+  renderRuntimeProfileState();
   if (!state.lightweightNoticeShown) {
     state.lightweightNoticeShown = true;
-    setStatus("本次会话已切换到免安装轻量模式：仅使用当前页面公开 YouTube 字幕和 Chrome 本地翻译。", "working");
+    setStatus("Engine 暂不可用，已切换免安装轻量模式：Chrome 翻译 + 系统配音。本次播放有效。", "working");
   }
   return true;
 }
@@ -773,16 +786,93 @@ function resolveEffectiveProvider() {
   return state.runtimeProfile.provider || state.settings.provider;
 }
 
-function renderEffectiveRuntimeProfile() {
+function renderRuntimeProfileState() {
   if (!state.root) {
     return;
   }
-  state.root.dataset.runtimeProfile = isLightweightProfile(state.runtimeProfile) ? "lightweight" : "full";
+  const lightweight = isLightweightProfile(state.runtimeProfile);
+  state.root.dataset.runtimeProfile = lightweight ? "lightweight" : "full";
   const providerLabel = state.root.querySelector("[data-provider-label]");
   if (providerLabel) {
     providerLabel.textContent = providerHint(resolveEffectiveProvider(), state.settings);
   }
+  const engineStatus = state.root.querySelector("[data-engine-status]");
+  const engineStatusText = state.root.querySelector("[data-engine-status-text]");
+  const retryButton = state.root.querySelector("[data-action='retry-full-mode']");
+  if (engineStatus && engineStatusText) {
+    engineStatus.classList.toggle("is-lightweight", lightweight);
+    if (lightweight) {
+      engineStatus.classList.remove("is-checking", "is-ok", "is-error");
+      engineStatus.classList.add("is-lightweight", "is-warn");
+      engineStatusText.textContent = "Engine 暂不可用，已切换免安装轻量模式：Chrome 翻译 + 系统配音。本次播放有效。";
+    }
+  }
+  if (retryButton) {
+    retryButton.hidden = !lightweight;
+    retryButton.disabled = state.fullModeRetryInFlight;
+  }
+  for (const selector of [
+    "[data-action='kokoro-install']",
+    "[data-action='kokoro-cancel']",
+    "[data-action='kokoro-retry']",
+    "[data-action='kokoro-uninstall']",
+    "[data-action='prepare-full-transcript']",
+    "[data-action='export-dub-track']",
+    "[data-action='preview-dub-track']",
+    "[data-field='dubTrackMode']",
+    "[data-field='dubTrackFormat']"
+  ]) {
+    const control = state.root.querySelector(selector);
+    if (!control) {
+      continue;
+    }
+    if (lightweight) {
+      control.disabled = true;
+      control.title = "免安装轻量模式暂不支持此功能";
+    } else if (control.title === "免安装轻量模式暂不支持此功能") {
+      control.title = "";
+    }
+  }
   updateWidgetState();
+}
+
+async function retryFullModeFromWidget() {
+  if (!isLightweightProfile(state.runtimeProfile) || state.fullModeRetryInFlight) {
+    return;
+  }
+
+  state.fullModeRetryInFlight = true;
+  renderRuntimeProfileState();
+  const response = await sendRuntimeMessage({
+    type: "localtube.captionEngineHealth",
+    settings: state.settings
+  }).catch((error) => ({ ok: false, error: friendlyErrorMessage(error) }));
+  state.engineHealth = normalizeEngineHealth(response);
+  if (!state.engineHealth.ok) {
+    state.fullModeRetryInFlight = false;
+    renderRuntimeProfileState();
+    setStatus("Engine 暂未恢复，继续使用免安装轻量模式。", "working");
+    return;
+  }
+
+  state.enginePlatform = response.payload?.platform || "";
+  renderAvailableTtsEngineOptions(state.settings.ttsEngine);
+  resetRuntimeProfileForOperation();
+  const engineStatus = state.root?.querySelector("[data-engine-status]");
+  const engineStatusText = state.root?.querySelector("[data-engine-status-text]");
+  if (engineStatus && engineStatusText) {
+    engineStatus.classList.remove("is-lightweight", "is-checking", "is-warn", "is-error");
+    engineStatus.classList.add("is-ok");
+    engineStatusText.textContent = "Engine 已恢复，正在切换完整模式。";
+  }
+  try {
+    await refreshAvailableVoiceOptions();
+    stopDubbing({ silent: true });
+    await startDubbing({ resumeOnSuccess: true });
+  } finally {
+    state.fullModeRetryInFlight = false;
+    renderRuntimeProfileState();
+  }
 }
 
 function shortEngineError(error) {
@@ -836,7 +926,8 @@ function renderKokoroModelStatus() {
   retry.hidden = !["failed", "unavailable"].includes(modelState) || state.kokoroModelPollingStopped;
   uninstall.hidden = modelState !== "ready";
   for (const button of [install, cancel, retry, uninstall]) {
-    button.disabled = state.kokoroModelOperationInFlight;
+    button.disabled = state.kokoroModelOperationInFlight || isLightweightProfile(state.runtimeProfile);
+    button.title = isLightweightProfile(state.runtimeProfile) ? "免安装轻量模式暂不支持此功能" : "";
   }
   updateWidgetState();
 }
@@ -2337,6 +2428,7 @@ function updateExportControl() {
   }
   const cueCount = normalizeExportCues(state.translatedCues).length;
   const complete = isSubtitleExportComplete();
+  const lightweight = isLightweightProfile(state.runtimeProfile);
   button.disabled = cueCount === 0;
   format.disabled = cueCount === 0;
   button.textContent = complete ? "导出完整字幕" : "导出已缓存字幕";
@@ -2354,12 +2446,14 @@ function updateExportControl() {
     Number.isFinite(duration) &&
     duration > 0 &&
     duration <= FULL_TRANSCRIPT_MAX_SECONDS;
-  fullTranscriptButton.hidden = !canPrepareFullTranscript && !state.fullTranscriptPreparing;
-  fullTranscriptButton.disabled = false;
+  fullTranscriptButton.hidden = lightweight ? false : !canPrepareFullTranscript && !state.fullTranscriptPreparing;
+  fullTranscriptButton.disabled = lightweight;
   fullTranscriptButton.textContent = state.fullTranscriptPreparing
     ? `取消完整字幕 ${Math.round(state.fullTranscriptProgress)}%`
     : "准备完整字幕";
-  fullTranscriptButton.title = state.fullTranscriptPreparing
+  fullTranscriptButton.title = lightweight
+    ? "免安装轻量模式暂不支持此功能"
+    : state.fullTranscriptPreparing
     ? "取消本地完整音频转写任务"
     : "后台提取当前视频的完整音频并用本地 Whisper 生成完整字幕";
 
@@ -2367,12 +2461,14 @@ function updateExportControl() {
     complete && Number.isFinite(duration) && duration > 0 && duration <= FULL_TRANSCRIPT_MAX_SECONDS;
   const mixedTrack = state.settings.dubTrackMode === "mixed";
   const trackFormat = state.settings.dubTrackFormat === "wav" ? "WAV" : "M4A";
-  dubTrackMode.disabled = state.dubTrackRendering;
-  dubTrackFormat.disabled = state.dubTrackRendering;
-  dubTrackButton.disabled = !state.dubTrackRendering && !state.dubTrackDownloadUrl && !canRenderDubTrack;
+  dubTrackMode.disabled = lightweight || state.dubTrackRendering;
+  dubTrackFormat.disabled = lightweight || state.dubTrackRendering;
+  dubTrackMode.title = lightweight ? "免安装轻量模式暂不支持此功能" : "";
+  dubTrackFormat.title = lightweight ? "免安装轻量模式暂不支持此功能" : "";
+  dubTrackButton.disabled = lightweight || (!state.dubTrackRendering && !state.dubTrackDownloadUrl && !canRenderDubTrack);
   dubTrackButton.classList.toggle("is-split", Boolean(state.dubTrackDownloadUrl));
   dubTrackPreviewButton.hidden = !state.dubTrackDownloadUrl;
-  dubTrackPreviewButton.disabled = state.dubTrackRendering || !state.running;
+  dubTrackPreviewButton.disabled = lightweight || state.dubTrackRendering || !state.running;
   dubTrackPreviewButton.textContent = state.dubTrackPreviewActive ? "停止音轨" : "播放音轨";
   dubTrackPreviewButton.title = state.dubTrackPreviewActive
     ? "停止完整音轨并恢复逐句配音"
@@ -2390,6 +2486,10 @@ function updateExportControl() {
         ? `按完整字幕时间轴生成配音，并按原声大小混入视频原音频，导出 ${trackFormat}`
         : `按完整字幕时间轴生成纯配音 ${trackFormat} 音轨`
       : "完整字幕准备完成后才能生成音轨";
+  }
+  if (lightweight) {
+    dubTrackButton.title = "免安装轻量模式暂不支持此功能";
+    dubTrackPreviewButton.title = "免安装轻量模式暂不支持此功能";
   }
 }
 
@@ -2438,6 +2538,9 @@ function sanitizeDownloadFilenamePart(value) {
 }
 
 function toggleFullTranscriptPreparation() {
+  if (!state.runtimeProfile.allowTranscription) {
+    return;
+  }
   if (state.fullTranscriptPreparing) {
     cancelFullTranscriptPreparation();
     return;
@@ -2629,6 +2732,9 @@ function cancelFullTranscriptPreparation() {
 }
 
 function handleDubTrackAction() {
+  if (!state.runtimeProfile.allowFullTrackExport) {
+    return;
+  }
   if (state.dubTrackRendering) {
     cancelDubTrackRendering();
     return;

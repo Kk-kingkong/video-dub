@@ -152,6 +152,16 @@
   background: #ffc657;
 }
 
+.ltd-engine-status.is-lightweight {
+  background: rgba(255, 198, 87, 0.09);
+}
+
+.ltd-engine-status.is-lightweight [data-action="retry-full-mode"] {
+  border-color: rgba(255, 198, 87, 0.6);
+  color: #ffe0a3;
+  background: rgba(255, 198, 87, 0.12);
+}
+
 .ltd-engine-status.is-error {
   border-color: rgba(255, 153, 143, 0.34);
   color: #ffbab1;
