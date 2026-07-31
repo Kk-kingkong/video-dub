@@ -845,9 +845,9 @@ def verify_install_smoke(package: Path) -> None:
             )
             task_arguments = str(task.get("arguments") or "").replace("/", "\\").casefold()
             expected_task_paths = (
-                runtime_root / "manage-engine.ps1",
-                runtime_root,
-                state_root,
+                (runtime_root / "manage-engine.ps1").resolve(),
+                runtime_root.resolve(),
+                state_root.resolve(),
             )
             require(
                 all(
