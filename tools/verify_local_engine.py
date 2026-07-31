@@ -1280,8 +1280,13 @@ def test_caption_cache_and_ytdlp_command(server):
     assert server.CAPTION_CACHE_SECONDS >= 3600
     assert server.CAPTION_CACHE_MAX_ENTRIES <= 24
 
-    discovered = server.find_ytdlp_command()
-    assert discovered
+    original_ytdlp_command = server.YTDLP_COMMAND
+    server.YTDLP_COMMAND = "bundled-yt-dlp --no-config"
+    try:
+        discovered = server.find_ytdlp_command()
+    finally:
+        server.YTDLP_COMMAND = original_ytdlp_command
+    assert discovered == ["bundled-yt-dlp", "--no-config"]
 
 
 def test_caption_singleflight(server):
