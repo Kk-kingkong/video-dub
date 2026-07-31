@@ -1167,8 +1167,17 @@
     "AUTHENTICATION_FAILED",
     "PROVIDER_AUTH_FAILED",
     "PROVIDER_QUOTA_EXCEEDED",
+    "PROVIDER_RATE_LIMITED",
+    "PROVIDER_MODEL_INVALID",
+    "PROVIDER_PERMISSION_DENIED",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_ERROR",
     "QUOTA_EXCEEDED"
   ]);
+
+  function normalizeLightweightFailureCode(value) {
+    return String(value || "").trim().toUpperCase();
+  }
 
   function createRuntimeProfile(settings = {}, mode = "full") {
     if (mode === "lightweight") {
@@ -1198,7 +1207,9 @@
   }
 
   function lightweightFallbackDecision(input = {}) {
-    const code = String(input.code || input.failureCode || "").trim().toUpperCase();
+    const code = [input.code, input.failureCode, input.errorCode]
+      .map(normalizeLightweightFailureCode)
+      .find(Boolean) || "";
     if (LIGHTWEIGHT_CONTENT_FAILURE_CODES.has(code) || LIGHTWEIGHT_PROVIDER_FAILURE_CODES.has(code)) {
       return { activate: false, reason: "excluded-failure" };
     }

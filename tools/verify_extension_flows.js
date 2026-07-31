@@ -414,10 +414,23 @@ function testLightweightRuntimePolicy() {
     "VIDEO_UNAVAILABLE",
     "AUTHENTICATION_FAILED",
     "PROVIDER_AUTH_FAILED",
-    "PROVIDER_QUOTA_EXCEEDED"
+    "PROVIDER_QUOTA_EXCEEDED",
+    "PROVIDER_RATE_LIMITED",
+    "PROVIDER_MODEL_INVALID",
+    "PROVIDER_PERMISSION_DENIED",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_ERROR"
   ]) {
     assert.equal(helpers.lightweightFallbackDecision({ code }).activate, false, code);
   }
+  assert.equal(
+    helpers.lightweightFallbackDecision({
+      code: "PROVIDER_RATE_LIMITED",
+      ttsEngine: "edge",
+      edgeTtsAvailable: false
+    }).activate,
+    false
+  );
   assert.equal(
     helpers.lightweightFallbackDecision({ code: "NO_PUBLIC_CAPTIONS", error: "Engine unavailable" }).activate,
     false
@@ -425,6 +438,10 @@ function testLightweightRuntimePolicy() {
   assert.equal(
     helpers.lightweightFallbackDecision({ code: "PROVIDER_QUOTA_EXCEEDED", error: "Engine timeout" }).activate,
     false
+  );
+  assert.equal(
+    helpers.lightweightFallbackDecision({ code: " ", failureCode: "ENGINE_TIMEOUT" }).activate,
+    true
   );
 }
 
