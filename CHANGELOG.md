@@ -16,6 +16,7 @@
 - Store release builds now require a public platform-neutral Engine download page and reject a common download URL that points to one architecture-specific ZIP.
 - Fixed the first cross-platform CI run: Engine tests now isolate optional local prerequisites and use platform-native paths, PowerShell stops on failed native commands, and the Windows Engine detaches its output into local state logs so installer and Native Messaging checks cannot hang on inherited CI pipes.
 - Fixed Windows Native Messaging startup with the legacy-compatible packaged launcher. It now bridges one bounded binary request and response per `sendNativeMessage` process, removes only its marked UTF-8 preamble, and closes the child input deterministically.
+- Windows Native Host lifecycle calls now capture PowerShell output in temporary files and bound the whole process tree, preventing an Engine child from keeping inherited capture pipes open after startup.
 
 ## 0.1.99 - 2026-07-30
 

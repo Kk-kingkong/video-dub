@@ -678,23 +678,52 @@ def run_windows_engine_manager(action: str) -> dict[str, Any]:
         str(ENGINE_PORT),
         "-Json",
     ]
+    timeout = max(15.0, ENGINE_START_WAIT_SECONDS + 10.0)
     try:
-        completed = subprocess.run(
-            command,
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=max(15.0, ENGINE_START_WAIT_SECONDS + 10.0),
-        )
+        with tempfile.TemporaryFile(
+            mode="w+",
+            encoding="utf-8",
+            errors="replace",
+        ) as stdout_file:
+            with tempfile.TemporaryFile(
+                mode="w+",
+                encoding="utf-8",
+                errors="replace",
+            ) as stderr_file:
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(PROJECT_ROOT),
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                )
+                try:
+                    returncode = process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                    return {
+                        "ok": False,
+                        "error": (
+                            "Windows Engine 生命周期操作超时；已停止未完成的进程。"
+                        ),
+                    }
+                stdout_file.flush()
+                stderr_file.flush()
+                stdout_file.seek(0)
+                stderr_file.seek(0)
+                stdout = stdout_file.read()
+                stderr = stderr_file.read()
     except Exception as error:
         return {"ok": False, "error": f"Windows Engine 生命周期操作失败：{error}"}
-    payload = parse_manager_payload(completed.stdout or "")
-    if completed.returncode != 0:
+    payload = parse_manager_payload(stdout)
+    if returncode != 0:
         detail = (
             (payload or {}).get("error")
-            or completed.stderr.strip()
-            or completed.stdout.strip()
-            or f"PowerShell exited with {completed.returncode}"
+            or stderr.strip()
+            or stdout.strip()
+            or f"PowerShell exited with {returncode}"
         )
         return {"ok": False, "error": f"Windows Engine 生命周期操作失败：{detail}"}
     if not payload or payload.get("ok") is not True:

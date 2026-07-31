@@ -166,6 +166,12 @@ def verify_native_host_source() -> None:
         "Native Host does not use the shared Windows Engine lifecycle manager",
     )
     require(
+        "tempfile.TemporaryFile" in source
+        and "stdin=subprocess.DEVNULL" in source
+        and "process.kill()" in source,
+        "Native Host Windows lifecycle calls are not bounded against inherited pipe stalls",
+    )
+    require(
         "load_expected_engine_identity" in source
         and "health_matches_expected_engine" in source
         and '"engineVersion"' in source
