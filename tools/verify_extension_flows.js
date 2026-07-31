@@ -414,6 +414,17 @@ function testTtsEngineFailureClassification() {
     },
     "a response from a reachable Engine must not turn a per-segment Microsoft failure into an Engine transport failure"
   );
+  assert.deepEqual(
+    backgroundHelpers.classifyTtsEngineFailure({
+      status: 500,
+      error: "text exceeds provider limit"
+    }),
+    {
+      code: "TTS_SYNTHESIS_FAILED",
+      activateLightweight: false
+    },
+    "a code-less 5xx content failure is not positive Engine transport evidence"
+  );
 
   assert.deepEqual(backgroundHelpers.resolveTtsEngineFailure([transport, voiceFailure]), {
     ok: false,

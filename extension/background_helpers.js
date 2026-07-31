@@ -193,7 +193,6 @@
     if (
       options.transportFailure ||
       status === 404 ||
-      status >= 500 ||
       /尚未安装|需要 ffmpeg|not installed|missing dependency|kokoro.*不可用/i.test(error)
     ) {
       return { code: "TTS_ENGINE_UNAVAILABLE", activateLightweight: true };
