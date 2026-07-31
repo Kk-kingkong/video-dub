@@ -1153,6 +1153,7 @@
     "ENGINE_NOT_INSTALLED",
     "ENGINE_TIMEOUT",
     "ENGINE_UPGRADE_REQUIRED",
+    "KOKORO_TTS_UNAVAILABLE",
     "TTS_ENGINE_UNAVAILABLE",
     "EDGE_TTS_UNAVAILABLE"
   ]);
@@ -1207,6 +1208,10 @@
     return profile?.mode === "lightweight";
   }
 
+  function shouldUseStartupTimelineCaches(profile) {
+    return !isLightweightProfile(profile);
+  }
+
   function lightweightFallbackDecision(input = {}) {
     const code = [input.code, input.failureCode, input.errorCode]
       .map(normalizeLightweightFailureCode)
@@ -1222,6 +1227,9 @@
     if (ttsEngine === "edge" && input.edgeTtsAvailable === false) {
       return { activate: true, reason: "EDGE_TTS_UNAVAILABLE" };
     }
+    if (ttsEngine === "kokoro" && input.kokoroTtsAvailable === false) {
+      return { activate: true, reason: "KOKORO_TTS_UNAVAILABLE" };
+    }
 
     if (code) {
       return { activate: false, reason: "unsupported-failure" };
@@ -1234,7 +1242,9 @@
     if (/authentication|unauthorized|invalid api key|quota|rate.?limit|too many requests|额度|配额|鉴权/i.test(error)) {
       return { activate: false, reason: "provider-failure" };
     }
-    if (/failed to fetch|could not establish connection|econnrefused|native messaging|engine.*(?:offline|timeout)|(?:timeout|timed out|超时)/i.test(error)) {
+    if (
+      /failed to fetch|could not establish connection|econnrefused|native messaging|native host|host has exited|engine.*(?:offline|unavailable)|engine (?:health|transport).*(?:timeout|timed out)|engine.*(?:协议|protocol)/i.test(error)
+    ) {
       return { activate: true, reason: "engine-transport-unavailable" };
     }
     return { activate: false, reason: "" };
@@ -1276,6 +1286,7 @@
     selectNewRollingCues,
     selectKokoroPrefetchSegments,
     serializeSubtitleCues,
+    shouldUseStartupTimelineCaches,
     voiceFailurePolicy
   };
 

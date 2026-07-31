@@ -469,6 +469,7 @@ function testLightweightRuntimePolicy() {
     "CAPTION_ENGINE_UNAVAILABLE",
     "ENGINE_TIMEOUT",
     "ENGINE_UPGRADE_REQUIRED",
+    "KOKORO_TTS_UNAVAILABLE",
     "TTS_ENGINE_UNAVAILABLE"
   ]) {
     const decision = helpers.lightweightFallbackDecision({ code });
@@ -480,8 +481,33 @@ function testLightweightRuntimePolicy() {
     true
   );
   assert.equal(
+    helpers.lightweightFallbackDecision({ ttsEngine: "kokoro", kokoroTtsAvailable: false }).activate,
+    true
+  );
+  assert.equal(
+    helpers.lightweightFallbackDecision({ ttsEngine: "kokoro" }).activate,
+    false,
+    "missing optional Kokoro health metadata must remain inconclusive"
+  );
+  assert.equal(
     helpers.lightweightFallbackDecision({ error: "Failed to fetch Engine health" }).activate,
     true
+  );
+  assert.equal(
+    helpers.lightweightFallbackDecision({ error: "本地 TTS 生成超时" }).activate,
+    false,
+    "a code-less per-content TTS timeout is not Engine transport evidence"
+  );
+  assert.equal(
+    helpers.lightweightFallbackDecision({ code: "ENGINE_TIMEOUT", error: "本地 TTS 生成超时" }).activate,
+    true,
+    "an explicit Engine timeout code remains decisive"
+  );
+  assert.equal(helpers.shouldUseStartupTimelineCaches(helpers.createRuntimeProfile(saved, "full")), true);
+  assert.equal(
+    helpers.shouldUseStartupTimelineCaches(lightweight),
+    false,
+    "lightweight startup must read the active page instead of ambiguous Engine-derived caches"
   );
 
   for (const code of [
@@ -1726,7 +1752,214 @@ function extractFunctionBody(source, functionName) {
   throw new Error(`unterminated function ${functionName}`);
 }
 
-function testEngineVoiceFailureHarness() {
+async function testStartOperationHealthHarness() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+
+  async function run(initialHealth, refreshedHealth, options = {}) {
+    const state = {
+      operationId: 11,
+      engineHealth: initialHealth,
+      runtimeProfile: { mode: "lightweight" },
+      settings: { provider: "deepseek", ttsEngine: "edge" }
+    };
+    let refreshCount = 0;
+    let activationCount = 0;
+    const context = {
+      state,
+      resetRuntimeProfileForOperation() {
+        state.runtimeProfile = { mode: "full" };
+      },
+      refreshEngineStatus: async (refreshOptions) => {
+        refreshCount += 1;
+        assert.equal(refreshOptions.operationId, 11);
+        assert.ok(refreshOptions.timeoutMs > 0);
+        state.engineHealth = refreshedHealth;
+        return refreshedHealth;
+      },
+      assertOperationActive(operationId) {
+        assert.equal(operationId, state.operationId);
+      },
+      activateLightweightMode() {
+        activationCount += 1;
+        state.runtimeProfile = { mode: "lightweight" };
+        return true;
+      },
+      createRuntimeProfile: (_, mode) => ({ mode }),
+      renderRuntimeProfileState() {},
+      invalidateEngineHealthRequests() {},
+      ENGINE_HEALTH_OPERATION_TIMEOUT_MS: 12000
+    };
+    const prepare = vm.runInNewContext(
+      `(async function prepareRuntimeProfileForOperation(operationId, options = {}) {${extractFunctionBody(content, "prepareRuntimeProfileForOperation")}})`,
+      context
+    );
+    await prepare(11, options);
+    return { state, refreshCount, activationCount };
+  }
+
+  const recovered = await run(
+    { checked: true, ok: false, code: "CAPTION_ENGINE_UNAVAILABLE" },
+    { checked: true, ok: true, code: "", payload: { ytDlp: true, edgeTts: true } }
+  );
+  assert.equal(recovered.refreshCount, 1, "a new operation must await exactly one fresh health request");
+  assert.equal(recovered.activationCount, 0);
+  assert.equal(recovered.state.runtimeProfile.mode, "full", "fresh recovery must override stale unhealthy state");
+
+  const unhealthy = await run(
+    { checked: true, ok: true, code: "" },
+    { checked: true, ok: false, code: "ENGINE_TIMEOUT", payload: null }
+  );
+  assert.equal(unhealthy.refreshCount, 1);
+  assert.equal(unhealthy.activationCount, 1);
+  assert.equal(unhealthy.state.runtimeProfile.mode, "lightweight");
+
+  const ttsRestart = await run(
+    { checked: true, ok: true, code: "" },
+    { checked: true, ok: true, code: "" },
+    { forceLightweight: true }
+  );
+  assert.equal(ttsRestart.refreshCount, 0, "a TTS-triggered restart must not immediately undo fallback with health polling");
+  assert.equal(ttsRestart.state.runtimeProfile.mode, "lightweight");
+}
+
+function testNormalizedEngineHealthCapabilities() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  function normalize(ttsEngine, response) {
+    const normalizedKokoroTtsAvailability = vm.runInNewContext(
+      `(function normalizedKokoroTtsAvailability(payload = {}) {${extractFunctionBody(content, "normalizedKokoroTtsAvailability")}})`
+    );
+    return vm.runInNewContext(
+      `(function normalizeEngineHealth(response = {}) {${extractFunctionBody(content, "normalizeEngineHealth")}})`,
+      { state: { settings: { ttsEngine } }, normalizedKokoroTtsAvailability }
+    )(response);
+  }
+
+  assert.equal(normalize("edge", { ok: true, payload: { ytDlp: true, edgeTts: false } }).code, "TTS_ENGINE_UNAVAILABLE");
+  assert.equal(
+    normalize("kokoro", {
+      ok: true,
+      payload: { ytDlp: true, kokoroRuntime: { state: "model-not-installed", available: false } }
+    }).code,
+    "KOKORO_TTS_UNAVAILABLE"
+  );
+  assert.equal(
+    normalize("kokoro", { ok: true, payload: { ytDlp: true } }).ok,
+    true,
+    "older health payloads without optional Kokoro metadata must not prove failure"
+  );
+  assert.equal(
+    normalize("kokoro", { ok: true, payload: { ytDlp: true, kokoroRuntime: { state: "unknown" } } }).ok,
+    true,
+    "unknown optional Kokoro metadata must remain inconclusive"
+  );
+  assert.equal(
+    normalize("kokoro", {
+      ok: true,
+      payload: { ytDlp: true, kokoroRuntime: { state: "ready", available: true }, kokoroModel: "ready" }
+    }).ok,
+    true
+  );
+}
+
+async function testCaptionEngineFailureFallbackHarness() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const resolveCaptions = vm.runInNewContext(
+    `(async function resolveVideoCaptions(operationId) {${extractFunctionBody(content, "resolveVideoCaptions")}})`,
+    {
+      state: {
+        runtimeProfile: { useCaptionEngine: true },
+        settings: { targetLanguage: "zh-CN", ttsEngine: "edge" }
+      },
+      getCurrentVideoId: () => "video-1",
+      setStatus() {},
+      resolveVideoCaptionsFromPage: async () => ({
+        status: "captions",
+        cues: [{ id: "page", start: 0, end: 1, text: "hello" }],
+        track: { languageCode: "en", source: "page-main-world" },
+        source: "page-main-world"
+      }),
+      withTimeoutResult: async (promise, _timeoutMs, timeoutMessage) =>
+        timeoutMessage === "页面字幕快速读取超时"
+          ? { status: "unknown", cues: [], track: null, error: timeoutMessage }
+          : promise,
+      getCaptionFailureBackoff: () => null,
+      assertOperationActive() {},
+      fetchEngineCaptions: async () => ({
+        status: "unknown",
+        cues: [],
+        track: null,
+        code: "CAPTION_ENGINE_UNAVAILABLE",
+        error: "Engine transport unavailable"
+      }),
+      captionEngineWaitTimeout: () => 100,
+      rememberCaptionFailure() {},
+      isTargetLanguageTrack: () => false,
+      lightweightFallbackDecision: helpers.lightweightFallbackDecision,
+      activateLightweightMode: () => {
+        activationCount += 1;
+        return true;
+      },
+      pickBestResolvedCaptionResult: () => null,
+      buildCaptionReadFailureMessage: () => "caption failure",
+      classifyCaptionErrorCode: () => "CAPTION_ENGINE_UNAVAILABLE",
+      CAPTION_FAST_TIMEOUT_MS: 6000,
+      CAPTION_TOTAL_TIMEOUT_MS: 23000,
+      CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS: 2000
+    }
+  );
+  let activationCount = 0;
+  const result = await resolveCaptions(4);
+  assert.equal(activationCount, 1, "a proven in-operation caption Engine failure must activate fallback");
+  assert.equal(result.source, "page-main-world");
+  assert.equal(result.cues[0].id, "page", "the already-started page caption result must complete the same operation");
+}
+
+async function testEngineActionErrorSanitization() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+
+  async function run(functionName, response) {
+    const statuses = [];
+    const diagnostics = [];
+    const handler = vm.runInNewContext(
+      `(async function ${functionName}() {${extractFunctionBody(content, functionName)}})`,
+      {
+        state: { settings: {} },
+        sendRuntimeMessage: async () => response,
+        setStatus: (message) => statuses.push(String(message)),
+        console: {
+          error: (...args) => diagnostics.push(args.map((value) =>
+            typeof value === "object" ? JSON.stringify(value) : String(value)
+          ).join(" "))
+        },
+        refreshEngineStatus: async () => {},
+        refreshAvailableVoiceOptions: async () => {},
+        delay: async () => {}
+      }
+    );
+    await handler();
+    return { statuses, diagnostics };
+  }
+
+  const start = await run("startEngineFromWidget", {
+    ok: false,
+    code: "NATIVE_HOST_NOT_INSTALLED",
+    error: "Native Messaging host missing at 127.0.0.1:8787\nstack: secret"
+  });
+  assert.equal(start.statuses.at(-1), "Engine 启动失败，请打开说明手动启动。");
+  assert.doesNotMatch(start.statuses.join(" "), /Native|127\.0\.0\.1|stack|HTTP|port|进程/i);
+  assert.match(start.diagnostics.join(" "), /NATIVE_HOST_NOT_INSTALLED|Native Messaging/);
+
+  const restart = await run("restartEngineFromWidget", {
+    ok: false,
+    code: "ENGINE_RESTART_FAILED",
+    error: "HTTP 500 process exited on port 8787\nstack: secret"
+  });
+  assert.equal(restart.statuses.at(-1), "Engine 重启失败，请打开说明手动重启。");
+  assert.doesNotMatch(restart.statuses.join(" "), /Native|127\.0\.0\.1|stack|HTTP|port|process|进程/i);
+  assert.match(restart.diagnostics.join(" "), /ENGINE_RESTART_FAILED|HTTP 500/);
+}
+
+async function testEngineVoiceFailureHarness() {
   const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
   let browserProfile = false;
   const handler = vm.runInNewContext(
@@ -1739,21 +1972,13 @@ function testEngineVoiceFailureHarness() {
       },
       lightweightFallbackDecision: helpers.lightweightFallbackDecision,
       usesBrowserSpeechProfile: () => browserProfile,
-      isVoicePlaybackAttemptCurrent: () => false,
-      isVoiceSegmentCurrent: () => false,
-      activateLightweightMode: () => {
-        activationCount += 1;
+      restartOperationInLightweightMode: () => {
+        restartCount += 1;
         return true;
-      },
-      beginVoicePlaybackAttempt: () => {
-        throw new Error("stale segment must not allocate a replay generation");
-      },
-      speakSegmentWithBrowserTts: () => {
-        throw new Error("stale segment must not replay");
       }
     }
   );
-  let activationCount = 0;
+  let restartCount = 0;
   const handled = handler(
     Object.assign(new Error("本地 TTS 生成超时"), { code: "TTS_ENGINE_UNAVAILABLE" }),
     { key: "stale-segment" },
@@ -1761,7 +1986,7 @@ function testEngineVoiceFailureHarness() {
   );
 
   assert.equal(handled, true);
-  assert.equal(activationCount, 1, "a qualifying Engine failure must activate even after its segment becomes stale");
+  assert.equal(restartCount, 1, "a qualifying Engine failure must restart the full pipeline in lightweight mode");
 
   const contentFailureHandled = handler(
     Object.assign(new Error("当前片段未能生成配音。"), { code: "TTS_SYNTHESIS_FAILED" }),
@@ -1769,7 +1994,11 @@ function testEngineVoiceFailureHarness() {
     8
   );
   assert.equal(contentFailureHandled, false);
-  assert.equal(activationCount, 1, "a content-specific failure must retain the same-provider segment policy");
+  assert.equal(restartCount, 1, "a content-specific failure must retain the same-provider segment policy");
+
+  const untypedTimeoutHandled = handler(new Error("本地 TTS 生成超时"), { key: "content-timeout" }, 9);
+  assert.equal(untypedTimeoutHandled, false);
+  assert.equal(restartCount, 1, "a code-less content timeout must not change runtime semantics");
 
   browserProfile = true;
   const alreadyActivatedHandled = handler(
@@ -1778,7 +2007,44 @@ function testEngineVoiceFailureHarness() {
     6
   );
   assert.equal(alreadyActivatedHandled, true);
-  assert.equal(activationCount, 1, "late Engine failures must not invalidate active lightweight browser speech again");
+  assert.equal(restartCount, 1, "late Engine failures must not start another lightweight operation");
+
+  const restartState = {
+    runtimeProfile: { mode: "full" },
+    lightweightRestartInFlight: false,
+    video: { paused: false }
+  };
+  let stopCount = 0;
+  let startCount = 0;
+  let startOptions = null;
+  const restart = vm.runInNewContext(
+    `(function restartOperationInLightweightMode(failure = {}) {${extractFunctionBody(content, "restartOperationInLightweightMode")}})`,
+    {
+      state: restartState,
+      usesBrowserSpeechProfile: () => restartState.runtimeProfile.mode === "lightweight",
+      activateLightweightMode: () => {
+        restartState.runtimeProfile = { mode: "lightweight" };
+        return true;
+      },
+      stopDubbing: () => {
+        stopCount += 1;
+      },
+      startDubbing: async (options) => {
+        startCount += 1;
+        startOptions = options;
+      },
+      console: { error() {} },
+      setStatus() {}
+    }
+  );
+  assert.equal(restart({ code: "TTS_ENGINE_UNAVAILABLE" }), true);
+  assert.equal(restart({ code: "TTS_ENGINE_UNAVAILABLE" }), true);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(stopCount, 1, "TTS fallback must invalidate the previous operation once");
+  assert.equal(startCount, 1, "TTS fallback must avoid reentrant duplicate playback");
+  assert.equal(startOptions.forceLightweight, true);
+  assert.equal(startOptions.resumeOnSuccess, true);
 }
 
 async function testEngineHealthResponseOrdering() {
@@ -1853,6 +2119,7 @@ async function testEngineHealthResponseOrdering() {
       },
       setStatus() {},
       lightweightFallbackDecision: () => ({ activate: true }),
+      normalizedKokoroTtsAvailability: () => null,
       cancelQueuedVoiceAudio() {},
       invalidateVoicePlayback() {},
       stopActiveVoiceAudio() {},
@@ -1867,7 +2134,7 @@ async function testEngineHealthResponseOrdering() {
       textNode,
       resolveOldHealth,
       refreshEngineStatus: vm.runInNewContext(
-        `(async function refreshEngineStatus() {${extractFunctionBody(content, "refreshEngineStatus")}})`,
+        `(async function refreshEngineStatus(options = {}) {${extractFunctionBody(content, "refreshEngineStatus")}})`,
         context
       ),
       retryFullModeFromWidget: vm.runInNewContext(
@@ -1907,6 +2174,81 @@ async function testEngineHealthResponseOrdering() {
   );
 }
 
+async function testLightweightHealthDoesNotPersistPlatformPolicy() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const node = { classList: { add() {}, remove() {}, toggle() {} } };
+  const textNode = { textContent: "" };
+  const state = {
+    fullModeRetryInFlight: false,
+    engineHealthRequestGeneration: 0,
+    engineHealth: { checked: false, ok: false, code: "", payload: null },
+    runtimeProfile: { mode: "lightweight" },
+    busy: true,
+    settings: { ttsEngine: "system", voiceId: "Samantha" },
+    root: {
+      querySelector(selector) {
+        return selector === "[data-engine-status]" ? node : selector === "[data-engine-status-text]" ? textNode : null;
+      }
+    }
+  };
+  let platformPolicyApplications = 0;
+  let reportedPlatform = "windows";
+  const refresh = vm.runInNewContext(
+    `(async function refreshEngineStatus(options = {}) {${extractFunctionBody(content, "refreshEngineStatus")}})`,
+    {
+      state,
+      isLightweightProfile: (profile) => profile.mode === "lightweight",
+      beginEngineHealthRequest: () => ++state.engineHealthRequestGeneration,
+      isCurrentEngineHealthRequest: (generation) => generation === state.engineHealthRequestGeneration,
+      sendRuntimeMessage: async () => ({
+        ok: true,
+        payload: { platform: reportedPlatform, ytDlp: true, edgeTts: true }
+      }),
+      sendRuntimeMessageWithTimeout: async () => ({
+        ok: true,
+        payload: { platform: reportedPlatform, ytDlp: true, edgeTts: true }
+      }),
+      friendlyErrorMessage: String,
+      normalizeEngineHealth: (response) => ({
+        checked: true,
+        ok: true,
+        code: "",
+        payload: response.payload
+      }),
+      applyEnginePlatformPolicy: () => {
+        platformPolicyApplications += 1;
+      },
+      renderRuntimeProfileState() {},
+      shortEngineError: String
+    }
+  );
+
+  await refresh();
+  assert.equal(
+    state.engineHealthRequestGeneration,
+    0,
+    "background polling must not supersede the bounded health request owned by a busy operation"
+  );
+  state.busy = false;
+  await refresh();
+  assert.equal(
+    platformPolicyApplications,
+    0,
+    "Windows/Linux health polling must not persist a synced macOS system voice while lightweight is active"
+  );
+  assert.equal(state.settings.ttsEngine, "system");
+  assert.equal(state.settings.voiceId, "Samantha");
+  reportedPlatform = "linux";
+  await refresh();
+  assert.equal(platformPolicyApplications, 0, "Linux polling must preserve the same temporary settings boundary");
+  assert.equal(state.settings.ttsEngine, "system");
+  assert.equal(state.settings.voiceId, "Samantha");
+
+  state.runtimeProfile = { mode: "full" };
+  await refresh();
+  assert.equal(platformPolicyApplications, 1, "full-mode recovery may synchronize the platform policy");
+}
+
 function testManifestAndFlowGuards() {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension", "manifest.json"), "utf8"));
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
@@ -1941,6 +2283,11 @@ function testManifestAndFlowGuards() {
   const engineHealthRefreshBody = extractFunctionBody(content, "refreshEngineStatus");
   assert.match(engineHealthRefreshBody, /const requestGeneration = beginEngineHealthRequest\(\)/);
   assert.match(engineHealthRefreshBody, /!isCurrentEngineHealthRequest\(requestGeneration\)/);
+  assert.ok(
+    engineHealthRefreshBody.indexOf("isLightweightProfile(state.runtimeProfile)") <
+      engineHealthRefreshBody.indexOf("applyEnginePlatformPolicy"),
+    "temporary lightweight health checks must return before platform policy persistence"
+  );
   assert.doesNotMatch(content, /轻量模式[^\n]*(Native|HTTP|127\.0\.0\.1|端口|stack)/i);
   const runtimeProfileStateBody = extractFunctionBody(content, "renderRuntimeProfileState");
   assert.match(runtimeProfileStateBody, /isLightweightProfile\(state\.runtimeProfile\)/);
@@ -1953,6 +2300,10 @@ function testManifestAndFlowGuards() {
   assert.match(lightweightRetryBody, /Engine 暂未恢复，继续使用免安装轻量模式。/);
   assert.match(lightweightRetryBody, /stopDubbing\(\{ silent: true \}\)/);
   assert.match(lightweightRetryBody, /await startDubbing\(/);
+  assert.ok(
+    lightweightRetryBody.indexOf("resetRuntimeProfileForOperation()") < lightweightRetryBody.indexOf("applyEnginePlatformPolicy"),
+    "platform policy should synchronize only after full-mode recovery resets the temporary profile"
+  );
   assert.match(kokoroBackground, /localtube\.getKokoroModelStatus/);
   assert.match(kokoroBackground, /localtube\.installKokoroModel/);
   assert.match(kokoroBackground, /localtube\.cancelKokoroModelInstall/);
@@ -1967,7 +2318,7 @@ function testManifestAndFlowGuards() {
   assert.match(content, /localtube\.installKokoroModel/);
   assert.match(content, /localtube\.cancelKokoroModelInstall/);
   assert.match(content, /localtube\.uninstallKokoroModel/);
-  assert.match(content, /state\.kokoroModelStatus\.state !== "ready"/);
+  assert.match(content, /normalizedKokoroTtsAvailability\(payload\) === false/);
   assert.match(content, /ttsEngineSupportsLanguage\("kokoro", state\.settings\.targetLanguage\)/);
   assert.match(content, /Kokoro 当前仅支持中文和英文/);
   assert.match(content, /data-field="microsoftTtsConsent"/);
@@ -2140,11 +2491,17 @@ function testManifestAndFlowGuards() {
   );
   const engineVoiceFailureBody = extractFunctionBody(content, "handleEngineVoiceFailure");
   assert.match(engineVoiceFailureBody, /lightweightFallbackDecision/);
-  assert.match(engineVoiceFailureBody, /activateLightweightMode\(\{\s*code:\s*"TTS_ENGINE_UNAVAILABLE"/);
-  assert.match(engineVoiceFailureBody, /isVoicePlaybackAttemptCurrent\(segment, generation\)/);
-  assert.match(engineVoiceFailureBody, /speakSegmentWithBrowserTts\(segment, browserGeneration\)/);
+  assert.match(engineVoiceFailureBody, /restartOperationInLightweightMode/);
+  assert.doesNotMatch(engineVoiceFailureBody, /speakSegmentWithBrowserTts/);
+  const lightweightRestartBody = extractFunctionBody(content, "restartOperationInLightweightMode");
+  assert.match(lightweightRestartBody, /stopDubbing\(\{ silent: true \}\)/);
+  assert.match(lightweightRestartBody, /forceLightweight:\s*true/);
+  assert.match(lightweightRestartBody, /lightweightRestartInFlight/);
   assert.match(content, /loadCachedTimeline\(videoId, operationId, "youtube-captions"\)/);
-  assert.match(content, /providerCachedTimeline = await loadCachedTimeline\(videoId, operationId, resolveEffectiveProvider\(\)\)/);
+  assert.match(
+    content,
+    /providerCachedTimeline =\s*useStartupTimelineCaches\s*\? await loadCachedTimeline\(videoId, operationId, resolveEffectiveProvider\(\)\)/
+  );
   assert.match(content, /audio\.preservesPitch = true/);
   assert.match(content, /naturalOnline \? 6\.2/);
   assert.match(content, /state\.settings\.ttsEngine === "edge"/);
@@ -2328,6 +2685,8 @@ function testManifestAndFlowGuards() {
   assert.match(content, /confirmedNoCaptions: sourceResult\.hadUsableSource/);
   assert.match(content, /pageResult\.status === "no_captions" && pageResult\.confirmedNoCaptions/);
   const resolveCaptionsBody = extractFunctionBody(content, "resolveVideoCaptions");
+  assert.match(resolveCaptionsBody, /lightweightFallbackDecision/);
+  assert.match(resolveCaptionsBody, /activateLightweightMode\(engineResult\)/);
   assert.match(
     resolveCaptionsBody,
     /pageFastResult\?\.status === "captions"[\s\S]*pageFastResult\?\.cues\?\.length[\s\S]*return pageFastResult/,
@@ -2344,6 +2703,11 @@ function testManifestAndFlowGuards() {
     "rate limiting must remain unknown and must not fall through to no-caption transcription"
   );
   const startDubbingBody = extractFunctionBody(content, "startDubbing");
+  const prepareProfileIndex = startDubbingBody.indexOf("await prepareRuntimeProfileForOperation(operationId");
+  const consentIndex = startDubbingBody.indexOf("!state.settings.microsoftTtsConsent");
+  assert.ok(prepareProfileIndex >= 0 && prepareProfileIndex < consentIndex, "fresh Engine health must precede Engine-only consent/model work");
+  assert.match(startDubbingBody, /updateControlsFromSettings\(\{ refreshEngine: false \}\)/);
+  assert.match(startDubbingBody, /const useStartupTimelineCaches = shouldUseStartupTimelineCaches\(state\.runtimeProfile\)/);
   const targetCacheIndex = startDubbingBody.indexOf('loadCachedTimeline(videoId, operationId, "youtube-captions")');
   const providerCacheIndex = startDubbingBody.indexOf("loadCachedTimeline(videoId, operationId, resolveEffectiveProvider())");
   const sourceCacheIndex = startDubbingBody.indexOf('loadCachedTimeline(videoId, operationId, "youtube-source")');
@@ -2351,6 +2715,14 @@ function testManifestAndFlowGuards() {
   assert.ok(targetCacheIndex >= 0 && providerCacheIndex > targetCacheIndex);
   assert.ok(sourceCacheIndex > providerCacheIndex);
   assert.ok(liveCaptionIndex > sourceCacheIndex, "all local subtitle caches must be exhausted before a YouTube request");
+  assert.match(
+    startDubbingBody,
+    /const cachedTimeline =\s*useStartupTimelineCaches\s*\? await loadCachedTimeline\(videoId, operationId, "youtube-captions"\)\s*:\s*null/
+  );
+  assert.match(
+    startDubbingBody,
+    /const sourceCachedTimeline =\s*useStartupTimelineCaches\s*\? await loadCachedTimeline\(videoId, operationId, "youtube-source"\)\s*:\s*null/
+  );
   assert.match(startDubbingBody, /resumeVideoAfterCaptionDelay/);
   assert.match(content, /page-player-response 未找到当前视频响应/);
   assert.match(content, /dedupeCaptionTracks/);
@@ -3033,8 +3405,13 @@ async function main() {
   testInstallReleaseInfo();
   testTranscriptionRequestRegistry();
   testNoCaptionStartupOrder();
-  testEngineVoiceFailureHarness();
+  await testStartOperationHealthHarness();
+  testNormalizedEngineHealthCapabilities();
+  await testCaptionEngineFailureFallbackHarness();
+  await testEngineActionErrorSanitization();
+  await testEngineVoiceFailureHarness();
   await testEngineHealthResponseOrdering();
+  await testLightweightHealthDoesNotPersistPlatformPolicy();
   testManifestAndFlowGuards();
   console.log("extension flow checks ok");
 }

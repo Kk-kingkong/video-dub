@@ -75,6 +75,7 @@ const {
 const CAPTION_FAST_TIMEOUT_MS = 6000;
 const CAPTION_TOTAL_TIMEOUT_MS = 23000;
 const CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS = 2000;
+const ENGINE_HEALTH_OPERATION_TIMEOUT_MS = 12000;
 const CAPTION_FAILURE_BACKOFF_MS = {
   YOUTUBE_RATE_LIMITED: 5 * 60 * 1000,
   NO_PUBLIC_CAPTIONS: 60 * 1000,
@@ -150,6 +151,7 @@ const {
   selectNewRollingCues,
   selectKokoroPrefetchSegments,
   serializeSubtitleCues,
+  shouldUseStartupTimelineCaches,
   syncFullTrackMediaElements,
   voiceFailurePolicy
 } = globalThis.LocalTubeDubHelpers;
@@ -160,6 +162,7 @@ const state = {
   engineHealth: { checked: false, ok: false, code: "", payload: null },
   engineHealthRequestGeneration: 0,
   lightweightNoticeShown: false,
+  lightweightRestartInFlight: false,
   fullModeRetryInFlight: false,
   providerOptions: [...PROVIDER_OPTIONS],
   root: null,
@@ -526,7 +529,7 @@ function renderWidget() {
   `;
 }
 
-function updateControlsFromSettings() {
+function updateControlsFromSettings(options = {}) {
   if (!state.root) {
     return;
   }
@@ -563,7 +566,7 @@ function updateControlsFromSettings() {
     providerLabel.textContent = providerHint(resolveEffectiveProvider(), state.settings);
   }
   renderKokoroModelStatus();
-  if (!state.fullModeRetryInFlight) {
+  if (options.refreshEngine !== false && !state.fullModeRetryInFlight) {
     refreshEngineStatus();
   }
   updateWidgetState();
@@ -656,11 +659,16 @@ function startEngineStatusPolling() {
   state.engineHealthTimer = setInterval(refreshEngineStatus, 5000);
 }
 
-async function refreshEngineStatus() {
+async function refreshEngineStatus(options = {}) {
   if (state.fullModeRetryInFlight) {
     return state.engineHealth;
   }
+  const operationId = Number.isInteger(options.operationId) ? options.operationId : null;
+  if (state.busy && operationId === null) {
+    return state.engineHealth;
+  }
   const requestGeneration = beginEngineHealthRequest();
+  const timeoutMs = Math.max(0, Number(options.timeoutMs || 0) || 0);
   const node = state.root?.querySelector("[data-engine-status]");
   const textNode = state.root?.querySelector("[data-engine-status-text]");
   if (node && textNode && !isLightweightProfile(state.runtimeProfile)) {
@@ -669,24 +677,36 @@ async function refreshEngineStatus() {
     textNode.textContent = "正在检查字幕 Engine...";
   }
 
-  const response = await sendRuntimeMessage({
+  const healthMessage = {
     type: "localtube.captionEngineHealth",
     settings: state.settings
-  }).catch((error) => ({
+  };
+  const response = await (timeoutMs
+    ? sendRuntimeMessageWithTimeout(healthMessage, timeoutMs, "Engine 健康检查超时")
+    : sendRuntimeMessage(healthMessage)
+  ).catch((error) => ({
     ok: false,
+    code: /timeout|timed out|超时/i.test(String(error?.message || error))
+      ? "ENGINE_TIMEOUT"
+      : "CAPTION_ENGINE_UNAVAILABLE",
     error: friendlyErrorMessage(error)
   }));
 
-  if (!isCurrentEngineHealthRequest(requestGeneration) || state.fullModeRetryInFlight) {
+  if (
+    !isCurrentEngineHealthRequest(requestGeneration) ||
+    state.fullModeRetryInFlight ||
+    (operationId !== null && operationId !== state.operationId)
+  ) {
+    return state.engineHealth;
+  }
+  state.engineHealth = normalizeEngineHealth(response);
+  if (isLightweightProfile(state.runtimeProfile)) {
+    renderRuntimeProfileState();
     return state.engineHealth;
   }
   applyEnginePlatformPolicy(response?.ok ? response.payload?.platform : "");
   state.engineHealth = normalizeEngineHealth(response);
   if (!node || !textNode) {
-    return state.engineHealth;
-  }
-  if (isLightweightProfile(state.runtimeProfile)) {
-    renderRuntimeProfileState();
     return state.engineHealth;
   }
 
@@ -702,6 +722,11 @@ async function refreshEngineStatus() {
     if (state.settings.ttsEngine === "edge" && !payload.edgeTts) {
       node.classList.add("is-warn");
       textNode.textContent = "自然在线语音尚未安装，请打开说明重新安装 Engine 依赖";
+      return state.engineHealth;
+    }
+    if (state.settings.ttsEngine === "kokoro" && normalizedKokoroTtsAvailability(payload) === false) {
+      node.classList.add("is-warn");
+      textNode.textContent = "Kokoro 本地语音尚未就绪，可安装模型或开始后使用轻量模式";
       return state.engineHealth;
     }
     if (payload.ytDlp) {
@@ -758,9 +783,30 @@ function normalizeEngineHealth(response = {}) {
   } else if (state.settings.ttsEngine === "edge" && payload?.edgeTts === false) {
     ok = false;
     code = "TTS_ENGINE_UNAVAILABLE";
+  } else if (state.settings.ttsEngine === "kokoro" && normalizedKokoroTtsAvailability(payload) === false) {
+    ok = false;
+    code = "KOKORO_TTS_UNAVAILABLE";
   }
 
   return { checked: true, ok, code, payload };
+}
+
+function normalizedKokoroTtsAvailability(payload = {}) {
+  const runtime = payload?.kokoroRuntime;
+  if (runtime && typeof runtime === "object") {
+    const runtimeState = String(runtime.state || "").trim().toLowerCase();
+    if (runtime.available === false) {
+      return false;
+    }
+    if (runtime.available === true) {
+      return !runtimeState || runtimeState === "ready";
+    }
+    if (runtimeState && !["unknown", "checking"].includes(runtimeState)) {
+      return runtimeState === "ready";
+    }
+  }
+  const modelState = String(payload?.kokoroModel || "").trim().toLowerCase();
+  return modelState && !["unknown", "checking"].includes(modelState) ? modelState === "ready" : null;
 }
 
 function resetRuntimeProfileForOperation() {
@@ -770,11 +816,24 @@ function resetRuntimeProfileForOperation() {
   renderRuntimeProfileState();
 }
 
-function reapplyLightweightModeForKnownEngineHealth() {
-  if (!state.engineHealth.checked || state.engineHealth.ok) {
-    return false;
+async function prepareRuntimeProfileForOperation(operationId, options = {}) {
+  if (options.forceLightweight) {
+    invalidateEngineHealthRequests();
+    state.runtimeProfile = createRuntimeProfile(state.settings, "lightweight");
+    renderRuntimeProfileState();
+    return state.runtimeProfile;
   }
-  return activateLightweightMode(state.engineHealth);
+
+  resetRuntimeProfileForOperation();
+  const health = await refreshEngineStatus({
+    operationId,
+    timeoutMs: ENGINE_HEALTH_OPERATION_TIMEOUT_MS
+  });
+  assertOperationActive(operationId);
+  if (health?.checked && !health.ok) {
+    activateLightweightMode(health);
+  }
+  return state.runtimeProfile;
 }
 
 function activateLightweightMode(failure = {}) {
@@ -782,7 +841,8 @@ function activateLightweightMode(failure = {}) {
   const decision = lightweightFallbackDecision({
     ...failure,
     ttsEngine: state.settings.ttsEngine,
-    edgeTtsAvailable: payload.edgeTts
+    edgeTtsAvailable: payload.edgeTts,
+    kokoroTtsAvailable: normalizedKokoroTtsAvailability(payload)
   });
   if (!decision.activate) {
     return false;
@@ -878,9 +938,14 @@ async function retryFullModeFromWidget() {
       return;
     }
 
-    state.enginePlatform = response.payload?.platform || "";
-    renderAvailableTtsEngineOptions(state.settings.ttsEngine);
     resetRuntimeProfileForOperation();
+    applyEnginePlatformPolicy(response.payload?.platform || "");
+    state.engineHealth = normalizeEngineHealth(response);
+    if (!state.engineHealth.ok) {
+      activateLightweightMode(state.engineHealth);
+      setStatus("Engine 暂未恢复，继续使用免安装轻量模式。", "working");
+      return;
+    }
     const engineStatus = state.root?.querySelector("[data-engine-status]");
     const engineStatusText = state.root?.querySelector("[data-engine-status-text]");
     if (engineStatus && engineStatusText) {
@@ -1073,7 +1138,11 @@ async function startEngineFromWidget() {
   }));
 
   if (!response?.ok) {
-    setStatus(response?.error || "Engine 启动失败，请打开说明手动启动。", "error");
+    console.error("[LocalTube Dub] Engine start failed", {
+      code: response?.code || "ENGINE_START_FAILED",
+      error: response?.error || ""
+    });
+    setStatus("Engine 启动失败，请打开说明手动启动。", "error");
     return;
   }
 
@@ -1093,7 +1162,11 @@ async function restartEngineFromWidget() {
   }));
 
   if (!response?.ok) {
-    setStatus(response?.error || "Engine 重启失败，请打开说明手动重启。", "error");
+    console.error("[LocalTube Dub] Engine restart failed", {
+      code: response?.code || "ENGINE_RESTART_FAILED",
+      error: response?.error || ""
+    });
+    setStatus("Engine 重启失败，请打开说明手动重启。", "error");
     return;
   }
 
@@ -1250,36 +1323,6 @@ async function startDubbing(options = {}) {
   if (state.running || state.busy) {
     return;
   }
-  state.settings = readSettingsFromWidget();
-  resetRuntimeProfileForOperation();
-  reapplyLightweightModeForKnownEngineHealth();
-  if (
-    state.runtimeProfile.useEngineTts &&
-    state.settings.voiceEnabled &&
-    state.settings.ttsEngine === "edge" &&
-    !state.settings.microsoftTtsConsent
-  ) {
-    setStatus("请先同意 Microsoft 在线配音的数据传输说明，或改用 Kokoro 本地配音。", "error");
-    return;
-  }
-  if (
-    state.runtimeProfile.useEngineTts &&
-    state.settings.ttsEngine === "kokoro" &&
-    !ttsEngineSupportsLanguage("kokoro", state.settings.targetLanguage)
-  ) {
-    setStatus("Kokoro 当前仅支持中文和英文，请切换目标语言或配音引擎。", "error");
-    return;
-  }
-  if (
-    state.runtimeProfile.useEngineTts &&
-    state.settings.ttsEngine === "kokoro" &&
-    state.kokoroModelStatus.state !== "ready"
-  ) {
-    setStatus("请先安装并准备好 Kokoro 本地语音模型。", "error");
-    await refreshKokoroModelStatus();
-    return;
-  }
-
   const autoRetry = Boolean(options?.autoRetry);
   const resumeOnSuccess = Boolean(options?.resumeOnSuccess);
   cancelCaptionAutoRetry();
@@ -1294,9 +1337,10 @@ async function startDubbing(options = {}) {
 
   try {
     state.settings = await loadSettings();
-    updateControlsFromSettings();
-    resetRuntimeProfileForOperation();
-    reapplyLightweightModeForKnownEngineHealth();
+    updateControlsFromSettings({ refreshEngine: false });
+    await prepareRuntimeProfileForOperation(operationId, {
+      forceLightweight: Boolean(options?.forceLightweight)
+    });
     assertOperationActive(operationId);
     if (
       state.runtimeProfile.useEngineTts &&
@@ -1313,14 +1357,6 @@ async function startDubbing(options = {}) {
     ) {
       throw new Error("Kokoro 当前仅支持中文和英文，请切换目标语言或配音引擎。");
     }
-    if (
-      state.runtimeProfile.useEngineTts &&
-      state.settings.ttsEngine === "kokoro" &&
-      state.kokoroModelStatus.state !== "ready"
-    ) {
-      throw new Error("请先安装并准备好 Kokoro 本地语音模型。");
-    }
-
     state.video = getPrimaryVideoElement();
     if (!state.video) {
       throw new Error("当前页面没有找到视频播放器");
@@ -1336,7 +1372,10 @@ async function startDubbing(options = {}) {
     attachCaptionOverlay();
     const videoId = getCurrentVideoId();
     state.timelineCacheProvider = resolveEffectiveProvider();
-    const cachedTimeline = await loadCachedTimeline(videoId, operationId, "youtube-captions");
+    const useStartupTimelineCaches = shouldUseStartupTimelineCaches(state.runtimeProfile);
+    const cachedTimeline = useStartupTimelineCaches
+      ? await loadCachedTimeline(videoId, operationId, "youtube-captions")
+      : null;
     assertOperationActive(operationId);
 
     let originalCues = [];
@@ -1355,8 +1394,12 @@ async function startDubbing(options = {}) {
       detectedSourceLanguage = cachedTimeline.sourceLanguage || "auto";
       setStatus(`已从本机缓存读取 ${translatedCues.length} 条字幕`, "");
     } else {
-      beginVoiceEngineWarmup(operationId);
-      const providerCachedTimeline = await loadCachedTimeline(videoId, operationId, resolveEffectiveProvider());
+      if (state.runtimeProfile.useEngineTts) {
+        beginVoiceEngineWarmup(operationId);
+      }
+      const providerCachedTimeline = useStartupTimelineCaches
+        ? await loadCachedTimeline(videoId, operationId, resolveEffectiveProvider())
+        : null;
       assertOperationActive(operationId);
 
       if (providerCachedTimeline?.cues?.length) {
@@ -1367,7 +1410,9 @@ async function startDubbing(options = {}) {
         detectedSourceLanguage = providerCachedTimeline.sourceLanguage || "auto";
         setStatus(`已从本机缓存读取 ${translatedCues.length} 条字幕`, "");
       } else {
-        const sourceCachedTimeline = await loadCachedTimeline(videoId, operationId, "youtube-source");
+        const sourceCachedTimeline = useStartupTimelineCaches
+          ? await loadCachedTimeline(videoId, operationId, "youtube-source")
+          : null;
         assertOperationActive(operationId);
         if (sourceCachedTimeline?.cues?.length) {
           originalCues = restoreSourceCaptionCache(sourceCachedTimeline);
@@ -2420,15 +2465,10 @@ function updateWidgetState() {
       requiresEngineTts &&
       state.settings.ttsEngine === "kokoro" &&
       !ttsEngineSupportsLanguage("kokoro", state.settings.targetLanguage);
-    const kokoroModelUnavailable =
-      requiresEngineTts &&
-      state.settings.ttsEngine === "kokoro" && state.kokoroModelStatus.state !== "ready";
-    startButton.disabled = state.busy || state.running || kokoroLanguageUnavailable || kokoroModelUnavailable;
+    startButton.disabled = state.busy || state.running || kokoroLanguageUnavailable;
     startButton.textContent = startButtonLabel(state.phase);
     startButton.title = kokoroLanguageUnavailable
       ? "Kokoro 当前仅支持中文和英文"
-      : kokoroModelUnavailable
-      ? "请先安装并准备好 Kokoro 本地语音模型"
       : "";
   }
   if (stopButton) {
@@ -3684,24 +3724,29 @@ function handleEngineVoiceFailure(error, segment, generation) {
   if (usesBrowserSpeechProfile()) {
     return true;
   }
-  const shouldReplay =
-    isVoicePlaybackAttemptCurrent(segment, generation) &&
-    state.voicePendingCueKey === segment.key &&
-    state.running &&
-    !state.dubTrackPreviewActive &&
-    isVoiceSegmentCurrent(segment);
-  const activated = activateLightweightMode({
-    code: "TTS_ENGINE_UNAVAILABLE",
-    error: failure.error
-  });
-  if (!activated) {
-    return false;
-  }
-  if (!shouldReplay) {
+  return restartOperationInLightweightMode(failure);
+}
+
+function restartOperationInLightweightMode(failure = {}) {
+  if (usesBrowserSpeechProfile() || state.lightweightRestartInFlight) {
     return true;
   }
-  const browserGeneration = beginVoicePlaybackAttempt();
-  speakSegmentWithBrowserTts(segment, browserGeneration);
+  if (!activateLightweightMode(failure)) {
+    return false;
+  }
+
+  state.lightweightRestartInFlight = true;
+  const resumeOnSuccess = Boolean(state.video && !state.video.paused);
+  stopDubbing({ silent: true });
+  Promise.resolve()
+    .then(() => startDubbing({ forceLightweight: true, resumeOnSuccess }))
+    .catch((error) => {
+      console.error("[LocalTube Dub] lightweight pipeline restart failed", error);
+      setStatus("轻量模式重新准备失败，请再次点击开始翻译。", "error");
+    })
+    .finally(() => {
+      state.lightweightRestartInFlight = false;
+    });
   return true;
 }
 
@@ -4116,6 +4161,7 @@ async function getVoiceSegmentAudio(segment, options = {}) {
   if (pending) {
     return pending;
   }
+  const operationId = state.operationId;
 
   const promise = new Promise((resolve, reject) => {
     const task = async () => {
@@ -4123,6 +4169,10 @@ async function getVoiceSegmentAudio(segment, options = {}) {
       state.voiceAudioActiveSegmentKey = segment.key;
       try {
         const payload = await requestVoiceSegmentAudio(segment);
+        if (state.operationId !== operationId || !state.runtimeProfile.useEngineTts) {
+          resolve(null);
+          return;
+        }
         rememberVoiceAudio(key, payload);
         resolve(payload);
       } catch (error) {
@@ -4667,6 +4717,22 @@ async function resolveVideoCaptions(operationId) {
   const pageResult = pageFastResult?.error === "页面字幕快速读取超时"
     ? await withTimeoutResult(pageResultPromise, 1000, "页面字幕读取超时")
     : pageFastResult;
+  const captionEngineFallback = lightweightFallbackDecision({
+    code: engineResult?.code,
+    error: engineResult?.error,
+    ttsEngine: state.settings.ttsEngine
+  });
+  if (captionEngineFallback.activate && activateLightweightMode(engineResult)) {
+    return pageResult?.status === "captions" && pageResult?.cues?.length
+      ? pageResult
+      : {
+          status: pageResult?.status || "unknown",
+          cues: [],
+          track: null,
+          code: pageResult?.code || "LIGHTWEIGHT_CAPTIONS_UNAVAILABLE",
+          error: "免安装轻量模式需要当前视频提供公开的 YouTube 字幕。"
+        };
+  }
   const bestCaptionResult = pickBestResolvedCaptionResult([engineResult, pageResult], state.settings.targetLanguage);
   if (bestCaptionResult) {
     return bestCaptionResult;
