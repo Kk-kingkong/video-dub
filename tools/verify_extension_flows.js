@@ -2701,6 +2701,7 @@ function testManifestAndFlowGuards() {
   assert.match(installHtml, /一键重启 Engine/);
   assert.match(installHtml, /修复开机自启/);
   assert.match(installHtml, /一键安装本地转写/);
+  assert.match(installHtml, /Windows 一键本地 Whisper 尚未包含在 0\.2\.1 安装包中/);
   assert.match(installHtml, /whisper\.cpp/);
   assert.match(installHtml, /Address already in use/);
   assert.match(installHtml, /一键重启 Engine.*自动清理确认属于 LocalTube Dub 的旧进程/s);
@@ -2816,7 +2817,10 @@ function testManifestAndFlowGuards() {
   assert.match(fullTrackHarness, /data-action='seek'/);
   assert.match(fullTrackHarness, /video\.playbackRate = video\.playbackRate === 1\.5/);
   const liveVoiceHarness = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.js"), "utf8");
+  const liveVoiceHarnessHtml = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.html"), "utf8");
   assert.match(liveVoiceHarness, /syncLiveVoiceMediaElements/);
+  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.1/);
+  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.1/);
   assert.match(liveVoiceHarness, /data-action='self-test'/);
   assert.match(liveVoiceHarness, /late\.expectedEnd <= 5\.05/);
   assert.match(liveVoiceHarness, /late\.playbackRate <= 1\.2/);

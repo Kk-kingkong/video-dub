@@ -104,6 +104,10 @@ def verify_public_claims() -> None:
     for link in (PUBLIC_SITE, PUBLIC_PRIVACY, PUBLIC_SUPPORT, PUBLIC_REPOSITORY):
         require(link in listing, f"store listing public link missing: {link}")
     require(CHROME_WEB_STORE_ITEM_ID in listing, "Chrome Web Store item ID missing from listing draft")
+    require(
+        f"shipping `{EXPECTED_VERSION}` UI" in listing,
+        "store listing screenshot version mismatch",
+    )
     for phrase in ("Kokoro", "Windows 10/11 x64", "macOS Intel", "macOS Apple Silicon"):
         require(phrase.casefold() in listing.casefold(), f"store listing disclosure missing: {phrase}")
 
