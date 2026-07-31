@@ -3460,10 +3460,13 @@ function findVoiceSegmentAtOrAfter(time) {
   return state.voiceSegments.find((segment) => voiceSegmentPlaybackEnd(segment) >= time - 0.05) || null;
 }
 
+function usesBrowserSpeechProfile() {
+  return isLightweightProfile(state.runtimeProfile);
+}
+
 function maybeSpeakVoiceSegment(segment) {
   if (
     state.dubTrackPreviewActive ||
-    !state.runtimeProfile.useEngineTts ||
     !state.settings.voiceEnabled ||
     !segment ||
     state.spokenVoiceSegmentKeys.has(segment.key) ||
@@ -3494,6 +3497,10 @@ function maybeSpeakVoiceSegment(segment) {
     setOriginalMutedForDubbing(false);
     return;
   }
+  if (usesBrowserSpeechProfile()) {
+    speakSegmentWithBrowserTts(segment);
+    return;
+  }
   if (shouldSkipLateVoiceSegment(segment, { audioReady: hasVoiceSegmentAudioReady(segment) })) {
     markVoiceSegmentSkipped(segment);
     return;
@@ -3510,6 +3517,9 @@ function maybeSpeakVoiceSegment(segment) {
       !state.dubTrackPreviewActive &&
       isVoiceSegmentCurrent(segment)
     ) {
+      if (handleEngineVoiceFailure(error, segment, playbackGeneration)) {
+        return;
+      }
       const failurePolicy = voiceFailurePolicy(state.settings.ttsEngine);
       if (failurePolicy.allowBrowserFallback) {
         setStatus(`本地配音播放失败，已回退浏览器朗读：${friendlyErrorMessage(error)}`, "error");
@@ -3529,6 +3539,30 @@ function maybeSpeakVoiceSegment(segment) {
       state.voicePendingCueKey = "";
     }
   });
+}
+
+function handleEngineVoiceFailure(error, segment, generation) {
+  const failure = {
+    code: error?.code,
+    error: error?.message
+  };
+  const decision = lightweightFallbackDecision({
+    ...failure,
+    ttsEngine: state.settings.ttsEngine
+  });
+  if (!decision.activate || !isVoicePlaybackAttemptCurrent(segment, generation)) {
+    return false;
+  }
+  const activated = activateLightweightMode({
+    code: "TTS_ENGINE_UNAVAILABLE",
+    error: failure.error
+  });
+  if (!activated) {
+    return false;
+  }
+  const browserGeneration = beginVoicePlaybackAttempt();
+  speakSegmentWithBrowserTts(segment, browserGeneration);
+  return true;
 }
 
 async function playVoiceSegment(segment, playbackGeneration) {
@@ -3926,6 +3960,9 @@ function syncActiveBrowserSpeech(currentTime) {
 }
 
 async function getVoiceSegmentAudio(segment, options = {}) {
+  if (!state.runtimeProfile.useEngineTts) {
+    return null;
+  }
   const failurePolicy = voiceFailurePolicy(state.settings.ttsEngine);
   if (failurePolicy.unavailableCooldownMs > 0 && Date.now() < state.localTtsUnavailableUntil) {
     throw new Error("本地 TTS 暂不可用");
@@ -4007,6 +4044,9 @@ function pruneQueuedVoiceAudioTasks() {
 }
 
 async function requestVoiceSegmentAudio(segment) {
+  if (!state.runtimeProfile.useEngineTts) {
+    return null;
+  }
   const ttsEngine = state.settings.ttsEngine || DEFAULT_SETTINGS.ttsEngine;
   const failurePolicy = voiceFailurePolicy(ttsEngine);
   const requestedVoice = state.settings.voiceId || "auto";
@@ -4015,6 +4055,9 @@ async function requestVoiceSegmentAudio(segment) {
   for (let attempt = 0; attempt < failurePolicy.requestAttempts; attempt += 1) {
     if (attempt > 0 && failurePolicy.retryDelayMs > 0) {
       await delay(failurePolicy.retryDelayMs);
+    }
+    if (!state.runtimeProfile.useEngineTts) {
+      return null;
     }
 
     try {
@@ -4041,6 +4084,7 @@ async function requestVoiceSegmentAudio(segment) {
         return response.payload;
       }
       lastError = new Error(response?.error || "本地 TTS 没有返回音频");
+      lastError.code = response?.code || "";
     } catch (error) {
       lastError = error;
     }
@@ -4284,7 +4328,10 @@ function speakSegmentWithBrowserTts(segment, playbackGeneration = beginVoicePlay
   utterance.lang = state.settings.targetLanguage;
   utterance.rate = computeBrowserVoiceRate(segment);
   utterance.pitch = state.settings.voicePitch;
-  const voice = pickBrowserVoice(state.settings.targetLanguage, state.settings.voiceId);
+  const voice = pickBrowserVoice(
+    state.settings.targetLanguage,
+    usesBrowserSpeechProfile() ? "auto" : state.settings.voiceId
+  );
   if (voice) {
     utterance.voice = voice;
   }

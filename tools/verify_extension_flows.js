@@ -1817,16 +1817,50 @@ function testManifestAndFlowGuards() {
   assert.match(content, /ttsEngine: state\.settings\.ttsEngine \|\| DEFAULT_SETTINGS\.ttsEngine/);
   assert.match(content, /ttsEngine: "edge"/);
   const voicePlaybackBody = extractFunctionBody(content, "maybeSpeakVoiceSegment");
-  assert.match(voicePlaybackBody, /!state\.runtimeProfile\.useEngineTts/);
+  assert.match(content, /function usesBrowserSpeechProfile\(\)/);
+  assert.match(content, /if\s*\(usesBrowserSpeechProfile\(\)\)\s*\{\s*speakSegmentWithBrowserTts/);
+  const lightweightSpeechBranch = voicePlaybackBody.match(
+    /if\s*\(usesBrowserSpeechProfile\(\)\)\s*\{([\s\S]*?)\}/
+  )?.[1];
+  assert.ok(lightweightSpeechBranch, "lightweight playback must have a dedicated browser-speech branch");
+  assert.match(lightweightSpeechBranch, /speakSegmentWithBrowserTts\(segment\)/);
+  assert.doesNotMatch(lightweightSpeechBranch, /localtube\.synthesizeSpeech/);
+  assert.ok(
+    voicePlaybackBody.indexOf("if (usesBrowserSpeechProfile())") < voicePlaybackBody.indexOf("scheduleVoicePrefetchWindow(segment.start)"),
+    "lightweight browser speech must branch before Engine prefetch"
+  );
   assert.match(voicePlaybackBody, /failurePolicy\.allowBrowserFallback/);
   assert.doesNotMatch(voicePlaybackBody, /ttsEngine\s*=\s*"edge"/);
   assert.match(voicePlaybackBody, /Microsoft 自然在线暂时未生成当前片段/);
   assert.match(voicePlaybackBody, /Kokoro 本地语音暂时未生成当前片段/);
   assert.match(voicePlaybackBody, /markVoiceSegmentSkipped\(segment\)/);
+  const playVoiceSegmentBody = extractFunctionBody(content, "playVoiceSegment");
+  assert.match(playVoiceSegmentBody, /^\s*if\s*\(state\.dubTrackPreviewActive \|\| !state\.runtimeProfile\.useEngineTts\)\s*\{\s*return;/);
+  assert.ok(
+    playVoiceSegmentBody.indexOf("!state.runtimeProfile.useEngineTts") <
+      playVoiceSegmentBody.indexOf("getVoiceSegmentAudio(segment, { priority: true })"),
+    "the final playback handoff must reject lightweight Engine audio before requesting it"
+  );
+  const voiceAudioBody = extractFunctionBody(content, "getVoiceSegmentAudio");
+  assert.match(voiceAudioBody, /if\s*\(!state\.runtimeProfile\.useEngineTts\)\s*\{\s*return null/);
   const voiceRequestBody = extractFunctionBody(content, "requestVoiceSegmentAudio");
+  assert.match(voiceRequestBody, /if\s*\(!state\.runtimeProfile\.useEngineTts\)\s*\{\s*return null/);
   assert.match(voiceRequestBody, /failurePolicy\.requestAttempts/);
   assert.match(voiceRequestBody, /failurePolicy\.retryDelayMs/);
+  assert.match(voiceRequestBody, /lastError\.code = response\?\.code/);
   assert.doesNotMatch(voiceRequestBody, /Date\.now\(\) \+ 60000/);
+  const voiceRetryLoopIndex = voiceRequestBody.indexOf("for (let attempt = 0;");
+  const retryProfileGuardIndex = voiceRequestBody.indexOf("if (!state.runtimeProfile.useEngineTts)", voiceRetryLoopIndex);
+  const synthesisRequestIndex = voiceRequestBody.indexOf('type: "localtube.synthesizeSpeech"');
+  assert.ok(
+    retryProfileGuardIndex > voiceRetryLoopIndex && retryProfileGuardIndex < synthesisRequestIndex,
+    "a fallback activated during retry delay must prevent another Engine synthesis request"
+  );
+  const engineVoiceFailureBody = extractFunctionBody(content, "handleEngineVoiceFailure");
+  assert.match(engineVoiceFailureBody, /lightweightFallbackDecision/);
+  assert.match(engineVoiceFailureBody, /activateLightweightMode\(\{\s*code:\s*"TTS_ENGINE_UNAVAILABLE"/);
+  assert.match(engineVoiceFailureBody, /isVoicePlaybackAttemptCurrent\(segment, generation\)/);
+  assert.match(engineVoiceFailureBody, /speakSegmentWithBrowserTts\(segment, browserGeneration\)/);
   assert.match(content, /loadCachedTimeline\(videoId, operationId, "youtube-captions"\)/);
   assert.match(content, /providerCachedTimeline = await loadCachedTimeline\(videoId, operationId, resolveEffectiveProvider\(\)\)/);
   assert.match(content, /audio\.preservesPitch = true/);
@@ -1855,6 +1889,11 @@ function testManifestAndFlowGuards() {
   assert.match(voicePrefetchBody, /!state\.runtimeProfile\.useEngineTts/);
   const voicePrewarmBody = extractFunctionBody(content, "prewarmVoiceAroundTime");
   assert.match(voicePrewarmBody, /!state\.runtimeProfile\.useEngineTts/);
+  const browserSpeechBody = extractFunctionBody(content, "speakSegmentWithBrowserTts");
+  assert.match(
+    browserSpeechBody,
+    /pickBrowserVoice\(\s*state\.settings\.targetLanguage,\s*usesBrowserSpeechProfile\(\) \? "auto" : state\.settings\.voiceId\s*\)/
+  );
   assert.match(content, /function pruneQueuedVoiceAudioTasks/);
   assert.match(content, /scheduleVoicePrefetchWindow\(state\.video\.currentTime \|\| 0\)/);
   assert.match(content, /VOICE_TIMEBOX_END_GRACE_SECONDS/);
