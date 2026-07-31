@@ -993,7 +993,7 @@ async function synthesizeSpeechWithEngine(payload = {}, settings = {}) {
     };
   }
 
-  const errors = [];
+  const failures = [];
   const localEndpoint = (nextSettings.endpoint || DEFAULT_SETTINGS.endpoint).replace(/\/+$/, "");
   try {
     const response = await fetchJson(`${localEndpoint}/api/tts`, {
@@ -1012,9 +1012,20 @@ async function synthesizeSpeechWithEngine(payload = {}, settings = {}) {
         }
       };
     }
-    errors.push(`HTTP TTS：${response.error || "没有返回音频"}`);
+    failures.push(
+      LocalTubeDubBackgroundHelpers.classifyTtsEngineFailure({
+        code: response.payload?.code,
+        status: response.status,
+        error: response.error || "没有返回音频"
+      })
+    );
   } catch (error) {
-    errors.push(`HTTP TTS：${error.message || String(error)}`);
+    failures.push(
+      LocalTubeDubBackgroundHelpers.classifyTtsEngineFailure(
+        { error: error.message || String(error) },
+        { transportFailure: true }
+      )
+    );
   }
 
   try {
@@ -1031,16 +1042,22 @@ async function synthesizeSpeechWithEngine(payload = {}, settings = {}) {
         }
       };
     }
-    errors.push(`Native TTS：${nativePayload?.error || "没有返回音频"}`);
+    failures.push(
+      LocalTubeDubBackgroundHelpers.classifyTtsEngineFailure({
+        code: nativePayload?.code,
+        error: nativePayload?.error || "没有返回音频"
+      })
+    );
   } catch (error) {
-    errors.push(`Native TTS：${error.message || String(error)}`);
+    failures.push(
+      LocalTubeDubBackgroundHelpers.classifyTtsEngineFailure(
+        { error: error.message || String(error) },
+        { transportFailure: true }
+      )
+    );
   }
 
-  return {
-    ok: false,
-    code: "TTS_ENGINE_UNAVAILABLE",
-    error: errors.join("；")
-  };
+  return LocalTubeDubBackgroundHelpers.resolveTtsEngineFailure(failures);
 }
 
 async function listAvailableVoices(settings = {}) {

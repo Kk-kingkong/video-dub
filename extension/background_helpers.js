@@ -162,6 +162,73 @@
     return safeStatus > 0 ? `${label} 暂时不可用（HTTP ${safeStatus}）。` : `${label} 暂时不可用。`;
   }
 
+  const TTS_ENGINE_FAILURE_CODES = new Set([
+    "EDGE_TTS_UNAVAILABLE",
+    "ENGINE_TIMEOUT",
+    "ENGINE_UPGRADE_REQUIRED",
+    "KOKORO_TTS_UNAVAILABLE",
+    "TTS_ENGINE_UNAVAILABLE"
+  ]);
+
+  function classifyTtsEngineFailure(result = {}, options = {}) {
+    const code = String(result?.code || "").trim().toUpperCase();
+    if (code) {
+      return {
+        code,
+        activateLightweight: TTS_ENGINE_FAILURE_CODES.has(code)
+      };
+    }
+
+    const status = Number(result?.status || 0);
+    const error = String(result?.error || result?.message || "");
+    if (/missing tts text|invalid tts rate|invalid.*target duration|missing tts payload/i.test(error)) {
+      return { code: "TTS_REQUEST_INVALID", activateLightweight: false };
+    }
+    if (/invalid.*voice|voice.*(?:invalid|not found|unavailable)|音色.*(?:无效|不存在|不可用)/i.test(error)) {
+      return { code: "TTS_VOICE_UNAVAILABLE", activateLightweight: false };
+    }
+    if (/no audio (?:was )?received|verify.*parameters|没有生成音频|没有返回音频|生成失败/i.test(error)) {
+      return { code: "TTS_SYNTHESIS_FAILED", activateLightweight: false };
+    }
+    if (
+      options.transportFailure ||
+      status === 404 ||
+      status >= 500 ||
+      /尚未安装|需要 ffmpeg|not installed|missing dependency|kokoro.*不可用/i.test(error)
+    ) {
+      return { code: "TTS_ENGINE_UNAVAILABLE", activateLightweight: true };
+    }
+    return { code: "TTS_SYNTHESIS_FAILED", activateLightweight: false };
+  }
+
+  function resolveTtsEngineFailure(failures = []) {
+    const classified = Array.isArray(failures) ? failures.filter(Boolean) : [];
+    const semanticFailure = classified.find((failure) => !failure.activateLightweight);
+    if (semanticFailure) {
+      const messages = {
+        TTS_REQUEST_INVALID: "配音请求无效。",
+        TTS_VOICE_UNAVAILABLE: "当前音色无法生成这个片段。"
+      };
+      return {
+        ok: false,
+        code: semanticFailure.code || "TTS_SYNTHESIS_FAILED",
+        error: messages[semanticFailure.code] || "当前片段未能生成配音。"
+      };
+    }
+    if (classified.some((failure) => failure.activateLightweight)) {
+      return {
+        ok: false,
+        code: "TTS_ENGINE_UNAVAILABLE",
+        error: "配音 Engine 暂不可用。"
+      };
+    }
+    return {
+      ok: false,
+      code: "TTS_SYNTHESIS_FAILED",
+      error: "当前片段未能生成配音。"
+    };
+  }
+
   function timelineCacheKey(request = {}) {
     return [request.videoId, request.targetLanguage, request.provider, request.model]
       .map((value) => encodeURIComponent(String(value || "").trim().toLowerCase()))
@@ -247,11 +314,13 @@
   const api = {
     assessEngineCompatibility,
     classifyProviderFailure,
+    classifyTtsEngineFailure,
     createTranscriptionRequestRegistry,
     findTimelineCache,
     normalizeTimelineCues,
     pruneTimelineCache,
     providerFailureMessage,
+    resolveTtsEngineFailure,
     shouldAutoStartCaptionEngine,
     timelineCacheKey,
     upsertTimelineCache

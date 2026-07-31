@@ -367,6 +367,71 @@ function testProviderFailureClassification() {
   assert.doesNotMatch(authMessage, /79ce|\*\*\*\*/);
 }
 
+function testTtsEngineFailureClassification() {
+  const transport = backgroundHelpers.classifyTtsEngineFailure(
+    { error: "HTTP TTS: ECONNREFUSED 127.0.0.1" },
+    { transportFailure: true }
+  );
+  assert.deepEqual(transport, {
+    code: "TTS_ENGINE_UNAVAILABLE",
+    activateLightweight: true
+  });
+  assert.deepEqual(backgroundHelpers.classifyTtsEngineFailure({ error: "自然在线语音尚未安装" }), {
+    code: "TTS_ENGINE_UNAVAILABLE",
+    activateLightweight: true
+  });
+  assert.deepEqual(backgroundHelpers.classifyTtsEngineFailure({ status: 400, error: "Missing TTS text" }), {
+    code: "TTS_REQUEST_INVALID",
+    activateLightweight: false
+  });
+  const voiceFailure = backgroundHelpers.classifyTtsEngineFailure({
+    status: 400,
+    error: "Microsoft voice is invalid for this request"
+  });
+  assert.deepEqual(voiceFailure, {
+    code: "TTS_VOICE_UNAVAILABLE",
+    activateLightweight: false
+  });
+  assert.deepEqual(
+    backgroundHelpers.classifyTtsEngineFailure({
+      code: "TTS_CONTENT_REJECTED",
+      error: "Engine timeout while processing this text"
+    }),
+    {
+      code: "TTS_CONTENT_REJECTED",
+      activateLightweight: false
+    },
+    "an explicit semantic failure must win over transport-like words"
+  );
+  assert.deepEqual(
+    backgroundHelpers.classifyTtsEngineFailure({
+      status: 400,
+      error: "自然在线语音连接失败：timeout while processing this text"
+    }),
+    {
+      code: "TTS_SYNTHESIS_FAILED",
+      activateLightweight: false
+    },
+    "a response from a reachable Engine must not turn a per-segment Microsoft failure into an Engine transport failure"
+  );
+
+  assert.deepEqual(backgroundHelpers.resolveTtsEngineFailure([transport, voiceFailure]), {
+    ok: false,
+    code: "TTS_VOICE_UNAVAILABLE",
+    error: "当前音色无法生成这个片段。"
+  });
+  const unavailable = backgroundHelpers.resolveTtsEngineFailure([
+    transport,
+    backgroundHelpers.classifyTtsEngineFailure({ error: "自然在线语音需要 ffmpeg" })
+  ]);
+  assert.deepEqual(unavailable, {
+    ok: false,
+    code: "TTS_ENGINE_UNAVAILABLE",
+    error: "配音 Engine 暂不可用。"
+  });
+  assert.doesNotMatch(JSON.stringify(unavailable), /ECONNREFUSED|127\.0\.0\.1/);
+}
+
 function testLightweightRuntimePolicy() {
   const saved = Object.freeze({
     provider: "deepseek",
@@ -1650,6 +1715,61 @@ function extractFunctionBody(source, functionName) {
   throw new Error(`unterminated function ${functionName}`);
 }
 
+function testEngineVoiceFailureHarness() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  let browserProfile = false;
+  const handler = vm.runInNewContext(
+    `(function(error, segment, generation) {${extractFunctionBody(content, "handleEngineVoiceFailure")}})`,
+    {
+      state: {
+        settings: { ttsEngine: "edge" },
+        running: true,
+        dubTrackPreviewActive: false
+      },
+      lightweightFallbackDecision: helpers.lightweightFallbackDecision,
+      usesBrowserSpeechProfile: () => browserProfile,
+      isVoicePlaybackAttemptCurrent: () => false,
+      isVoiceSegmentCurrent: () => false,
+      activateLightweightMode: () => {
+        activationCount += 1;
+        return true;
+      },
+      beginVoicePlaybackAttempt: () => {
+        throw new Error("stale segment must not allocate a replay generation");
+      },
+      speakSegmentWithBrowserTts: () => {
+        throw new Error("stale segment must not replay");
+      }
+    }
+  );
+  let activationCount = 0;
+  const handled = handler(
+    Object.assign(new Error("本地 TTS 生成超时"), { code: "TTS_ENGINE_UNAVAILABLE" }),
+    { key: "stale-segment" },
+    7
+  );
+
+  assert.equal(handled, true);
+  assert.equal(activationCount, 1, "a qualifying Engine failure must activate even after its segment becomes stale");
+
+  const contentFailureHandled = handler(
+    Object.assign(new Error("当前片段未能生成配音。"), { code: "TTS_SYNTHESIS_FAILED" }),
+    { key: "content-failure" },
+    8
+  );
+  assert.equal(contentFailureHandled, false);
+  assert.equal(activationCount, 1, "a content-specific failure must retain the same-provider segment policy");
+
+  browserProfile = true;
+  const alreadyActivatedHandled = handler(
+    Object.assign(new Error("另一个旧请求稍后失败"), { code: "TTS_ENGINE_UNAVAILABLE" }),
+    { key: "older-engine-request" },
+    6
+  );
+  assert.equal(alreadyActivatedHandled, true);
+  assert.equal(activationCount, 1, "late Engine failures must not invalidate active lightweight browser speech again");
+}
+
 function testManifestAndFlowGuards() {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension", "manifest.json"), "utf8"));
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
@@ -1834,6 +1954,11 @@ function testManifestAndFlowGuards() {
   assert.match(voicePlaybackBody, /Microsoft 自然在线暂时未生成当前片段/);
   assert.match(voicePlaybackBody, /Kokoro 本地语音暂时未生成当前片段/);
   assert.match(voicePlaybackBody, /markVoiceSegmentSkipped\(segment\)/);
+  assert.ok(
+    voicePlaybackBody.indexOf("handleEngineVoiceFailure(error, segment, playbackGeneration)") <
+      voicePlaybackBody.indexOf("isVoicePlaybackAttemptCurrent(segment, playbackGeneration)"),
+    "Engine failure activation must run before stale-segment replay guards"
+  );
   const playVoiceSegmentBody = extractFunctionBody(content, "playVoiceSegment");
   assert.match(playVoiceSegmentBody, /^\s*if\s*\(state\.dubTrackPreviewActive \|\| !state\.runtimeProfile\.useEngineTts\)\s*\{\s*return;/);
   assert.ok(
@@ -2169,6 +2294,13 @@ function testManifestAndFlowGuards() {
 
   const background = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
   assert.match(background, /code: "CAPTION_ENGINE_OFFLINE"/);
+  const captionHealthBody = extractFunctionBody(background, "checkCaptionEngineHealth");
+  assert.match(captionHealthBody, /const errors = \[\]/);
+  const engineSynthesisBody = extractFunctionBody(background, "synthesizeSpeechWithEngine");
+  assert.match(engineSynthesisBody, /const failures = \[\]/);
+  assert.match(engineSynthesisBody, /classifyTtsEngineFailure/);
+  assert.match(engineSynthesisBody, /resolveTtsEngineFailure/);
+  assert.doesNotMatch(engineSynthesisBody, /errors\.join/);
   assert.match(background, /microsoftTtsConsent: false/);
   assert.match(background, /MICROSOFT_TTS_CONSENT_REQUIRED/);
   assert.match(background, /!storedSettings\.microsoftTtsConsent/);
@@ -2711,6 +2843,7 @@ async function main() {
   testOverlayTtsPlatformTransitions();
   testEngineCompatibility();
   testProviderFailureClassification();
+  testTtsEngineFailureClassification();
   testLightweightRuntimePolicy();
   testCaptionEngineAutoStartDecision();
   testTimelineCache();
@@ -2738,6 +2871,7 @@ async function main() {
   testInstallReleaseInfo();
   testTranscriptionRequestRegistry();
   testNoCaptionStartupOrder();
+  testEngineVoiceFailureHarness();
   testManifestAndFlowGuards();
   console.log("extension flow checks ok");
 }

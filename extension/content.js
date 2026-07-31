@@ -3510,6 +3510,9 @@ function maybeSpeakVoiceSegment(segment) {
   state.voicePendingCueKey = segment.key;
   scheduleVoicePrefetchWindow(segment.start);
   playVoiceSegment(segment, playbackGeneration).catch((error) => {
+    if (handleEngineVoiceFailure(error, segment, playbackGeneration)) {
+      return;
+    }
     if (
       isVoicePlaybackAttemptCurrent(segment, playbackGeneration) &&
       state.voicePendingCueKey === segment.key &&
@@ -3517,9 +3520,6 @@ function maybeSpeakVoiceSegment(segment) {
       !state.dubTrackPreviewActive &&
       isVoiceSegmentCurrent(segment)
     ) {
-      if (handleEngineVoiceFailure(error, segment, playbackGeneration)) {
-        return;
-      }
       const failurePolicy = voiceFailurePolicy(state.settings.ttsEngine);
       if (failurePolicy.allowBrowserFallback) {
         setStatus(`本地配音播放失败，已回退浏览器朗读：${friendlyErrorMessage(error)}`, "error");
@@ -3550,15 +3550,27 @@ function handleEngineVoiceFailure(error, segment, generation) {
     ...failure,
     ttsEngine: state.settings.ttsEngine
   });
-  if (!decision.activate || !isVoicePlaybackAttemptCurrent(segment, generation)) {
+  if (!decision.activate) {
     return false;
   }
+  if (usesBrowserSpeechProfile()) {
+    return true;
+  }
+  const shouldReplay =
+    isVoicePlaybackAttemptCurrent(segment, generation) &&
+    state.voicePendingCueKey === segment.key &&
+    state.running &&
+    !state.dubTrackPreviewActive &&
+    isVoiceSegmentCurrent(segment);
   const activated = activateLightweightMode({
     code: "TTS_ENGINE_UNAVAILABLE",
     error: failure.error
   });
   if (!activated) {
     return false;
+  }
+  if (!shouldReplay) {
+    return true;
   }
   const browserGeneration = beginVoicePlaybackAttempt();
   speakSegmentWithBrowserTts(segment, browserGeneration);
