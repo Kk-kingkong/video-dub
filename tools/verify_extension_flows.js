@@ -367,6 +367,67 @@ function testProviderFailureClassification() {
   assert.doesNotMatch(authMessage, /79ce|\*\*\*\*/);
 }
 
+function testLightweightRuntimePolicy() {
+  const saved = Object.freeze({
+    provider: "deepseek",
+    ttsEngine: "edge",
+    allowAudioTranscription: true
+  });
+  const lightweight = helpers.createRuntimeProfile(saved, "lightweight");
+  assert.deepEqual(lightweight, {
+    mode: "lightweight",
+    provider: "chrome-translator",
+    ttsEngine: "browser",
+    useCaptionEngine: false,
+    useEngineTts: false,
+    allowTranscription: false,
+    allowFullTrackExport: false
+  });
+  assert.equal(saved.provider, "deepseek");
+  assert.equal(saved.ttsEngine, "edge");
+  assert.equal(helpers.isLightweightProfile(lightweight), true);
+  assert.equal(helpers.isLightweightProfile(helpers.createRuntimeProfile(saved, "full")), false);
+
+  for (const code of [
+    "CAPTION_ENGINE_UNAVAILABLE",
+    "ENGINE_TIMEOUT",
+    "ENGINE_UPGRADE_REQUIRED",
+    "TTS_ENGINE_UNAVAILABLE"
+  ]) {
+    const decision = helpers.lightweightFallbackDecision({ code });
+    assert.equal(decision.activate, true, code);
+    assert.ok(decision.reason, code);
+  }
+  assert.equal(
+    helpers.lightweightFallbackDecision({ ttsEngine: "edge", edgeTtsAvailable: false }).activate,
+    true
+  );
+  assert.equal(
+    helpers.lightweightFallbackDecision({ error: "Failed to fetch Engine health" }).activate,
+    true
+  );
+
+  for (const code of [
+    "YOUTUBE_RATE_LIMITED",
+    "NO_PUBLIC_CAPTIONS",
+    "CAPTION_EMPTY",
+    "VIDEO_UNAVAILABLE",
+    "AUTHENTICATION_FAILED",
+    "PROVIDER_AUTH_FAILED",
+    "PROVIDER_QUOTA_EXCEEDED"
+  ]) {
+    assert.equal(helpers.lightweightFallbackDecision({ code }).activate, false, code);
+  }
+  assert.equal(
+    helpers.lightweightFallbackDecision({ code: "NO_PUBLIC_CAPTIONS", error: "Engine unavailable" }).activate,
+    false
+  );
+  assert.equal(
+    helpers.lightweightFallbackDecision({ code: "PROVIDER_QUOTA_EXCEEDED", error: "Engine timeout" }).activate,
+    false
+  );
+}
+
 function testCaptionEngineAutoStartDecision() {
   assert.equal(
     backgroundHelpers.shouldAutoStartCaptionEngine({
@@ -2580,6 +2641,7 @@ async function main() {
   testOverlayTtsPlatformTransitions();
   testEngineCompatibility();
   testProviderFailureClassification();
+  testLightweightRuntimePolicy();
   testCaptionEngineAutoStartDecision();
   testTimelineCache();
   testVideoResponseMatching();

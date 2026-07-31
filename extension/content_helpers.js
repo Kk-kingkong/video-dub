@@ -1147,6 +1147,87 @@
     return value.split("-")[0] || "";
   }
 
+  const LIGHTWEIGHT_ENGINE_FAILURE_CODES = new Set([
+    "CAPTION_ENGINE_UNAVAILABLE",
+    "ENGINE_NOT_INSTALLED",
+    "ENGINE_TIMEOUT",
+    "ENGINE_UPGRADE_REQUIRED",
+    "TTS_ENGINE_UNAVAILABLE",
+    "EDGE_TTS_UNAVAILABLE"
+  ]);
+
+  const LIGHTWEIGHT_CONTENT_FAILURE_CODES = new Set([
+    "YOUTUBE_RATE_LIMITED",
+    "NO_PUBLIC_CAPTIONS",
+    "CAPTION_EMPTY",
+    "VIDEO_UNAVAILABLE"
+  ]);
+
+  const LIGHTWEIGHT_PROVIDER_FAILURE_CODES = new Set([
+    "AUTHENTICATION_FAILED",
+    "PROVIDER_AUTH_FAILED",
+    "PROVIDER_QUOTA_EXCEEDED",
+    "QUOTA_EXCEEDED"
+  ]);
+
+  function createRuntimeProfile(settings = {}, mode = "full") {
+    if (mode === "lightweight") {
+      return {
+        mode: "lightweight",
+        provider: "chrome-translator",
+        ttsEngine: "browser",
+        useCaptionEngine: false,
+        useEngineTts: false,
+        allowTranscription: false,
+        allowFullTrackExport: false
+      };
+    }
+    return {
+      mode: "full",
+      provider: String(settings.provider || "chrome-translator"),
+      ttsEngine: String(settings.ttsEngine || "edge"),
+      useCaptionEngine: true,
+      useEngineTts: true,
+      allowTranscription: Boolean(settings.allowAudioTranscription),
+      allowFullTrackExport: true
+    };
+  }
+
+  function isLightweightProfile(profile) {
+    return profile?.mode === "lightweight";
+  }
+
+  function lightweightFallbackDecision(input = {}) {
+    const code = String(input.code || input.failureCode || "").trim().toUpperCase();
+    if (LIGHTWEIGHT_CONTENT_FAILURE_CODES.has(code) || LIGHTWEIGHT_PROVIDER_FAILURE_CODES.has(code)) {
+      return { activate: false, reason: "excluded-failure" };
+    }
+    if (LIGHTWEIGHT_ENGINE_FAILURE_CODES.has(code)) {
+      return { activate: true, reason: code };
+    }
+
+    const ttsEngine = String(input.ttsEngine || "").trim().toLowerCase();
+    if (ttsEngine === "edge" && input.edgeTtsAvailable === false) {
+      return { activate: true, reason: "EDGE_TTS_UNAVAILABLE" };
+    }
+
+    if (code) {
+      return { activate: false, reason: "unsupported-failure" };
+    }
+
+    const error = String(input.error || input.message || "");
+    if (/video unavailable|private video|members.?only|age.?restricted|no public captions|no captions|caption empty|字幕.*不可用/i.test(error)) {
+      return { activate: false, reason: "content-failure" };
+    }
+    if (/authentication|unauthorized|invalid api key|quota|rate.?limit|too many requests|额度|配额|鉴权/i.test(error)) {
+      return { activate: false, reason: "provider-failure" };
+    }
+    if (/failed to fetch|could not establish connection|econnrefused|native messaging|engine.*(?:offline|timeout)|(?:timeout|timed out|超时)/i.test(error)) {
+      return { activate: true, reason: "engine-transport-unavailable" };
+    }
+    return { activate: false, reason: "" };
+  }
+
   const api = {
     addQuery,
     buildSemanticVoiceSegments,
@@ -1161,6 +1242,7 @@
     syncLiveVoiceMediaElements,
     createCueTranslationTracker,
     cueKey,
+    createRuntimeProfile,
     extractBalancedJson,
     extendSemanticVoiceSegments,
     limitCaptionTrackAttempts,
@@ -1170,6 +1252,8 @@
     makeTimelineCacheLookupRequests,
     mergeCueTimeline,
     normalizeCaptionLanguage,
+    isLightweightProfile,
+    lightweightFallbackDecision,
     makeDubTrackRenderCues,
     normalizeExportCues,
     normalizeRollingCaptionCues,
