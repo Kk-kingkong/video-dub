@@ -50,10 +50,30 @@ async function initializeReleaseView() {
     return;
   }
 
-  document.querySelector("#engineBundleName").textContent = normalized.engineBundleName;
+  const packageList = document.querySelector("#enginePackageList");
+  packageList.replaceChildren(...normalized.enginePackages.map((enginePackage) => {
+    const item = document.createElement("li");
+    const label = document.createElement("strong");
+    label.textContent = `${enginePackage.label}：`;
+    const bundle = document.createElement("code");
+    bundle.textContent = enginePackage.bundleName;
+    item.append(label, bundle);
+    if (enginePackage.downloadUrl) {
+      const separator = document.createTextNode(" ");
+      const link = document.createElement("a");
+      link.href = enginePackage.downloadUrl;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "下载";
+      item.append(separator, link);
+    }
+    return item;
+  }));
   document.querySelector("#releaseSummary").textContent = normalized.signed && normalized.notarized
-    ? `当前为 ${normalized.version} 正式安装包。下载与扩展版本一致的 Engine 后双击安装。`
-    : `当前为 ${normalized.version} 私测安装包，尚未签名和公证。请从同一发布页下载匹配 Engine ZIP，解压后右键安装文件并选择“打开”。`;
+    ? `当前为 ${normalized.version} 正式安装包。请按操作系统和处理器下载同版本 Engine。`
+    : normalized.channel === "store"
+      ? `当前扩展版本为 ${normalized.version}。可选 Engine 仍是尚未签名和公证的开发包，请按操作系统和处理器选择。`
+      : `当前为 ${normalized.version} 私测安装包，尚未签名和公证。请按操作系统和处理器下载同版本 Engine ZIP。`;
 
   const downloadLink = document.querySelector("#engineDownloadLink");
   if (normalized.engineDownloadUrl) {

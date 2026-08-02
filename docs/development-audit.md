@@ -1,7 +1,44 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-07-23
-Current reviewed version: 0.1.98
+Last reviewed: 2026-08-03
+Current reviewed version: 0.2.3
+
+## 0.2.3 Verification Evidence
+
+- Cross-platform runtime verification retains the macOS entrypoint relocation structure checks on every host but executes the generated POSIX wrapper only on compatible systems.
+- Windows CI no longer treats a macOS shell entrypoint as a Windows executable during source verification.
+- Release metadata, deterministic checks, package identifiers, documentation, and CI artifact paths are synchronized to `0.2.3`.
+
+## 0.2.2 Verification Evidence
+
+- macOS private-runtime console commands now launch the bundled Python through paths relative to their installed `bin` directory, so package extraction and installation cannot retain deleted build-time interpreter paths.
+- Runtime assembly self-tests exercise a relocated command from a directory containing spaces, and final package smoke tests execute both `yt-dlp` and `edge-tts` before and after installation.
+- The macOS installer pauses only when attached to an interactive terminal, so automation receives a successful exit code after a healthy installation.
+- Cross-platform CI artifact upload paths and the Windows installation smoke command are locked to `0.2.2` by the open-source compliance verifier.
+- Release metadata, deterministic release checks, and package identifiers are synchronized to `0.2.2`.
+
+## 0.2.1 Verification Evidence
+
+- Full Engine-backed playback remains the default for every new operation. Only an unavailable companion Engine can temporarily activate lightweight mode; the existing saved Provider and Microsoft voice settings are left unchanged.
+- Lightweight mode reads captions from the active YouTube page, uses Chrome on-device translation, and speaks through browser `speechSynthesis`. It does not call Engine TTS.
+- YouTube rate limits, no-caption and restricted-video results, empty tracks, and Provider authentication failures remain outside the Engine-failure fallback. Customer fallback copy excludes raw Native Messaging, HTTP, port, process, and stack-trace details.
+- The customer notice provides a one-click `重试完整模式` path after the Engine returns, and deterministic extension-flow checks lock the activation, recovery, and non-activation boundaries.
+- Release metadata, Windows package identifiers, deterministic release checks, and the host-architecture macOS release package are synchronized to `0.2.1`.
+
+## 0.2.0 Verification Evidence
+
+- Added optional local Kokoro Chinese/English speech with an explicit verified model-data install, same-provider voice fallback, and bounded CPU/prefetch resources.
+- Added pinned offline Engine packages for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64.
+- macOS customer installation fails closed, verifies the fixed runtime tree, and rolls back on failed activation.
+- Windows source packaging verifies HKCU Native Messaging, binary stdio, per-user startup, safe Unicode paths, and model exclusion; full install smoke runs in Windows CI.
+- Microsoft natural online remains the default, local system speech is macOS-only, and all provider/model transitions are disclosed.
+- Extension, Provider, Kokoro, local Engine, Native Messaging, package, compliance, syntax, and cross-platform CI checks are required before release.
+
+## 0.1.99 Verification Evidence
+
+- Engine HTTP logs reproduced isolated natural-online TTS failures after a long sequence of successful requests. The extension previously converted any one failure into a 60-second global TTS outage, causing every active segment in that window to use browser system speech.
+- Natural-online failure policy now forbids browser speech fallback, retries one time after 350 ms, applies no global cooldown, and resumes Microsoft synthesis attempts on the next semantic segment. Local system-speech mode retains its existing browser fallback.
+- Deterministic helper and source-wiring checks lock the provider-specific attempt, retry, fallback, and cooldown policy to prevent a future silent voice-provider switch.
 
 ## 0.1.98 Verification Evidence
 
@@ -284,7 +321,7 @@ The playback experience should prefer existing target-language captions, keep tr
 - The Engine ZIP contains double-click commands for core install, optional no-caption Whisper install, and complete uninstall. It does not contain the developer `.venv`, caches, API keys, or absolute development paths.
 - The build verifies every manifest-referenced extension asset, ZIP path safety, version/ID metadata, unresolved templates, Native Messaging `allowed_origins`, installer executable permissions, isolated LaunchAgent generation, and uninstall dry-run.
 - Current release metadata deliberately marks the macOS bundle unsigned and unnotarized. It is suitable for controlled private beta, not yet for frictionless public download.
-- Release assembly injects a customer `release-info.json` containing the exact channel, version, extension ID, Engine ZIP name, and optional HTTPS download/support links. The source tree keeps development metadata, and the install page uses that distinction to hide checkout paths, Terminal commands, and developer diagnostics from customers.
+- Release assembly injects a customer `release-info.json` containing the exact channel, version, extension ID, all supported macOS ARM/Intel and Windows x64 Engine ZIP names, and optional HTTPS download/support links. The source tree keeps development metadata, and the install page uses that distinction to hide checkout paths, Terminal commands, and developer diagnostics from customers.
 - Native Host launcher prefers the private `.venv` beside the installed runtime, and each atomic runtime update recreates `.localtube_python_path`; replacing the runtime must never make Native health fall back to a system Python without yt-dlp.
 - The macOS Native Host installer creates a self-contained runtime under `~/Library/Application Support/LocalTube Dub/engine-runtime`, registers Native Messaging from that stable path, and registers a user LaunchAgent that starts Engine at login, restarts it after an unexpected exit, and writes persistent logs under the user's Library folder.
 - The LaunchAgent installer refuses to terminate an unrelated process on port 8787, and Native restart reuses an Engine instance already restored by launchd.
@@ -336,10 +373,10 @@ The playback experience should prefer existing target-language captions, keep tr
 These are not complete and must not be represented as finished:
 
 1. Source separation and final media muxing. The product exports synchronized pure-voice or full-original-audio-mixed M4A/WAV tracks, but it does not separate source speech from background audio or mux a new downloadable video file.
-2. Production-quality TTS. macOS `say` and browser speech are functional fallbacks, not a cross-platform natural voice engine.
-3. Store-ready desktop packaging. The final Web Store Item ID is known and versioned extension and ID-bound macOS private-beta ZIPs exist, but there is still no signed/notarized macOS app/pkg, reliable Windows executable host, auto-update mechanism, or hosted Engine download page.
+2. Local TTS breadth. Kokoro provides cross-platform local Chinese and English speech, but additional target languages are not yet supported locally. macOS `say` remains a macOS-only last-resort option.
+3. Store-ready desktop packaging. ID-bound macOS ARM/Intel and Windows x64 private-beta ZIPs exist, but there is still no signed/notarized macOS app/pkg, signed Windows installer, auto-update mechanism, or hosted Engine download page.
 4. Browser end-to-end automation. Static and Engine tests exist, but Chrome-based regression coverage for real YouTube navigation, Translator language-pack download, audio playback, and seeking is still missing.
-5. Release operations. Source documents and reviewer instructions now exist, but the repository URL, support contact, hosted privacy-policy URL, final Engine URL, final screenshots, and Store item still need publisher-owned values.
+5. Release operations. The repository, public policy/support pages, Store item, and listing assets exist, but final signed Engine URLs and a desktop auto-update path still need publisher-owned infrastructure.
 
 ## Required Verification Before Each Release
 
@@ -360,4 +397,4 @@ These are not complete and must not be represented as finished:
 15. Run `tools/voice_picker_harness.html` against a real Engine and require target-language filtering plus preservation of a multi-word voice ID. Generate one real WAV with a discovered voice and verify the returned Engine name and duration.
 16. After changing complete-track performance, run `tools/benchmark_dub_track_parallel.py`, require valid equal-duration output from one and three workers, and keep the parallel path only when it produces a meaningful wall-clock improvement.
 17. Build release ZIPs with `scripts/build_release_macos.sh`, run `tools/verify_release_packages.py`, require the isolated macOS installer smoke test to pass, and verify both SHA-256 entries from inside `dist/`.
-18. Inspect the packaged `release-info.json`: require a customer channel, the exact extension version and ID, the matching Engine ZIP name, and HTTPS-only download/support URLs. Open the packaged install page and confirm customer builds hide all source paths and Terminal commands.
+18. Inspect the packaged `release-info.json`: require a customer channel, the exact extension version and ID, the complete macOS ARM/Intel and Windows x64 package catalog, and HTTPS-only download/support URLs. Open the packaged install page and confirm customer builds hide all source paths and Terminal commands.

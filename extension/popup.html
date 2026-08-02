@@ -11,7 +11,7 @@
       <section class="extension-card">
         <img class="logo" src="assets/icon-128.png" alt="">
         <div class="meta">
-          <h1>LocalTube Dub <span id="appVersion">0.1.98</span></h1>
+          <h1>LocalTube Dub <span id="appVersion">0.2.3</span></h1>
           <p>配置翻译与配音，再打开 YouTube 开始使用。</p>
           <p class="id-line">当前：<a id="providerPreview" href="#">自带 API Key</a></p>
         </div>
@@ -53,8 +53,12 @@
             <span>配音引擎</span>
             <select id="ttsEngine">
               <option value="edge">Microsoft 自然在线（默认）</option>
-              <option value="system">本地系统（快速）</option>
+              <option value="kokoro">Kokoro 高质量本地</option>
             </select>
+          </label>
+          <label class="check online-consent" id="microsoftTtsConsentField">
+            <input id="microsoftTtsConsent" type="checkbox">
+            <span>我同意将翻译字幕文本、所选音色和语速发送给 Microsoft，以生成在线配音。</span>
           </label>
 
           <label class="voice-setting">
@@ -101,6 +105,26 @@
           </div>
           <p id="engineStatusMeta">优先读取目标语言字幕；没有目标字幕才调用翻译 API。</p>
           <button id="engineInstallInline" class="wide-button" type="button">启动 / 安装说明</button>
+        </section>
+
+        <section class="model-card" id="kokoroModelCard" hidden>
+          <div class="model-card-head">
+            <div>
+              <strong>Kokoro 本地语音模型</strong>
+              <p id="kokoroModelStatus">正在检查模型...</p>
+            </div>
+            <span id="kokoroModelProgressText">0%</span>
+          </div>
+          <progress id="kokoroModelProgress" max="1" value="0"></progress>
+          <p class="model-card-note" id="kokoroModelDetail">
+            首次使用需要下载约 140 MB，下载后完全在本机生成语音。
+          </p>
+          <div class="model-card-actions">
+            <button id="kokoroModelInstall" type="button">安装模型</button>
+            <button id="kokoroModelCancel" type="button" hidden>取消下载</button>
+            <button id="kokoroModelRetry" type="button" hidden>重试</button>
+            <button id="kokoroModelUninstall" type="button" hidden>删除模型</button>
+          </div>
         </section>
 
         <section class="mode-panel" data-panel="byok">

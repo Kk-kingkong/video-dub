@@ -10,7 +10,7 @@ Stores non-secret preferences such as target language, Provider, model, custom e
 
 ### `nativeMessaging`
 
-Connects to the optional LocalTube Dub desktop Engine for local yt-dlp caption extraction, whisper.cpp transcription, system TTS, Engine health, and user-triggered start/restart/install actions. Captioned videos can use the extension without installing the Engine.
+Connects to the optional LocalTube Dub desktop Engine for local yt-dlp caption extraction, whisper.cpp transcription, Kokoro or system TTS, Engine health, and user-triggered start/restart/model-install actions. Captioned videos can use the extension without installing the Engine.
 
 The native host is installed separately by an explicit desktop installer. Its `allowed_origins` list contains only the final Chrome Web Store extension ID; wildcards are not used.
 
@@ -58,7 +58,9 @@ If the user denies these optional permissions, the setting is not saved and the 
 
 Target-language YouTube captions and Chrome on-device translation do not require a third-party AI host. When the user selects a cloud Provider, only the caption text or explicitly enabled no-caption audio is sent to the exact Provider origin the user authorized. API keys are never exposed to the YouTube page.
 
-The default Microsoft natural-online speech mode is implemented by the separately installed Engine and sends only the translated text being spoken, selected voice, and rate settings to Microsoft text-to-speech. Choosing the local system voice stops this online speech transfer.
+The default Microsoft natural-online speech mode is implemented by the separately installed Engine. Before its first request, the extension requires a prominent in-product checkbox consenting to send the translated text being spoken, selected voice, and rate settings to Microsoft text-to-speech. The page and service worker both block this transfer until consent is present.
+
+Choosing Kokoro stops this online speech transfer. The user explicitly installs fixed model data, the Engine verifies it, and Chinese/English synthesis then stays on the same computer. The model is optional data for the native Engine, not remotely hosted extension code. Choosing the macOS-only system voice also keeps speech generation local.
 
 The optional Engine may let yt-dlp read the local Chrome YouTube session only after public caption access fails. Those credentials are used solely for a request back to YouTube for the active video and are never sent to LocalTube Dub or an AI Provider.
 

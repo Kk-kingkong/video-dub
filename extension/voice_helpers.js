@@ -1,6 +1,83 @@
 (function installLocalTubeVoiceHelpers(globalScope) {
+  const TTS_ENGINE_OPTIONS = Object.freeze([
+    Object.freeze({ id: "edge", label: "Microsoft 自然在线（默认）" }),
+    Object.freeze({ id: "kokoro", label: "Kokoro 高质量本地" }),
+    Object.freeze({ id: "system", label: "macOS 系统配音（仅限 macOS）", macosOnly: true })
+  ]);
+
+  function normalizePlatform(platform) {
+    const value = String(platform || "").trim().toLowerCase();
+    return ["macos", "windows", "linux"].includes(value) ? value : "";
+  }
+
+  function normalizeConfiguredTtsEngine(ttsEngine) {
+    const engine = String(ttsEngine || "").trim().toLowerCase();
+    return ["edge", "kokoro", "system"].includes(engine) ? engine : "edge";
+  }
+
+  function normalizeTtsEngineForPlatform(ttsEngine, platform, kokoroReady) {
+    const engine = normalizeConfiguredTtsEngine(ttsEngine);
+    // Readiness controls model actions, never the user's Kokoro selection.
+    void kokoroReady;
+    if (engine === "kokoro") {
+      return "kokoro";
+    }
+    if (engine === "system" && normalizePlatform(platform) === "macos") {
+      return "system";
+    }
+    return "edge";
+  }
+
+  function resolveConfiguredTtsEngineSelection(selectedEngine, configuredEngine, platform) {
+    const normalizedPlatform = normalizePlatform(platform);
+    const selected = normalizeConfiguredTtsEngine(selectedEngine);
+    const configured = normalizeConfiguredTtsEngine(configuredEngine);
+    if (!normalizedPlatform && configured === "system" && selected === "edge") {
+      return "system";
+    }
+    return normalizedPlatform
+      ? normalizeTtsEngineForPlatform(selected, normalizedPlatform, false)
+      : selected;
+  }
+
+  function transitionTtsEnginePlatformState(currentState = {}, platform, kokoroReady = false) {
+    const normalizedPlatform = normalizePlatform(platform);
+    const previousEffective = normalizeConfiguredTtsEngine(currentState.effectiveEngine);
+    const previousConfigured = normalizeConfiguredTtsEngine(
+      currentState.configuredEngine ?? currentState.ttsEngine
+    );
+    const shouldPersist =
+      previousConfigured === "system" &&
+      (normalizedPlatform === "windows" || normalizedPlatform === "linux");
+    const configuredEngine = shouldPersist ? "edge" : previousConfigured;
+    const effectiveEngine = normalizeTtsEngineForPlatform(
+      configuredEngine,
+      normalizedPlatform,
+      kokoroReady
+    );
+    return {
+      platform: normalizedPlatform,
+      configuredEngine,
+      effectiveEngine,
+      effectiveChanged: effectiveEngine !== previousEffective,
+      shouldPersist
+    };
+  }
+
+  function ttsEngineOptionsForPlatform(platform) {
+    const isMacos = normalizePlatform(platform) === "macos";
+    return TTS_ENGINE_OPTIONS.filter((engine) => !engine.macosOnly || isMacos).map((engine) => ({ ...engine }));
+  }
+
   function voiceLanguagePrefix(language) {
     return String(language || "").trim().toLowerCase().replace(/_/g, "-").split("-")[0] || "";
+  }
+
+  function ttsEngineSupportsLanguage(ttsEngine, targetLanguage) {
+    if (normalizeConfiguredTtsEngine(ttsEngine) !== "kokoro") {
+      return true;
+    }
+    return ["zh", "en"].includes(voiceLanguagePrefix(targetLanguage));
   }
 
   function mergeVoiceOptions(...sources) {
@@ -31,6 +108,9 @@
     const fallback = mergeVoiceOptions(fallbackVoices);
     const targetPrefix = voiceLanguagePrefix(targetLanguage);
     const requestedProvider = String(options.provider || "").toLowerCase();
+    if (!ttsEngineSupportsLanguage(requestedProvider, targetLanguage)) {
+      return [];
+    }
     const providerMatches = (voice) =>
       !requestedProvider ||
       voice.provider === requestedProvider ||
@@ -51,7 +131,7 @@
       return left.name.localeCompare(right.name, targetLanguage || undefined);
     });
     const current = String(selectedVoice || "auto");
-    if (current !== "auto" && !matching.some((voice) => voice.id === current)) {
+    if (!requestedProvider && current !== "auto" && !matching.some((voice) => voice.id === current)) {
       matching.unshift({
         id: current,
         name: `${current}（当前设置）`,
@@ -64,7 +144,16 @@
     return matching;
   }
 
-  const api = { mergeVoiceOptions, selectVoiceOptions, voiceLanguagePrefix };
+  const api = {
+    mergeVoiceOptions,
+    normalizeTtsEngineForPlatform,
+    resolveConfiguredTtsEngineSelection,
+    selectVoiceOptions,
+    transitionTtsEnginePlatformState,
+    ttsEngineOptionsForPlatform,
+    ttsEngineSupportsLanguage,
+    voiceLanguagePrefix
+  };
   globalScope.LocalTubeDubVoiceHelpers = api;
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

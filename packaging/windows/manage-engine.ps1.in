@@ -1,0 +1,376 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("Start", "Stop", "Status")]
+    [string]$Action,
+    [string]$ExpectedVersion = "__VERSION__",
+    [string]$ExpectedRuntimeRoot = "",
+    [string]$ExpectedInstanceId = "",
+    [string]$StateRootOverride = "",
+    [string]$LocalAppDataOverride = "",
+    [int]$Port = 0,
+    [switch]$Json
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$ExpectedProtocol = 2
+$EngineLocalAppData = if ($LocalAppDataOverride) {
+    [System.IO.Path]::GetFullPath($LocalAppDataOverride)
+} else {
+    [System.IO.Path]::GetFullPath($env:LOCALAPPDATA)
+}
+$RuntimeRoot = if ($ExpectedRuntimeRoot) {
+    [System.IO.Path]::GetFullPath($ExpectedRuntimeRoot)
+} else {
+    [System.IO.Path]::GetFullPath($PSScriptRoot)
+}
+$DefaultProductRoot = Join-Path $env:LOCALAPPDATA "LocalTube Dub"
+$StateRoot = if ($StateRootOverride) {
+    [System.IO.Path]::GetFullPath($StateRootOverride)
+} elseif ($env:LOCAL_DUB_STATE_DIR) {
+    [System.IO.Path]::GetFullPath($env:LOCAL_DUB_STATE_DIR)
+} else {
+    Join-Path $DefaultProductRoot "state"
+}
+$StatePath = Join-Path $StateRoot "engine-state.json"
+$PythonPath = Join-Path $RuntimeRoot ".venv\python.exe"
+$ServerPath = Join-Path $RuntimeRoot "server\local_dub_server.py"
+$EnginePort = if ($Port -gt 0) {
+    $Port
+} elseif ($env:LOCAL_DUB_PORT) {
+    [int]$env:LOCAL_DUB_PORT
+} else {
+    8787
+}
+$HealthUri = "http://127.0.0.1:$EnginePort/api/health"
+
+function Normalize-Path([string]$Value) {
+    return [System.IO.Path]::GetFullPath($Value).TrimEnd("\")
+}
+
+function Quote-WindowsArgument([string]$Value) {
+    if ($Value.Contains('"')) {
+        throw "Windows paths containing a quote are not supported."
+    }
+    return '"' + $Value + '"'
+}
+
+function Write-Result([hashtable]$Payload) {
+    if ($Json) {
+        Write-Output ($Payload | ConvertTo-Json -Compress -Depth 5)
+    } else {
+        Write-Host ($Payload | ConvertTo-Json -Compress -Depth 5)
+    }
+}
+
+function Read-EngineState {
+    if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $State = Get-Content -LiteralPath $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([int]$State.schemaVersion -ne 1 -or
+            [int]$State.pid -le 0 -or
+            -not [string]$State.instanceId -or
+            -not [string]$State.runtimeRoot) {
+            return $null
+        }
+        return $State
+    } catch {
+        return $null
+    }
+}
+
+function Write-EngineState([System.Diagnostics.Process]$Process, [string]$InstanceId) {
+    New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
+    $State = [ordered]@{
+        schemaVersion = 1
+        pid = $Process.Id
+        instanceId = $InstanceId
+        runtimeRoot = (Normalize-Path $RuntimeRoot)
+        pythonPath = (Normalize-Path $PythonPath)
+        serverPath = (Normalize-Path $ServerPath)
+        port = $EnginePort
+        engineVersion = $ExpectedVersion
+        createdUtc = [DateTime]::UtcNow.ToString("o")
+    }
+    $TemporaryPath = "$StatePath.$PID.tmp"
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText(
+        $TemporaryPath,
+        ($State | ConvertTo-Json -Depth 4),
+        $Utf8NoBom
+    )
+    Move-Item -LiteralPath $TemporaryPath -Destination $StatePath -Force
+}
+
+function Get-LoopbackListenerPids {
+    $Connections = @(
+        Get-NetTCPConnection -LocalPort $EnginePort -State Listen -ErrorAction SilentlyContinue |
+            Where-Object { $_.LocalAddress -in @("127.0.0.1", "::1") }
+    )
+    return @($Connections | Select-Object -ExpandProperty OwningProcess -Unique)
+}
+
+function Test-ManagedProcess([int]$ProcessId, [switch]$RequireListener) {
+    $ProcessInfo = Get-CimInstance Win32_Process `
+        -Filter "ProcessId = $ProcessId" `
+        -ErrorAction SilentlyContinue
+    if ($null -eq $ProcessInfo -or
+        -not [string]$ProcessInfo.ExecutablePath -or
+        -not [string]$ProcessInfo.CommandLine) {
+        return $false
+    }
+    if (-not [string]::Equals(
+        (Normalize-Path $ProcessInfo.ExecutablePath),
+        (Normalize-Path $PythonPath),
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        return $false
+    }
+    $QuotedServerPath = Quote-WindowsArgument (Normalize-Path $ServerPath)
+    if ($ProcessInfo.CommandLine.IndexOf(
+        $QuotedServerPath,
+        [System.StringComparison]::OrdinalIgnoreCase
+    ) -lt 0) {
+        return $false
+    }
+    if ($RequireListener -and $ProcessId -notin @(Get-LoopbackListenerPids)) {
+        return $false
+    }
+    return $true
+}
+
+function Get-Health {
+    try {
+        return Invoke-RestMethod -Uri $HealthUri -TimeoutSec 1
+    } catch {
+        return $null
+    }
+}
+
+function Test-HealthIdentity(
+    [object]$Health,
+    [string]$InstanceId,
+    [int]$ProcessId
+) {
+    if ($null -eq $Health) {
+        return $false
+    }
+    $ExpectedInstanceId = $InstanceId
+    if (-not (
+        $Health.service -eq "localtube-dub" -and
+        $Health.engineVersion -eq $ExpectedVersion -and
+        $Health.protocolVersion -eq $ExpectedProtocol -and
+        $Health.platform -eq "windows" -and
+        $Health.architecture -eq "x64" -and
+        $Health.instanceId -eq $ExpectedInstanceId -and
+        [string]$Health.runtimeRoot
+    )) {
+        return $false
+    }
+    try {
+        if (-not [string]::Equals(
+            (Normalize-Path ([string]$Health.runtimeRoot)),
+            (Normalize-Path $RuntimeRoot),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $false
+        }
+    } catch {
+        return $false
+    }
+    return Test-ManagedProcess -ProcessId $ProcessId -RequireListener
+}
+
+function Stop-VerifiedEngine {
+    $State = Read-EngineState
+    $Candidates = @()
+    if ($null -ne $State) {
+        $Candidates += [int]$State.pid
+    }
+    foreach ($ListenerPid in @(Get-LoopbackListenerPids)) {
+        $Candidates += [int]$ListenerPid
+    }
+
+    $Stopped = $false
+    foreach ($Candidate in @($Candidates | Sort-Object -Unique)) {
+        if (-not (Test-ManagedProcess -ProcessId $Candidate -RequireListener)) {
+            continue
+        }
+        Stop-Process -Id $Candidate -Force -ErrorAction Stop
+        $Stopped = $true
+    }
+
+    Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
+    for ($Attempt = 0; $Attempt -lt 20; $Attempt++) {
+        if (@(Get-LoopbackListenerPids).Count -eq 0) {
+            return $Stopped
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    $Remaining = @(Get-LoopbackListenerPids)
+    if ($Remaining.Count -gt 0) {
+        throw "Loopback port $EnginePort is owned by an unverified process; refusing to terminate it."
+    }
+    return $Stopped
+}
+
+function Start-VerifiedEngine {
+    if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $ServerPath -PathType Leaf)) {
+        throw "Installed Engine runtime is incomplete."
+    }
+
+    $State = Read-EngineState
+    if ($null -ne $State -and
+        [string]::Equals(
+            (Normalize-Path ([string]$State.runtimeRoot)),
+            (Normalize-Path $RuntimeRoot),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+        $ExistingHealth = Get-Health
+        if (Test-HealthIdentity `
+            -Health $ExistingHealth `
+            -InstanceId ([string]$State.instanceId) `
+            -ProcessId ([int]$State.pid)) {
+            return @{
+                ok = $true
+                alreadyRunning = $true
+                pid = [int]$State.pid
+                instanceId = [string]$State.instanceId
+                runtimeRoot = (Normalize-Path $RuntimeRoot)
+                engineVersion = $ExpectedVersion
+                protocolVersion = $ExpectedProtocol
+            }
+        }
+    }
+
+    [void](Stop-VerifiedEngine)
+    if (@(Get-LoopbackListenerPids).Count -gt 0) {
+        throw "Loopback port $EnginePort is already occupied by an unverified process."
+    }
+
+    $InstanceId = if ($ExpectedInstanceId) {
+        $ExpectedInstanceId
+    } else {
+        [Guid]::NewGuid().ToString("N")
+    }
+    $env:LOCAL_DUB_PORT = [string]$EnginePort
+    $env:LOCAL_DUB_ENGINE_INSTANCE_ID = $InstanceId
+    $env:LOCAL_DUB_ENGINE_RUNTIME_ROOT = (Normalize-Path $RuntimeRoot)
+    $env:LOCAL_DUB_ENGINE_VERSION = $ExpectedVersion
+    $env:LOCALAPPDATA = $EngineLocalAppData
+    $RuntimeBin = Split-Path -Parent $PythonPath
+    $env:PATH = $RuntimeBin + ";" + $env:PATH
+    New-Item -ItemType Directory -Path $StateRoot -Force | Out-Null
+    $EngineStdoutPath = Join-Path $StateRoot "engine.stdout.log"
+    $EngineStderrPath = Join-Path $StateRoot "engine.stderr.log"
+    $Engine = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList (Quote-WindowsArgument $ServerPath) `
+        -WorkingDirectory $RuntimeRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $EngineStdoutPath `
+        -RedirectStandardError $EngineStderrPath `
+        -PassThru
+    if ($null -eq $Engine) {
+        throw "Engine process could not be created."
+    }
+    Write-EngineState -Process $Engine -InstanceId $InstanceId
+
+    try {
+        for ($Attempt = 0; $Attempt -lt 80; $Attempt++) {
+            $Engine.Refresh()
+            if ($Engine.HasExited) {
+                throw "Engine process exited before passing health verification."
+            }
+            $Health = Get-Health
+            if (Test-HealthIdentity `
+                -Health $Health `
+                -InstanceId $InstanceId `
+                -ProcessId $Engine.Id) {
+                return @{
+                    ok = $true
+                    started = $true
+                    pid = $Engine.Id
+                    instanceId = $InstanceId
+                    runtimeRoot = (Normalize-Path $RuntimeRoot)
+                    engineVersion = $ExpectedVersion
+                    protocolVersion = $ExpectedProtocol
+                }
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        throw "Installed Engine did not pass exact /api/health identity verification."
+    } catch {
+        if (-not $Engine.HasExited) {
+            $Engine.Kill()
+            $Engine.WaitForExit(5000) | Out-Null
+        }
+        Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+$LifecycleMutex = [System.Threading.Mutex]::new(
+    $false,
+    "Local\LocalTubeDubEngine-$EnginePort"
+)
+$MutexHeld = $false
+try {
+    try {
+        $MutexHeld = $LifecycleMutex.WaitOne(30000)
+    } catch [System.Threading.AbandonedMutexException] {
+        $MutexHeld = $true
+    }
+    if (-not $MutexHeld) {
+        throw "Another Engine lifecycle operation did not finish within 30 seconds."
+    }
+    switch ($Action) {
+        "Start" {
+            Write-Result (Start-VerifiedEngine)
+        }
+        "Stop" {
+            $Stopped = Stop-VerifiedEngine
+            Write-Result @{
+                ok = $true
+                stopped = $Stopped
+                runtimeRoot = (Normalize-Path $RuntimeRoot)
+            }
+        }
+        "Status" {
+            $State = Read-EngineState
+            $Healthy = $false
+            if ($null -ne $State) {
+                $Healthy = Test-HealthIdentity `
+                    -Health (Get-Health) `
+                    -InstanceId ([string]$State.instanceId) `
+                    -ProcessId ([int]$State.pid)
+            }
+            if (-not $Healthy) {
+                throw "Installed Engine is not healthy."
+            }
+            Write-Result @{
+                ok = $Healthy
+                healthy = $Healthy
+                runtimeRoot = (Normalize-Path $RuntimeRoot)
+                instanceId = $(if ($null -ne $State) { [string]$State.instanceId } else { "" })
+            }
+        }
+    }
+} catch {
+    Write-Result @{
+        ok = $false
+        error = [string]$_
+        runtimeRoot = (Normalize-Path $RuntimeRoot)
+    }
+    throw
+} finally {
+    if ($MutexHeld) {
+        $LifecycleMutex.ReleaseMutex()
+    }
+    $LifecycleMutex.Dispose()
+}

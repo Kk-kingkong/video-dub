@@ -287,6 +287,75 @@ a {
   background: #ff8d82;
 }
 
+.model-card {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid rgba(157, 199, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(157, 199, 255, 0.045);
+}
+
+.model-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-card-head strong {
+  color: #eef4ff;
+  font-size: 14px;
+}
+
+.model-card-head p,
+.model-card-note {
+  margin: 3px 0 0;
+  color: #aeb9c9;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#kokoroModelProgressText {
+  flex: 0 0 auto;
+  color: #cfe5ff;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+#kokoroModelProgress {
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: #343a46;
+  accent-color: #86bdff;
+}
+
+#kokoroModelProgress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: #343a46;
+}
+
+#kokoroModelProgress::-webkit-progress-value {
+  border-radius: 999px;
+  background: #86bdff;
+}
+
+.model-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.model-card-actions button {
+  height: 34px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
 .mode-panel[data-panel="byok"] {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
@@ -403,6 +472,19 @@ input:disabled {
   border-radius: 6px;
   background: #20242d;
   color: #e7ebf3;
+}
+
+.online-consent {
+  margin-top: 10px;
+  align-items: flex-start;
+  min-height: auto;
+  padding: 10px;
+  line-height: 1.45;
+}
+
+.online-consent input {
+  flex: 0 0 auto;
+  margin-top: 3px;
 }
 
 footer {

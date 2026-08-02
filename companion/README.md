@@ -4,6 +4,17 @@ This folder contains the local companion process used by the Chrome Web Store ve
 
 The extension can be installed from the store, but the local AI engine must be installed separately because Chrome extensions cannot bundle or silently launch native executables. The native host lets Chrome start the local engine through the official Native Messaging API.
 
+## Customer packages
+
+Release `0.2.3` provides matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
+
+- macOS: unzip the matching architecture package and open `Install LocalTube Dub Engine.command`.
+- Windows: unzip the x64 package and run `Install LocalTube Dub Engine.cmd`.
+
+Both installers register the current-user Native Messaging host, configure login startup, start the loopback Engine, and verify health. The current development packages are unsigned and unnotarized.
+
+Kokoro is optional and not bundled in the Engine ZIP. Select **Kokoro high-quality local** in the extension and click **Install model**. The Engine downloads and verifies the fixed model data before local Chinese/English synthesis becomes available.
+
 ## Development install on macOS
 
 1. Load or install the Chrome extension.
@@ -43,10 +54,11 @@ cd $HOME/Documents/code/localtube-dub
 
 ## Development install on Windows
 
-Run PowerShell from the `companion` folder:
+The release package is built and smoke-tested on Windows:
 
 ```powershell
-.\install_native_host_windows.ps1 -ExtensionId YOUR_EXTENSION_ID
+py scripts\build_release_windows.py
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.3-Windows-x64.zip
 ```
 
 ## Smoke tests
@@ -61,13 +73,14 @@ If Ollama is not running, `--demo` returns passthrough captions with a warning. 
 
 ## Product packaging path
 
-The private-beta release builder now packages this folder with the Engine and scripts:
+The release builders package this folder with the Engine and scripts:
 
 ```bash
 ./scripts/build_release_macos.sh FINAL_CHROME_EXTENSION_ID
+py scripts/build_release_windows.py
 ```
 
-The generated macOS ZIP has double-click install, optional Whisper install, and uninstall commands bound to that extension ID. It remains unsigned and unnotarized. For public release it must become a signed installer:
+The generated ZIPs include install, repair/startup, health, and uninstall flows bound to the Store extension ID. They remain unsigned and unnotarized. Before describing them as signed production installers:
 
 - macOS: signed and notarized `.pkg` or `.dmg` that installs the native host manifest and app binary.
 - Windows: signed `.msi` or `.exe` that writes the Native Messaging registry key.

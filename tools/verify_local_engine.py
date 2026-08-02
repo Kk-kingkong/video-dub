@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER_PATH = ROOT / "server" / "local_dub_server.py"
+KOKORO_PATH = ROOT / "server" / "kokoro_tts.py"
 NATIVE_HOST_PATH = ROOT / "companion" / "native_host.py"
 
 
@@ -27,6 +28,20 @@ def load_native_host_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_kokoro_module():
+    spec = importlib.util.spec_from_file_location("kokoro_tts", KOKORO_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_kokoro_model_starts_not_installed(kokoro):
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        manager = kokoro.KokoroModelManager(Path(temp_dir_name))
+        assert manager.status()["state"] == "not-installed"
 
 
 def test_data_url_decode(server):
@@ -218,15 +233,16 @@ def test_ytdlp_audio_window_command(server):
 
 
 def test_ytdlp_full_audio_command(server):
+    output_dir = Path("/tmp/full")
     command = server.build_ytdlp_full_audio_command(
         ["yt-dlp"],
         "https://www.youtube.com/watch?v=abc",
-        Path("/tmp/full"),
+        output_dir,
         "chrome",
     )
     assert command[0] == "yt-dlp"
     assert command[command.index("-f") + 1] == "bestaudio[abr<=96]/bestaudio/best"
-    assert command[command.index("-o") + 1] == "/tmp/full/full-audio.%(ext)s"
+    assert command[command.index("-o") + 1] == str(output_dir / "full-audio.%(ext)s")
     assert "--download-sections" not in command
     assert command[command.index("--cookies-from-browser") + 1] == "chrome"
     assert command[-1] == "https://www.youtube.com/watch?v=abc"
@@ -304,18 +320,26 @@ def test_full_transcript_job_validation(server):
     )
     assert invalid_duration["code"] == "INVALID_VIDEO_DURATION"
 
-    server.FULL_TRANSCRIPT_JOBS.clear()
-    server.FULL_TRANSCRIPT_JOBS["busy"] = {
-        "id": "busy",
-        "key": "different|en|base",
-        "status": "transcribing",
-        "updatedAt": server.time.time(),
-    }
-    busy = server.start_full_transcript_job(
-        {"videoUrl": "https://www.youtube.com/watch?v=test", "durationSeconds": 30, "language": "en"}
-    )
-    assert busy["code"] == "FULL_TRANSCRIPT_BUSY"
-    server.FULL_TRANSCRIPT_JOBS.clear()
+    original_ytdlp = server.check_ytdlp
+    original_whisper = server.check_whisper
+    server.check_ytdlp = lambda: True
+    server.check_whisper = lambda: True
+    try:
+        server.FULL_TRANSCRIPT_JOBS.clear()
+        server.FULL_TRANSCRIPT_JOBS["busy"] = {
+            "id": "busy",
+            "key": "different|en|base",
+            "status": "transcribing",
+            "updatedAt": server.time.time(),
+        }
+        busy = server.start_full_transcript_job(
+            {"videoUrl": "https://www.youtube.com/watch?v=test", "durationSeconds": 30, "language": "en"}
+        )
+        assert busy["code"] == "FULL_TRANSCRIPT_BUSY"
+    finally:
+        server.check_ytdlp = original_ytdlp
+        server.check_whisper = original_whisper
+        server.FULL_TRANSCRIPT_JOBS.clear()
 
 
 def test_build_tts_payload(server):
@@ -460,6 +484,152 @@ def test_system_voice_discovery(server):
     assert server.pick_edge_voice("zh-CN", "auto") == "zh-CN-XiaoxiaoNeural"
     assert server.pick_edge_voice("zh-TW", "auto") == "zh-TW-HsiaoChenNeural"
     assert server.edge_tts_rate_argument(1.08) == "+8%"
+
+
+class FakeKokoroRuntime:
+    def __init__(self, state="ready"):
+        self.state = state
+        self.synthesis_calls = []
+
+    def status(self):
+        return {
+            "state": self.state,
+            "available": self.state == "ready",
+            "loaded": False,
+            "runtimeVersion": "1.13.4",
+            "numThreads": 2,
+            "provider": "cpu",
+            "error": "" if self.state == "ready" else "runtime unavailable",
+        }
+
+    def synthesize(self, text, language, voice_id, rate, output_path, cancel_event=None):
+        self.synthesis_calls.append((text, language, voice_id, rate, cancel_event))
+        write_test_wav(output_path, 24000, 1000, 24000)
+        return {
+            "path": output_path,
+            "duration": 0.01,
+            "sampleRate": 24000,
+            "requestedVoice": "zf_001",
+            "actualVoice": "zf_002",
+            "voiceFallback": True,
+            "voiceFallbackMessage": "当前 Kokoro 音色 zf_001 不可用，已切换为 zf_002。",
+        }
+
+
+def test_kokoro_health_platform_voice_and_engine_sanitization(server):
+    original_runtime = server.KOKORO_RUNTIME
+    original_model_service = server.KOKORO_MODEL_SERVICE
+    original_system_voices = server.available_system_voices
+    original_edge_available = server.edge_tts_available
+
+    class FakeModelService:
+        def status(self, transport):
+            return {
+                "ok": True,
+                "transport": transport,
+                "model": {
+                    "state": "ready",
+                    "version": "1.1-int8",
+                    "downloadedBytes": 147031220,
+                    "totalBytes": 147031220,
+                    "installedBytes": 215321602,
+                    "progress": 1,
+                    "error": "",
+                },
+            }
+
+    server.KOKORO_RUNTIME = FakeKokoroRuntime()
+    server.KOKORO_MODEL_SERVICE = FakeModelService()
+    server.available_system_voices = lambda: []
+    server.edge_tts_available = lambda: True
+    server.HEALTH_CACHE = None
+    try:
+        health = server.build_health_payload("test")
+        voices = server.build_voices_payload("test")
+    finally:
+        server.KOKORO_RUNTIME = original_runtime
+        server.KOKORO_MODEL_SERVICE = original_model_service
+        server.available_system_voices = original_system_voices
+        server.edge_tts_available = original_edge_available
+        server.HEALTH_CACHE = None
+
+    assert health["platform"] in {"macos", "windows", "linux"}
+    assert health["architecture"]
+    assert health["kokoroRuntime"]["state"] == "ready"
+    assert health["kokoroModel"] == "ready"
+    assert health["kokoroModelVersion"] == "1.1-int8"
+    assert health["kokoroModelBytes"] == 215321602
+    assert health["kokoroInstallProgress"] == 1
+    assert any(voice["provider"] == "kokoro" and voice["id"] == "zf_002" for voice in voices["voices"])
+    assert server.sanitize_tts_engine("edge") == "edge"
+    assert server.sanitize_tts_engine("kokoro") == "kokoro"
+    assert server.sanitize_tts_engine("system") == "system"
+    assert server.sanitize_tts_engine("natural-online") == "system"
+
+
+def test_kokoro_tts_routes_locally_preserves_fallback_metadata_and_fits_duration(server):
+    original_runtime = server.KOKORO_RUNTIME
+    original_fit = server.fit_wav_to_target_duration
+    fake_runtime = FakeKokoroRuntime()
+    server.KOKORO_RUNTIME = fake_runtime
+    fit_calls = []
+
+    def fake_fit(source_path, output_dir, target_duration, max_fit_rate=3, cancel_event=None):
+        fit_calls.append((source_path, target_duration, max_fit_rate))
+        return source_path, 1.4
+
+    server.fit_wav_to_target_duration = fake_fit
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            cancel_event = server.threading.Event()
+            result = server.synthesize_speech_to_wav_file(
+                "你好",
+                "zh-CN",
+                1,
+                "zf_001",
+                0.5,
+                Path(temp_dir_name),
+                cancel_event=cancel_event,
+                tts_engine="kokoro",
+            )
+            payload = server.build_tts_payload(
+                {"text": "你好", "language": "zh-CN", "voice": "zf_001", "ttsEngine": "kokoro"},
+                "test",
+            )
+    finally:
+        server.KOKORO_RUNTIME = original_runtime
+        server.fit_wav_to_target_duration = original_fit
+
+    assert fake_runtime.synthesis_calls[0][:4] == ("你好", "zh-CN", "zf_001", 1.0)
+    assert fake_runtime.synthesis_calls[0][4] is cancel_event
+    assert result["ttsEngine"] == "kokoro"
+    assert result["engine"] == "kokoro:zf_002"
+    assert result["requestedVoice"] == "zf_001"
+    assert result["actualVoice"] == "zf_002"
+    assert result["voiceFallback"] is True
+    assert result["voiceFallbackMessage"]
+    assert fit_calls
+    assert payload["ok"] is True
+    assert payload["ttsEngine"] == "kokoro"
+    assert payload["actualVoice"] == "zf_002"
+    assert payload["voiceFallback"] is True
+
+
+def test_kokoro_full_track_readiness_never_uses_edge_or_system(server):
+    original_runtime = server.KOKORO_RUNTIME
+    original_edge = server.edge_tts_available
+    original_system = server.check_tts
+    try:
+        server.KOKORO_RUNTIME = FakeKokoroRuntime("ready")
+        server.edge_tts_available = lambda: (_ for _ in ()).throw(AssertionError("edge must not be used"))
+        server.check_tts = lambda: (_ for _ in ()).throw(AssertionError("system must not be used"))
+        assert server.tts_engine_ready("kokoro") is True
+        server.KOKORO_RUNTIME = FakeKokoroRuntime("runtime-not-installed")
+        assert server.tts_engine_ready("kokoro") is False
+    finally:
+        server.KOKORO_RUNTIME = original_runtime
+        server.edge_tts_available = original_edge
+        server.check_tts = original_system
 
 
 def write_test_wav(path, frame_count, sample_value=1000, sample_rate=1000):
@@ -614,8 +784,100 @@ def test_dub_track_job_worker(server):
         assert "filePath" not in result["job"]
         assert "cues" not in result["job"]
         assert "key" not in result["job"]
+        assert "requestedVoice" not in result["job"]
+        assert "voiceFallback" not in result["job"]
         assert output_path.is_file()
         assert abs(server.validate_wav_duration(output_path) - 2) < 0.001
+
+    server.DUB_TRACK_JOBS.clear()
+    server.DUB_TRACK_CANCEL_EVENTS.clear()
+
+
+def test_kokoro_dub_track_coalesces_fallback_and_reuses_actual_voice(server):
+    original_synthesize = server.synthesize_speech_to_wav_file
+    original_workers = server.DUB_TRACK_TTS_WORKERS
+    server.DUB_TRACK_JOBS.clear()
+    server.DUB_TRACK_CANCEL_EVENTS.clear()
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        output_path = Path(temp_dir_name) / "kokoro-fallback.wav"
+        job_id = "kokoro-fallback-test"
+        cues = [
+            {"start": 0.2, "end": 0.7, "text": "第一条"},
+            {"start": 0.8, "end": 1.3, "text": "第二条"},
+            {"start": 1.4, "end": 1.9, "text": "第三条"},
+        ]
+        server.DUB_TRACK_JOBS[job_id] = {
+            "id": job_id,
+            "key": "kokoro-fallback-hash",
+            "videoId": "video",
+            "durationSeconds": 2,
+            "language": "zh-CN",
+            "voice": "zf_001",
+            "ttsEngine": "kokoro",
+            "rate": 1,
+            "mixOriginal": False,
+            "originalVolume": 0,
+            "outputFormat": "wav",
+            "status": "queued",
+            "stage": "queued",
+            "progress": 1,
+            "createdAt": 1000,
+            "updatedAt": 1000,
+            "cueCount": len(cues),
+            "cues": cues,
+            "filename": "LocalTube-Dub-kokoro-fallback.wav",
+            "filePath": str(output_path),
+            "error": "",
+        }
+        requested_voices = []
+
+        def fake_synthesize(
+            text,
+            language,
+            rate,
+            voice,
+            target_duration,
+            output_dir,
+            max_fit_rate=3,
+            cancel_event=None,
+            tts_engine="system",
+        ):
+            requested_voices.append(voice)
+            path = output_dir / "voice.wav"
+            write_test_wav(path, 400, 1000)
+            fallback = voice == "zf_001"
+            return {
+                "path": path,
+                "duration": 0.4,
+                "fitRate": 1,
+                "engine": f"kokoro:{'zf_002' if fallback else voice}",
+                "ttsEngine": "kokoro",
+                "requestedVoice": voice,
+                "actualVoice": "zf_002" if fallback else voice,
+                "voiceFallback": fallback,
+                "voiceFallbackMessage": (
+                    "当前 Kokoro 音色 zf_001 不可用，已切换为 zf_002。" if fallback else ""
+                ),
+            }
+
+        server.DUB_TRACK_TTS_WORKERS = 3
+        server.synthesize_speech_to_wav_file = fake_synthesize
+        try:
+            server.run_dub_track_job(job_id, server.threading.Event())
+        finally:
+            server.synthesize_speech_to_wav_file = original_synthesize
+            server.DUB_TRACK_TTS_WORKERS = original_workers
+
+        result = server.get_dub_track_job(job_id)
+        assert result["job"]["status"] == "completed", result
+        assert result["job"]["synthesisWorkers"] == 1
+        assert requested_voices == ["zf_001", "zf_002", "zf_002"]
+        assert result["job"]["requestedVoice"] == "zf_001"
+        assert result["job"]["actualVoice"] == "zf_002"
+        assert result["job"]["voiceFallback"] is True
+        assert result["job"]["voiceFallbackMessage"] == (
+            "当前 Kokoro 音色 zf_001 不可用，已切换为 zf_002。"
+        )
 
     server.DUB_TRACK_JOBS.clear()
     server.DUB_TRACK_CANCEL_EVENTS.clear()
@@ -1018,8 +1280,13 @@ def test_caption_cache_and_ytdlp_command(server):
     assert server.CAPTION_CACHE_SECONDS >= 3600
     assert server.CAPTION_CACHE_MAX_ENTRIES <= 24
 
-    discovered = server.find_ytdlp_command()
-    assert discovered
+    original_ytdlp_command = server.YTDLP_COMMAND
+    server.YTDLP_COMMAND = "bundled-yt-dlp --no-config"
+    try:
+        discovered = server.find_ytdlp_command()
+    finally:
+        server.YTDLP_COMMAND = original_ytdlp_command
+    assert discovered == ["bundled-yt-dlp", "--no-config"]
 
 
 def test_caption_singleflight(server):
@@ -1582,6 +1849,18 @@ def test_native_autostart_dispatch(native_host):
         native_host.install_engine_autostart = original
 
 
+def test_native_initial_bom_compatibility(native_host):
+    header = native_host.normalize_initial_native_length_header(
+        native_host.UTF8_BOM + b"\x11",
+        lambda size: b"\x00\x00\x00" if size == 3 else b"",
+    )
+    assert header == b"\x11\x00\x00\x00"
+    assert native_host.normalize_initial_native_length_header(
+        b"\x11\x00\x00\x00",
+        lambda _size: b"",
+    ) == b"\x11\x00\x00\x00"
+
+
 def test_native_restart_reuses_launchagent_engine(native_host):
     original_stop = native_host.stop_http_engine
     original_wait = native_host.wait_for_port_release
@@ -1615,23 +1894,43 @@ def test_native_autostart_installer(native_host):
     original_run = native_host.subprocess.run
     original_health = native_host.http_engine_running
     original_log_path = native_host.AUTOSTART_INSTALL_LOG_PATH
+    original_project_root = native_host.PROJECT_ROOT
     with tempfile.TemporaryDirectory() as temp_dir_name:
+        project_root = Path(temp_dir_name) / "project"
         log_path = Path(temp_dir_name) / "autostart.log"
+        if native_host.os.name == "nt":
+            script_path = project_root / "install-engine.ps1"
+            expected_command = [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                "-Repair",
+            ]
+        else:
+            script_path = project_root / "scripts" / "install_engine_autostart_macos.sh"
+            expected_command = [str(script_path)]
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("# test installer\n", encoding="utf-8")
 
         def fake_run(command, **kwargs):
-            assert command == [str(ROOT / "scripts" / "install_engine_autostart_macos.sh")]
-            assert kwargs["cwd"] == str(ROOT)
+            assert command == expected_command
+            assert kwargs["cwd"] == str(project_root)
             return native_host.subprocess.CompletedProcess(command, 0, "service ready\n", "")
 
         native_host.subprocess.run = fake_run
         native_host.http_engine_running = lambda: True
         native_host.AUTOSTART_INSTALL_LOG_PATH = log_path
+        native_host.PROJECT_ROOT = project_root
         try:
             result = native_host.install_engine_autostart()
         finally:
             native_host.subprocess.run = original_run
             native_host.http_engine_running = original_health
             native_host.AUTOSTART_INSTALL_LOG_PATH = original_log_path
+            native_host.PROJECT_ROOT = original_project_root
 
         assert result["ok"] is True
         assert result["installed"] is True
@@ -1641,7 +1940,9 @@ def test_native_autostart_installer(native_host):
 
 def main() -> None:
     server = load_server_module()
+    kokoro = load_kokoro_module()
     native_host = load_native_host_module()
+    test_kokoro_model_starts_not_installed(kokoro)
     test_data_url_decode(server)
     test_health_version_metadata(server)
     test_http_byte_ranges(server)
@@ -1658,10 +1959,14 @@ def main() -> None:
     test_tts_duration_helpers(server)
     test_trim_wav_leading_silence(server)
     test_system_voice_discovery(server)
+    test_kokoro_health_platform_voice_and_engine_sanitization(server)
+    test_kokoro_tts_routes_locally_preserves_fallback_metadata_and_fits_duration(server)
+    test_kokoro_full_track_readiness_never_uses_edge_or_system(server)
     test_dub_track_wav_layout(server)
     test_dub_track_audio_mix(server)
     test_dub_track_m4a_encoding(server)
     test_dub_track_job_worker(server)
+    test_kokoro_dub_track_coalesces_fallback_and_reuses_actual_voice(server)
     test_dub_track_parallel_synthesis(server)
     test_dub_track_parallel_cancellation(server)
     test_m4a_dub_track_job_worker(server)
@@ -1691,6 +1996,7 @@ def main() -> None:
     test_whisper_cpp_command(server)
     test_ollama_translation_count_recovery(server)
     test_native_autostart_dispatch(native_host)
+    test_native_initial_bom_compatibility(native_host)
     test_native_restart_reuses_launchagent_engine(native_host)
     test_native_autostart_installer(native_host)
     print("local engine checks ok")

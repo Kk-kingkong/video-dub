@@ -17,6 +17,7 @@ import base64
 import functools
 import hashlib
 import importlib.util
+import platform
 import re
 import secrets
 import shlex
@@ -35,22 +36,79 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+try:
+    from .kokoro_tts import (
+        KokoroModelManager,
+        KokoroRuntime,
+        KokoroRuntimeCancelled,
+        kokoro_voice_catalog,
+    )
+except ImportError:  # pragma: no cover - supports direct Engine execution.
+    try:
+        from kokoro_tts import (
+            KokoroModelManager,
+            KokoroRuntime,
+            KokoroRuntimeCancelled,
+            kokoro_voice_catalog,
+        )
+    except ImportError:
+        _kokoro_spec = importlib.util.spec_from_file_location(
+            "localtube_kokoro_tts", Path(__file__).with_name("kokoro_tts.py")
+        )
+        if _kokoro_spec is None or _kokoro_spec.loader is None:
+            raise
+        _kokoro_module = importlib.util.module_from_spec(_kokoro_spec)
+        sys.modules.setdefault(_kokoro_spec.name, _kokoro_module)
+        _kokoro_spec.loader.exec_module(_kokoro_module)
+        KokoroModelManager = _kokoro_module.KokoroModelManager
+        KokoroRuntime = _kokoro_module.KokoroRuntime
+        KokoroRuntimeCancelled = _kokoro_module.KokoroRuntimeCancelled
+        kokoro_voice_catalog = _kokoro_module.kokoro_voice_catalog
+
 
 HOST = os.environ.get("LOCAL_DUB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LOCAL_DUB_PORT", "8787"))
 ENGINE_PROTOCOL_VERSION = 2
 ENGINE_ROOT = Path(__file__).resolve().parents[1]
+ENGINE_INSTANCE_ID = os.environ.get("LOCAL_DUB_ENGINE_INSTANCE_ID", "").strip()
+ENGINE_RUNTIME_ROOT = os.environ.get("LOCAL_DUB_ENGINE_RUNTIME_ROOT", "").strip()
+ENGINE_VERSION_OVERRIDE = os.environ.get("LOCAL_DUB_ENGINE_VERSION", "").strip()
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
 WHISPER_MODEL = os.environ.get("LOCAL_DUB_WHISPER_MODEL", "base")
 WHISPER_COMMAND = os.environ.get("LOCAL_DUB_WHISPER_COMMAND", "")
 WHISPER_CPP_COMMAND = os.environ.get("LOCAL_DUB_WHISPER_CPP_COMMAND", "")
-WHISPER_CPP_MODEL = Path(
-    os.environ.get(
-        "LOCAL_DUB_WHISPER_CPP_MODEL",
-        str(Path.home() / "Library" / "Application Support" / "LocalTube Dub" / "models" / "ggml-base.bin"),
-    )
-).expanduser()
+
+
+def user_data_dir() -> Path:
+    override = os.environ.get("LOCAL_DUB_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        return (Path(base).expanduser() if base else Path.home() / "AppData" / "Local") / "LocalTube Dub"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "LocalTube Dub"
+    base = os.environ.get("XDG_DATA_HOME", "").strip()
+    return (Path(base).expanduser() if base else Path.home() / ".local" / "share") / "localtube-dub"
+
+
+def user_cache_dir() -> Path:
+    override = os.environ.get("LOCAL_DUB_CACHE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        return (Path(base).expanduser() if base else Path.home() / "AppData" / "Local") / "LocalTube Dub" / "cache"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "LocalTube Dub"
+    base = os.environ.get("XDG_CACHE_HOME", "").strip()
+    return (Path(base).expanduser() if base else Path.home() / ".cache") / "localtube-dub"
+
+
+WHISPER_CPP_MODEL = user_data_dir() / "models" / "ggml-base.bin"
+if os.environ.get("LOCAL_DUB_WHISPER_CPP_MODEL", "").strip():
+    WHISPER_CPP_MODEL = Path(os.environ["LOCAL_DUB_WHISPER_CPP_MODEL"]).expanduser()
 FFMPEG_COMMAND = os.environ.get("LOCAL_DUB_FFMPEG_COMMAND", "")
 FFPROBE_COMMAND = os.environ.get("LOCAL_DUB_FFPROBE_COMMAND", "")
 YTDLP_COMMAND = os.environ.get("LOCAL_DUB_YTDLP_COMMAND", "")
@@ -71,12 +129,9 @@ DUB_TRACK_MAX_CUES = int(os.environ.get("LOCAL_DUB_DUB_TRACK_MAX_CUES", "10000")
 DUB_TRACK_MAX_TEXT_CHARS = int(os.environ.get("LOCAL_DUB_DUB_TRACK_MAX_TEXT_CHARS", "1000000"))
 DUB_TRACK_MIX_TIMEOUT = float(os.environ.get("LOCAL_DUB_DUB_TRACK_MIX_TIMEOUT", "900"))
 DUB_TRACK_TTS_WORKERS = max(1, min(int(os.environ.get("LOCAL_DUB_DUB_TRACK_TTS_WORKERS", "3")), 4))
-DUB_TRACK_OUTPUT_DIR = Path(
-    os.environ.get(
-        "LOCAL_DUB_DUB_TRACK_OUTPUT_DIR",
-        str(Path.home() / "Library" / "Caches" / "LocalTube Dub" / "exports"),
-    )
-).expanduser()
+DUB_TRACK_OUTPUT_DIR = user_cache_dir() / "exports"
+if os.environ.get("LOCAL_DUB_DUB_TRACK_OUTPUT_DIR", "").strip():
+    DUB_TRACK_OUTPUT_DIR = Path(os.environ["LOCAL_DUB_DUB_TRACK_OUTPUT_DIR"]).expanduser()
 CAPTION_TIMEOUT = float(os.environ.get("LOCAL_DUB_CAPTION_TIMEOUT", "22"))
 CAPTION_METADATA_TIMEOUT = float(os.environ.get("LOCAL_DUB_CAPTION_METADATA_TIMEOUT", "16"))
 CAPTION_HTTP_TIMEOUT = float(os.environ.get("LOCAL_DUB_CAPTION_HTTP_TIMEOUT", "8"))
@@ -167,6 +222,148 @@ LANGUAGE_NAMES = {
 }
 
 
+def default_kokoro_model_root() -> Path:
+    """Return the user-owned data location for the fixed Kokoro payload."""
+
+    override = os.environ.get("LOCAL_DUB_KOKORO_MODEL_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return user_data_dir() / "models" / "kokoro"
+
+
+def normalized_platform() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if os.name == "nt":
+        return "windows"
+    return "linux"
+
+
+def normalized_architecture() -> str:
+    raw = platform.machine().strip().lower()
+    if raw in {"arm64", "aarch64"}:
+        return "arm64"
+    if raw in {"x86_64", "amd64", "x64"}:
+        return "x64"
+    if raw in {"x86", "i386", "i686"}:
+        return "x86"
+    return raw or "unknown"
+
+
+class KokoroModelService:
+    """Expose one fixed-model installation job without blocking Engine requests."""
+
+    def __init__(self, manager: KokoroModelManager) -> None:
+        self.manager = manager
+        self._lock = threading.RLock()
+        self._worker: threading.Thread | None = None
+        self._install_requested = False
+        self._generation = 0
+
+    def status(self, transport: str) -> dict[str, Any]:
+        model = self._normalized_status()
+        return {"ok": True, "transport": transport, "model": model}
+
+    def install(self, transport: str) -> dict[str, Any]:
+        with self._lock:
+            worker_is_running = self._worker is not None and self._worker.is_alive()
+            if not worker_is_running and self._normalized_status()["state"] == "ready":
+                return self.status(transport)
+            if not worker_is_running:
+                self._install_requested = True
+                self._generation += 1
+                generation = self._generation
+                self._worker = threading.Thread(
+                    target=self._run_install,
+                    args=(generation,),
+                    name="localtube-kokoro-install",
+                    daemon=True,
+                )
+                self._worker.start()
+        return self.status(transport)
+
+    def cancel(self, transport: str) -> dict[str, Any]:
+        with self._lock:
+            self._generation += 1
+            self._install_requested = False
+        self.manager.cancel()
+        return self.status(transport)
+
+    def uninstall(self, transport: str) -> dict[str, Any]:
+        with self._lock:
+            self._generation += 1
+            self._install_requested = False
+        self.manager.uninstall()
+        return self.status(transport)
+
+    def _run_install(self, generation: int) -> None:
+        try:
+            self.manager.install()
+        finally:
+            with self._lock:
+                stale_install = generation != self._generation
+            if stale_install:
+                # A cancellation/uninstall may arrive while activation is in its
+                # final critical section. Clean up after that old worker before
+                # another install is allowed to begin.
+                self.manager.uninstall()
+            with self._lock:
+                if threading.current_thread() is self._worker:
+                    self._install_requested = False
+                    self._worker = None
+
+    def _normalized_status(self) -> dict[str, Any]:
+        raw_status = self.manager.status()
+        model = {
+            "state": str(raw_status.get("state") or "not-installed"),
+            "version": str(raw_status.get("version") or ""),
+            "downloadedBytes": max(0, int(raw_status.get("downloadedBytes") or 0)),
+            "totalBytes": max(0, int(raw_status.get("totalBytes") or 0)),
+            "progress": max(0.0, min(1.0, float(raw_status.get("progress") or 0))),
+            "installedBytes": max(0, int(raw_status.get("installedBytes") or 0)),
+            "error": str(raw_status.get("error") or ""),
+        }
+        with self._lock:
+            if self._install_requested and self._worker is not None and self._worker.is_alive():
+                model["state"] = "installing"
+            elif self._worker is not None and self._worker.is_alive():
+                model["state"] = "not-installed"
+        return model
+
+
+KOKORO_MODEL_SERVICE = KokoroModelService(KokoroModelManager(default_kokoro_model_root()))
+KOKORO_RUNTIME = KokoroRuntime(KOKORO_MODEL_SERVICE.manager)
+
+
+def build_kokoro_model_payload(operation: str, payload: Any, transport: str) -> dict[str, Any]:
+    """Run a fixed-schema model operation without forwarding caller data."""
+
+    if not isinstance(payload, dict) or payload:
+        return {
+            "ok": False,
+            "code": "INVALID_MODEL_REQUEST",
+            "error": "Kokoro model requests must use an empty object.",
+            "transport": transport,
+            "model": KOKORO_MODEL_SERVICE.status(transport)["model"],
+        }
+    operations = {
+        "status": KOKORO_MODEL_SERVICE.status,
+        "install": KOKORO_MODEL_SERVICE.install,
+        "cancel": KOKORO_MODEL_SERVICE.cancel,
+        "uninstall": KOKORO_MODEL_SERVICE.uninstall,
+    }
+    handler = operations.get(operation)
+    if handler is None:
+        return {
+            "ok": False,
+            "code": "INVALID_MODEL_REQUEST",
+            "error": "Unsupported Kokoro model operation.",
+            "transport": transport,
+            "model": KOKORO_MODEL_SERVICE.status(transport)["model"],
+        }
+    return handler(transport)
+
+
 class LocalDubHandler(BaseHTTPRequestHandler):
     server_version = "LocalTubeDub/0.1"
 
@@ -195,6 +392,12 @@ class LocalDubHandler(BaseHTTPRequestHandler):
             self.send_json(build_voices_payload(transport="http"))
             return
 
+        if parsed.path == "/api/tts-model/kokoro/status":
+            payload: dict[str, Any] = {} if not parsed.query else {"query": parsed.query}
+            response = build_kokoro_model_payload("status", payload, transport="http")
+            self.send_json(response, status=200 if response.get("ok") else 400)
+            return
+
         if parsed.path == "/api/full-transcript/status":
             job_id = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
             response = get_full_transcript_job(job_id)
@@ -217,10 +420,25 @@ class LocalDubHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": False, "error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
+        model_operations = {
+            "/api/tts-model/kokoro/install": "install",
+            "/api/tts-model/kokoro/cancel": "cancel",
+            "/api/tts-model/kokoro/uninstall": "uninstall",
+        }
+        model_operation = model_operations.get(self.path)
         try:
             payload = self.read_json()
         except ValueError as exc:
+            if model_operation:
+                response = build_kokoro_model_payload(model_operation, {"invalid": True}, transport="http")
+                self.send_json(response, status=400)
+                return
             self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if model_operation:
+            response = build_kokoro_model_payload(model_operation, payload, transport="http")
+            self.send_json(response, status=200 if response.get("ok") else 400)
             return
 
         if self.path in ("/api/dub", "/api/translate"):
@@ -451,6 +669,8 @@ def normalize_cues(raw_cues: Any) -> list[dict[str, Any]]:
 
 def build_health_payload(transport: str) -> dict[str, Any]:
     health = get_runtime_health()
+    model = KOKORO_MODEL_SERVICE.status(transport).get("model") or {}
+    runtime = KOKORO_RUNTIME.status()
     return {
         "ok": True,
         "service": "localtube-dub",
@@ -458,6 +678,15 @@ def build_health_payload(transport: str) -> dict[str, Any]:
         "protocolVersion": ENGINE_PROTOCOL_VERSION,
         "transport": transport,
         "model": OLLAMA_MODEL,
+        "platform": normalized_platform(),
+        "architecture": normalized_architecture(),
+        "instanceId": ENGINE_INSTANCE_ID,
+        "runtimeRoot": ENGINE_RUNTIME_ROOT or str(ENGINE_ROOT.resolve()),
+        "kokoroRuntime": runtime,
+        "kokoroModel": str(model.get("state") or "not-installed"),
+        "kokoroModelVersion": str(model.get("version") or ""),
+        "kokoroModelBytes": max(0, int(model.get("installedBytes") or 0)),
+        "kokoroInstallProgress": max(0.0, min(1.0, float(model.get("progress") or 0))),
         **health,
         "time": int(time.time()),
     }
@@ -465,6 +694,8 @@ def build_health_payload(transport: str) -> dict[str, Any]:
 
 @functools.lru_cache(maxsize=1)
 def get_engine_version() -> str:
+    if ENGINE_VERSION_OVERRIDE:
+        return ENGINE_VERSION_OVERRIDE
     candidates = [ENGINE_ROOT / "release.json", ENGINE_ROOT / "extension" / "manifest.json"]
     for path in candidates:
         if not path.is_file():
@@ -1025,7 +1256,7 @@ def start_dub_track_job(payload: dict[str, Any]) -> dict[str, Any]:
             "code": "INVALID_DUB_TRACK_VIDEO_URL",
             "error": "混合音轨只能读取当前 YouTube 视频的原音频。",
         }
-    tts_ready = edge_tts_available() if tts_engine == "edge" else check_tts()
+    tts_ready = tts_engine_ready(tts_engine)
     if not tts_ready or not find_ffmpeg_command():
         return {
             "ok": False,
@@ -1204,6 +1435,9 @@ def public_dub_track_job(job: dict[str, Any]) -> dict[str, Any]:
             "error",
         )
     }
+    for key in ("requestedVoice", "actualVoice", "voiceFallback", "voiceFallbackMessage"):
+        if key in job:
+            result[key] = job[key]
     if job.get("status") == "completed":
         result["downloadUrl"] = f"http://127.0.0.1:{PORT}/api/dub-track/download?id={urllib.parse.quote(str(job.get('id') or ''))}"
     return result
@@ -1247,6 +1481,9 @@ def run_dub_track_job(job_id: str, cancel_event: threading.Event) -> None:
         job = dict(DUB_TRACK_JOBS.get(job_id) or {})
     if not job:
         return
+    kokoro_job = sanitize_tts_engine(job.get("ttsEngine")) == "kokoro"
+    if kokoro_job:
+        job.setdefault("requestedVoice", str(job.get("voice") or "auto"))
     output_path = Path(str(job["filePath"]))
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1265,7 +1502,11 @@ def run_dub_track_job(job_id: str, cancel_event: threading.Event) -> None:
                 original_audio_path = download_youtube_full_audio(str(job.get("videoUrl") or ""), original_dir, cancel_event)
             synthesis_start = 14 if original_audio_path else 3
             synthesis_span = 75 if original_audio_path else 87
-            worker_count = min(DUB_TRACK_TTS_WORKERS, max(1, len(cues)))
+            worker_count = (
+                1
+                if kokoro_job
+                else min(DUB_TRACK_TTS_WORKERS, max(1, len(cues)))
+            )
             update_dub_track_job(
                 job_id,
                 status="rendering",
@@ -1282,7 +1523,15 @@ def run_dub_track_job(job_id: str, cancel_event: threading.Event) -> None:
                     for completed_count, future in enumerate(as_completed(futures), start=1):
                         rendered_segments.append(future.result())
                         progress = synthesis_start + int((completed_count / len(cues)) * synthesis_span)
-                        update_dub_track_job(job_id, progress=progress, renderedCues=completed_count)
+                        updates = {"progress": progress, "renderedCues": completed_count}
+                        if kokoro_job:
+                            updates.update(
+                                coalesce_dub_track_voice_metadata(
+                                    rendered_segments,
+                                    str(job.get("requestedVoice") or job.get("voice") or "auto"),
+                                )
+                            )
+                        update_dub_track_job(job_id, **updates)
                 except Exception:
                     cancel_event.set()
                     for future in futures:
@@ -1349,11 +1598,52 @@ def render_dub_track_segment(
         cancel_event=cancel_event,
         tts_engine=str(job.get("ttsEngine") or "system"),
     )
-    return {
+    if (
+        sanitize_tts_engine(job.get("ttsEngine")) == "kokoro"
+        and segment.get("voiceFallback")
+        and segment.get("actualVoice")
+    ):
+        job["voice"] = str(segment["actualVoice"])
+    result = {
         "index": index,
         "start": float(cue["start"]),
         "end": slot_end,
         "path": segment["path"],
+    }
+    for key in ("requestedVoice", "actualVoice", "voiceFallback", "voiceFallbackMessage"):
+        if key in segment:
+            result[key] = segment[key]
+    return result
+
+
+def coalesce_dub_track_voice_metadata(
+    segments: list[dict[str, Any]],
+    requested_voice: str,
+) -> dict[str, Any]:
+    """Coalesce provider fallback details in cue order for stable job status."""
+
+    requested = str(requested_voice or "auto")
+    actual = requested
+    fallback = False
+    messages: list[str] = []
+    ordered_segments = sorted(
+        segments,
+        key=lambda item: (int(item.get("index") or 0), float(item.get("start") or 0)),
+    )
+    for segment in ordered_segments:
+        segment_actual = str(segment.get("actualVoice") or "")
+        if segment_actual:
+            actual = segment_actual
+        if segment.get("voiceFallback"):
+            fallback = True
+            message = str(segment.get("voiceFallbackMessage") or "").strip()
+            if message and message not in messages:
+                messages.append(message)
+    return {
+        "requestedVoice": requested,
+        "actualVoice": actual,
+        "voiceFallback": fallback,
+        "voiceFallbackMessage": " ".join(messages),
     }
 
 
@@ -1849,7 +2139,7 @@ def build_tts_payload(payload: dict[str, Any], transport: str) -> dict[str, Any]
             max_fit_rate,
             tts_engine=tts_engine,
         )
-        return {
+        result = {
             "ok": True,
             "engine": audio["engine"],
             "ttsEngine": audio.get("ttsEngine", tts_engine),
@@ -1861,6 +2151,10 @@ def build_tts_payload(payload: dict[str, Any], transport: str) -> dict[str, Any]
             "fitRate": audio.get("fitRate", 1),
             "leadingTrimSeconds": audio.get("leadingTrimSeconds", 0),
         }
+        for key in ("requestedVoice", "actualVoice", "voiceFallback", "voiceFallbackMessage"):
+            if key in audio:
+                result[key] = audio[key]
+        return result
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -2832,7 +3126,7 @@ def synthesize_speech_with_system(
             tts_engine=tts_engine,
         )
         encoded = base64.b64encode(Path(audio["path"]).read_bytes()).decode("ascii")
-        return {
+        result = {
             "engine": audio["engine"],
             "mimeType": "audio/wav",
             "dataUrl": f"data:audio/wav;base64,{encoded}",
@@ -2841,6 +3135,10 @@ def synthesize_speech_with_system(
             "ttsEngine": audio.get("ttsEngine", sanitize_tts_engine(tts_engine)),
             "leadingTrimSeconds": audio.get("leadingTrimSeconds", 0),
         }
+        for key in ("requestedVoice", "actualVoice", "voiceFallback", "voiceFallbackMessage"):
+            if key in audio:
+                result[key] = audio[key]
+        return result
 
 
 def synthesize_speech_to_wav_file(
@@ -2854,8 +3152,20 @@ def synthesize_speech_to_wav_file(
     cancel_event: threading.Event | None = None,
     tts_engine: str = "system",
 ) -> dict[str, Any]:
-    if sanitize_tts_engine(tts_engine) == "edge":
+    normalized_engine = sanitize_tts_engine(tts_engine)
+    if normalized_engine == "edge":
         return synthesize_edge_speech_to_wav_file(
+            text,
+            language,
+            rate,
+            voice_id,
+            target_duration,
+            output_dir,
+            max_fit_rate=max_fit_rate,
+            cancel_event=cancel_event,
+        )
+    if normalized_engine == "kokoro":
+        return synthesize_kokoro_speech_to_wav_file(
             text,
             language,
             rate,
@@ -2916,6 +3226,66 @@ def synthesize_speech_to_wav_file(
         "fitRate": fit_rate,
         "ttsEngine": "system",
         "leadingTrimSeconds": 0,
+    }
+
+
+def synthesize_kokoro_speech_to_wav_file(
+    text: str,
+    language: str,
+    rate: float,
+    voice_id: str,
+    target_duration: float,
+    output_dir: Path,
+    max_fit_rate: float = 3.0,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Generate only local Kokoro speech, then use the normal WAV fitting path."""
+
+    if cancel_event and cancel_event.is_set():
+        raise FullTranscriptCancelled("任务已取消")
+    if not tts_engine_ready("kokoro"):
+        runtime = KOKORO_RUNTIME.status()
+        detail = str(runtime.get("error") or runtime.get("state") or "unavailable")
+        raise RuntimeError(f"Kokoro 本地配音不可用：{detail}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "voice-kokoro.wav"
+    try:
+        result = KOKORO_RUNTIME.synthesize(
+            text,
+            language,
+            voice_id,
+            rate,
+            output_path,
+            cancel_event=cancel_event,
+        )
+    except KokoroRuntimeCancelled as error:
+        raise FullTranscriptCancelled("任务已取消") from error
+    if cancel_event and cancel_event.is_set():
+        raise FullTranscriptCancelled("任务已取消")
+    original_duration = validate_wav_duration(output_path)
+    final_path = output_path
+    fit_rate = 1.0
+    if target_duration > 0.3 and original_duration > target_duration * 1.04:
+        fitted = fit_wav_to_target_duration(
+            output_path,
+            output_dir,
+            target_duration,
+            max_fit_rate=max_fit_rate,
+            cancel_event=cancel_event,
+        )
+        if fitted:
+            final_path, fit_rate = fitted
+    return {
+        "engine": f"kokoro:{result['actualVoice']}",
+        "path": final_path,
+        "duration": validate_wav_duration(final_path),
+        "fitRate": fit_rate,
+        "ttsEngine": "kokoro",
+        "leadingTrimSeconds": 0,
+        "requestedVoice": result["requestedVoice"],
+        "actualVoice": result["actualVoice"],
+        "voiceFallback": bool(result["voiceFallback"]),
+        "voiceFallbackMessage": str(result["voiceFallbackMessage"]),
     }
 
 
@@ -3143,7 +3513,19 @@ def build_atempo_filter(rate: float) -> str:
 
 
 def sanitize_tts_engine(value: Any) -> str:
-    return "edge" if str(value or "").strip().lower() in ("edge", "edge-tts", "natural-online") else "system"
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"edge", "kokoro", "system"} else "system"
+
+
+def tts_engine_ready(tts_engine: str) -> bool:
+    """Check one requested provider only; local Kokoro never crosses providers."""
+
+    normalized = sanitize_tts_engine(tts_engine)
+    if normalized == "edge":
+        return edge_tts_available()
+    if normalized == "kokoro":
+        return bool(KOKORO_RUNTIME.status().get("available"))
+    return check_tts()
 
 
 def find_edge_tts_command() -> list[str] | None:
@@ -3246,12 +3628,18 @@ def build_voices_payload(transport: str) -> dict[str, Any]:
         {**voice, "provider": "edge", "localService": False, "available": edge_ready}
         for voice in EDGE_TTS_VOICES
     ]
+    kokoro_status = KOKORO_RUNTIME.status()
+    kokoro_voices = [
+        {**voice, "localService": True}
+        for voice in kokoro_voice_catalog(available=bool(kokoro_status.get("available")))
+    ]
     return {
         "ok": True,
         "transport": transport,
         "engine": "say" if shutil.which("say") else "unavailable",
         "edgeTts": edge_ready,
-        "voices": [*system_voices, *edge_voices],
+        "kokoro": kokoro_status,
+        "voices": [*system_voices, *edge_voices, *kokoro_voices],
     }
 
 

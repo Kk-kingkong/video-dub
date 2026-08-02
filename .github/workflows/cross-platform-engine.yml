@@ -1,0 +1,103 @@
+name: Cross-platform Engine
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-engine:
+    name: macOS Engine (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify source
+        run: |
+          node tools/verify_extension_flows.js
+          node tools/verify_provider_registry.js
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_kokoro_engine.py
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_local_engine.py
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_native_messaging.py
+          python3 tools/verify_release_packages.py --self-test
+          python3 tools/verify_open_source_compliance.py
+          node --check extension/background.js
+          node --check extension/content.js
+          node --check extension/popup.js
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 -m py_compile server/kokoro_tts.py server/local_dub_server.py companion/native_host.py
+          bash -n scripts/*.sh companion/*.sh
+      - name: Build and smoke-test macOS package
+        env:
+          LOCAL_DUB_ENGINE_DOWNLOAD_URL: https://github.com/Kk-kingkong/video-dub/releases
+          LOCAL_DUB_SUPPORT_URL: https://kk-kingkong.github.io/video-dub/support.html
+        run: ./scripts/build_release_macos.sh ikoenamldegccnhmjjnlkffocdkbbbmo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: localtube-dub-macos-${{ matrix.arch }}
+          path: |
+            dist/LocalTube-Dub-extension-v0.2.3.zip
+            dist/LocalTube-Dub-Engine-v0.2.3-macOS-${{ matrix.arch }}.zip
+            dist/LocalTube-Dub-v0.2.3-SHA256SUMS.txt
+          if-no-files-found: error
+
+  windows-engine:
+    name: Windows Engine (x64)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify source
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          node tools/verify_extension_flows.js
+          node tools/verify_provider_registry.js
+          py tools/verify_kokoro_engine.py
+          py tools/verify_local_engine.py
+          py tools/verify_release_packages.py --self-test
+          py tools/verify_windows_package.py --source
+          py tools/verify_open_source_compliance.py
+          node --check extension/background.js
+          node --check extension/content.js
+          node --check extension/popup.js
+          py -m py_compile server/kokoro_tts.py server/local_dub_server.py companion/native_host.py
+      - name: Build Windows package
+        shell: pwsh
+        run: py scripts/build_release_windows.py
+      - name: Install, repair, health-check, and uninstall
+        shell: pwsh
+        timeout-minutes: 15
+        run: py tools/verify_windows_package.py --install-smoke dist/LocalTube-Dub-Engine-v0.2.3-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: localtube-dub-windows-x64
+          path: |
+            dist/LocalTube-Dub-Engine-v0.2.3-Windows-x64.zip
+            dist/LocalTube-Dub-v0.2.3-Windows-x64-SHA256SUMS.txt
+          if-no-files-found: error

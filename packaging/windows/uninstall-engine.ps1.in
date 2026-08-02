@@ -1,0 +1,82 @@
+[CmdletBinding()]
+param(
+    [switch]$Yes
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$NativeHostName = if ($env:LOCAL_DUB_NATIVE_HOST_NAME) {
+    $env:LOCAL_DUB_NATIVE_HOST_NAME
+} else {
+    "com.localtube.dub.engine"
+}
+$TaskName = if ($env:LOCAL_DUB_TASK_NAME) {
+    $env:LOCAL_DUB_TASK_NAME
+} else {
+    "LocalTube Dub Engine"
+}
+$RegistryPath = if ($env:LOCAL_DUB_REGISTRY_PATH) {
+    $env:LOCAL_DUB_REGISTRY_PATH
+} else {
+    "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$NativeHostName"
+}
+$DefaultProductRoot = Join-Path $env:LOCALAPPDATA "LocalTube Dub"
+$RuntimeRoot = if ($env:LOCAL_DUB_RUNTIME_DIR) {
+    [System.IO.Path]::GetFullPath($env:LOCAL_DUB_RUNTIME_DIR)
+} else {
+    Join-Path $DefaultProductRoot "engine-runtime"
+}
+$StateRoot = if ($env:LOCAL_DUB_STATE_DIR) {
+    [System.IO.Path]::GetFullPath($env:LOCAL_DUB_STATE_DIR)
+} else {
+    Join-Path $DefaultProductRoot "state"
+}
+$NativeManifestPath = if ($env:LOCAL_DUB_NATIVE_MANIFEST_PATH) {
+    [System.IO.Path]::GetFullPath($env:LOCAL_DUB_NATIVE_MANIFEST_PATH)
+} else {
+    Join-Path $DefaultProductRoot "native-messaging\$NativeHostName.json"
+}
+$EnginePort = if ($env:LOCAL_DUB_PORT) { [int]$env:LOCAL_DUB_PORT } else { 8787 }
+
+if (-not $Yes) {
+    $Answer = Read-Host "Remove LocalTube Dub Engine for this Windows user? [y/N]"
+    if ($Answer -notin @("y", "Y")) {
+        Write-Host "Uninstall cancelled."
+        exit 0
+    }
+}
+
+Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+$ManagerPath = Join-Path $RuntimeRoot "manage-engine.ps1"
+if (-not (Test-Path -LiteralPath $ManagerPath -PathType Leaf)) {
+    $ManagerPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "manage-engine.ps1"
+}
+if (Test-Path -LiteralPath $ManagerPath -PathType Leaf) {
+    $ReleasePath = Join-Path $RuntimeRoot "release.json"
+    $ExpectedVersion = "__VERSION__"
+    if (Test-Path -LiteralPath $ReleasePath -PathType Leaf) {
+        try {
+            $ExpectedVersion = [string](
+                Get-Content -LiteralPath $ReleasePath -Raw -Encoding UTF8 |
+                    ConvertFrom-Json
+            ).version
+        } catch {
+        }
+    }
+    & $ManagerPath `
+        -Action Stop `
+        -ExpectedVersion $ExpectedVersion `
+        -ExpectedRuntimeRoot $RuntimeRoot `
+        -StateRootOverride $StateRoot `
+        -LocalAppDataOverride $env:LOCALAPPDATA `
+        -Port $EnginePort `
+        -Json | Out-Null
+}
+
+Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $RegistryPath -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $NativeManifestPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $StateRoot -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "LocalTube Dub Engine removed for the current user."

@@ -1,5 +1,50 @@
 # LocalTube Dub Changelog
 
+## 0.2.3 - 2026-08-03
+
+- Fixed the release runtime self-test attempting to execute a generated macOS shell entrypoint on Windows CI.
+- Kept structural relocation checks active on every platform while reserving POSIX execution checks for compatible hosts.
+- Synchronized Store, Engine, Windows package, documentation, and CI artifact versions to `0.2.3`.
+
+## 0.2.2 - 2026-08-02
+
+- Fixed macOS Engine commands such as `yt-dlp` and `edge-tts` retaining deleted build-time Python paths after installation.
+- Made packaged Python command entrypoints relocate with the private runtime, including installation paths containing spaces.
+- Added release smoke coverage that executes caption and speech command tools both before and after Engine installation.
+- Fixed successful non-interactive macOS installation being reported with exit code 1 when no terminal input was available.
+- Synchronized macOS and Windows GitHub Actions artifact paths to `0.2.2` and added a compliance regression check for future releases.
+
+## 0.2.1 - 2026-07-31
+
+- Added automatic temporary lightweight mode when the companion Engine is unavailable.
+- Lightweight mode uses readable YouTube page captions, Chrome on-device translation, and browser system speech without changing saved settings.
+- Added a clear customer notice and one-click full-mode retry while keeping YouTube rate limits, no-caption results, and Provider errors outside the Engine-failure fallback.
+
+## 0.2.0 - 2026-07-30
+
+- Added optional Kokoro high-quality local speech for Chinese and English. Model installation is an explicit user action, the fixed archive is verified before activation, and synthesis stays on the same computer.
+- Kept Microsoft natural online as the default speech engine. Kokoro never silently crosses to Microsoft or operating-system speech; an unavailable selected voice can switch only to a disclosed same-language Kokoro voice.
+- Added model install, progress, cancel, retry, and uninstall controls to both the popup and YouTube panel. Playback waits for a ready model and reports any same-provider voice change.
+- Added a prominent Microsoft natural-online consent control. Online TTS is blocked in both the page and service worker until the user explicitly agrees to send translated subtitle text, the selected voice, and rate settings to Microsoft.
+- Bounded Kokoro to one two-thread inference job, the active segment plus two future segments, and a five-minute idle unload. Stale queued work and late voice-fallback responses are discarded safely.
+- Added pinned offline Engine packages for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Customer installation does not require a system Python, Homebrew, pip, or a compiler.
+- Added per-user Windows Native Messaging registration, startup, health repair, rollback, and uninstall support. The Windows package uses a fixed private Python runtime and pinned wheels.
+- Windows release builds now publish and verify a separate SHA-256 file before real install smoke, and CI uploads the digest beside the Engine ZIP.
+- Added runtime tree integrity checks, fail-closed customer installation, rollback to the previous Engine after failed activation, and deterministic package verification.
+- Documented Microsoft online text transfer, optional local model data, macOS-only system speech, Windows review steps, third-party licenses, and unsigned/unnotarized development-package status.
+- Added macOS ARM/Intel and Windows x64 CI release gates and synchronized Store-facing metadata to `0.2.0`.
+- Store release builds now require a public platform-neutral Engine download page and reject a common download URL that points to one architecture-specific ZIP.
+- Fixed the first cross-platform CI run: Engine tests now isolate optional local prerequisites and use platform-native paths, PowerShell stops on failed native commands, and the Windows Engine detaches its output into local state logs so installer and Native Messaging checks cannot hang on inherited CI pipes.
+- Fixed Windows Native Messaging startup with the legacy-compatible packaged launcher. It now bridges one bounded binary request and response per `sendNativeMessage` process, removes only its marked UTF-8 preamble, and closes the child input deterministically.
+- Windows Native Host lifecycle calls now capture PowerShell output in temporary files and bound the whole process tree, preventing an Engine child from keeping inherited capture pipes open after startup.
+
+## 0.1.99 - 2026-07-30
+
+- Fixed Microsoft natural online dubbing silently switching to the browser's system voice after one failed synthesis request. Natural-online mode now keeps its selected voice provider for the entire session.
+- A failed Microsoft natural speech request now receives one short bounded retry. If that segment still cannot be generated, only that segment is skipped and the next segment tries Microsoft again instead of entering the former one-minute global TTS lockout.
+- Kept browser speech fallback for the explicitly selected local system-speech mode, where it remains a useful same-provider recovery path.
+- Added deterministic failure-policy and wiring regressions that forbid browser fallback and global cooldown in Microsoft natural-online mode.
+
 ## 0.1.98 - 2026-07-23
 
 - Recorded the permanent Chrome Web Store Item ID `ikoenamldegccnhmjjnlkffocdkbbbmo` after the first draft upload.

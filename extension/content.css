@@ -152,6 +152,16 @@
   background: #ffc657;
 }
 
+.ltd-engine-status.is-lightweight {
+  background: rgba(255, 198, 87, 0.09);
+}
+
+.ltd-engine-status.is-lightweight [data-action="retry-full-mode"] {
+  border-color: rgba(255, 198, 87, 0.6);
+  color: #ffe0a3;
+  background: rgba(255, 198, 87, 0.12);
+}
+
 .ltd-engine-status.is-error {
   border-color: rgba(255, 153, 143, 0.34);
   color: #ffbab1;
@@ -167,6 +177,42 @@
 }
 
 .ltd-engine-status button {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(157, 199, 255, 0.45);
+  border-radius: 999px;
+  color: #cfe5ff;
+  background: rgba(157, 199, 255, 0.08);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ltd-kokoro-model {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(70px, 0.6fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid rgba(157, 199, 255, 0.28);
+  border-radius: 6px;
+  color: #cfe5ff;
+  background: rgba(157, 199, 255, 0.05);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.ltd-kokoro-model progress {
+  width: 100%;
+  height: 7px;
+  border: 0;
+  border-radius: 999px;
+  background: #343a46;
+  accent-color: #86bdff;
+}
+
+.ltd-kokoro-model button {
   height: 26px;
   padding: 0 8px;
   border: 1px solid rgba(157, 199, 255, 0.45);
@@ -195,6 +241,21 @@
   color: #dce6f5;
   background: #20242d;
   font-size: 12px;
+}
+
+.ltd-online-consent {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  margin: 10px 0 2px;
+  color: #c9d5e8;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ltd-online-consent input {
+  flex: 0 0 auto;
+  margin-top: 3px;
 }
 
 .ltd-volume {

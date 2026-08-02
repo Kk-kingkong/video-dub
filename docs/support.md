@@ -17,10 +17,11 @@ Please include:
 
 - the extension version shown in the popup;
 - Chrome and operating-system versions;
-- whether the optional Engine is installed; and
+- whether the optional Engine is installed and its platform/architecture;
+- the selected speech engine (Microsoft natural online, Kokoro, or macOS system speech); and
 - concise reproduction steps and the visible error category.
 
-请附上扩展版本、Chrome 与操作系统版本、是否安装 Engine、简短复现步骤和页面显示的错误类别。
+请附上扩展版本、Chrome 与操作系统版本、Engine 是否安装及其平台/架构、当前配音引擎、简短复现步骤和页面显示的错误类别。
 
 Never publish API keys, YouTube cookies, private captions, generated audio, account information, or full local file paths. Report security vulnerabilities through the repository's [private security process](https://github.com/Kk-kingkong/video-dub/security/policy).
 

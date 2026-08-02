@@ -1,0 +1,267 @@
+[CmdletBinding()]
+param(
+    [switch]$Repair
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$ExtensionId = "__EXTENSION_ID__"
+$Version = "__VERSION__"
+$NativeHostName = if ($env:LOCAL_DUB_NATIVE_HOST_NAME) {
+    $env:LOCAL_DUB_NATIVE_HOST_NAME
+} else {
+    "com.localtube.dub.engine"
+}
+$TaskName = if ($env:LOCAL_DUB_TASK_NAME) {
+    $env:LOCAL_DUB_TASK_NAME
+} else {
+    "LocalTube Dub Engine"
+}
+$RegistryPath = if ($env:LOCAL_DUB_REGISTRY_PATH) {
+    $env:LOCAL_DUB_REGISTRY_PATH
+} else {
+    "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$NativeHostName"
+}
+$SourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$SourceManagerPath = Join-Path $SourceRoot "manage-engine.ps1"
+$DefaultProductRoot = Join-Path $env:LOCALAPPDATA "LocalTube Dub"
+$RuntimeRoot = if ($env:LOCAL_DUB_RUNTIME_DIR) {
+    [System.IO.Path]::GetFullPath($env:LOCAL_DUB_RUNTIME_DIR)
+} else {
+    Join-Path $DefaultProductRoot "engine-runtime"
+}
+$StateRoot = if ($env:LOCAL_DUB_STATE_DIR) {
+    [System.IO.Path]::GetFullPath($env:LOCAL_DUB_STATE_DIR)
+} else {
+    Join-Path $DefaultProductRoot "state"
+}
+$NativeManifestPath = if ($env:LOCAL_DUB_NATIVE_MANIFEST_PATH) {
+    [System.IO.Path]::GetFullPath($env:LOCAL_DUB_NATIVE_MANIFEST_PATH)
+} else {
+    Join-Path $DefaultProductRoot "native-messaging\$NativeHostName.json"
+}
+$EnginePort = if ($env:LOCAL_DUB_PORT) { [int]$env:LOCAL_DUB_PORT } else { 8787 }
+$StagingRoot = "$RuntimeRoot.staging.$PID"
+$BackupRoot = "$RuntimeRoot.backup.$PID"
+$ActivationStarted = $false
+$OperationStarted = $false
+$HadPreviousRuntime = $false
+$PreviousVersion = ""
+
+function Quote-WindowsArgument([string]$Value) {
+    if ($Value.Contains('"')) {
+        throw "Windows paths containing a quote are not supported."
+    }
+    return '"' + $Value + '"'
+}
+
+function Get-RuntimeVersion([string]$Root) {
+    $ReleasePath = Join-Path $Root "release.json"
+    if (-not (Test-Path -LiteralPath $ReleasePath -PathType Leaf)) {
+        return ""
+    }
+    try {
+        $Release = Get-Content -LiteralPath $ReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        return [string]$Release.version
+    } catch {
+        return ""
+    }
+}
+
+function Invoke-RuntimeVerification([string]$Root, [string]$ExpectedVersion) {
+    $ReleasePath = Join-Path $Root "release.json"
+    $PythonPath = Join-Path $Root ".venv\python.exe"
+    $VerifierPath = Join-Path $Root "scripts\assemble_engine_runtime.py"
+    $LockPath = Join-Path $Root ".venv\runtime-lock.json"
+    if (-not (Test-Path -LiteralPath $ReleasePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $PythonPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $VerifierPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
+        throw "Bundled Windows runtime is incomplete."
+    }
+    $Release = Get-Content -LiteralPath $ReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($Release.version -ne $ExpectedVersion -or
+        $Release.chromeExtensionId -ne $ExtensionId -or
+        $Release.platform -ne "windows" -or
+        $Release.architecture -ne "x64" -or
+        $Release.protocolVersion -ne 2 -or
+        $Release.bundledRuntime -ne $true -or
+        $null -eq $Release.runtimeContract) {
+        throw "Bundled Windows runtime metadata is invalid."
+    }
+    & $PythonPath $VerifierPath `
+        --verify-runtime (Join-Path $Root ".venv") `
+        --platform windows `
+        --arch x64 `
+        --release-metadata $ReleasePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bundled Windows runtime integrity verification failed."
+    }
+}
+
+function Invoke-EngineManager(
+    [string]$ManagerPath,
+    [string]$Action,
+    [string]$Root,
+    [string]$ExpectedVersion
+) {
+    if (-not (Test-Path -LiteralPath $ManagerPath -PathType Leaf)) {
+        throw "Engine lifecycle manager is missing: $ManagerPath"
+    }
+    & $ManagerPath `
+        -Action $Action `
+        -ExpectedVersion $ExpectedVersion `
+        -ExpectedRuntimeRoot $Root `
+        -StateRootOverride $StateRoot `
+        -LocalAppDataOverride $env:LOCALAPPDATA `
+        -Port $EnginePort `
+        -Json | Out-Null
+}
+
+function Stop-Engine([string]$Root, [string]$ExpectedVersion) {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $ExpectedVersion) {
+        $ExpectedVersion = $Version
+    }
+    Invoke-EngineManager `
+        -ManagerPath $SourceManagerPath `
+        -Action Stop `
+        -Root $Root `
+        -ExpectedVersion $ExpectedVersion
+}
+
+function Register-NativeHost([string]$Root) {
+    $Manifest = [ordered]@{
+        name = $NativeHostName
+        description = "LocalTube Dub Engine"
+        path = (Join-Path $Root "companion\native_host_launcher.exe")
+        type = "stdio"
+        allowed_origins = @("chrome-extension://$ExtensionId/")
+    }
+    $ManifestDirectory = Split-Path -Parent $NativeManifestPath
+    New-Item -ItemType Directory -Path $ManifestDirectory -Force | Out-Null
+    $ManifestJson = $Manifest | ConvertTo-Json -Depth 4
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($NativeManifestPath, $ManifestJson, $Utf8NoBom)
+    New-Item -Path $RegistryPath -Force | Out-Null
+    Set-Item -Path $RegistryPath -Value $NativeManifestPath
+}
+
+function Register-PerUserStartup([string]$Root, [string]$ExpectedVersion) {
+    $ManagerPath = Join-Path $Root "manage-engine.ps1"
+    $Arguments = @(
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-File", (Quote-WindowsArgument $ManagerPath),
+        "-Action", "Start",
+        "-ExpectedVersion", (Quote-WindowsArgument $ExpectedVersion),
+        "-ExpectedRuntimeRoot", (Quote-WindowsArgument $Root),
+        "-StateRootOverride", (Quote-WindowsArgument $StateRoot),
+        "-LocalAppDataOverride", (Quote-WindowsArgument $env:LOCALAPPDATA),
+        "-Port", [string]$EnginePort
+    ) -join " "
+    $Action = New-ScheduledTaskAction `
+        -Execute "powershell.exe" `
+        -Argument $Arguments `
+        -WorkingDirectory $Root
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $UserId = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
+    $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $Action `
+        -Trigger $Trigger `
+        -Principal $Principal `
+        -Description "Starts the per-user LocalTube Dub loopback Engine." `
+        -Force | Out-Null
+}
+
+function Start-And-TestEngine([string]$Root, [string]$ExpectedVersion) {
+    Invoke-EngineManager `
+        -ManagerPath (Join-Path $Root "manage-engine.ps1") `
+        -Action Start `
+        -Root $Root `
+        -ExpectedVersion $ExpectedVersion
+}
+
+function Remove-Registration {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $RegistryPath -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $NativeManifestPath -Force -ErrorAction SilentlyContinue
+}
+
+function Restore-PreviousRuntime {
+    Remove-Registration
+    Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    if ($ActivationStarted) {
+        Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force -ErrorAction SilentlyContinue
+        if ($HadPreviousRuntime -and (Test-Path -LiteralPath $BackupRoot -PathType Container)) {
+            Move-Item -LiteralPath $BackupRoot -Destination $RuntimeRoot
+        }
+    }
+    if ($HadPreviousRuntime -and (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
+        $RestoredVersion = Get-RuntimeVersion $RuntimeRoot
+        if (-not $RestoredVersion) {
+            throw "Rollback restored runtime has no valid release metadata."
+        }
+        Register-NativeHost $RuntimeRoot
+        Register-PerUserStartup $RuntimeRoot $RestoredVersion
+        Start-And-TestEngine $RuntimeRoot $RestoredVersion
+    }
+    Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+try {
+    if (-not [Environment]::Is64BitOperatingSystem -or
+        [Environment]::OSVersion.Version.Major -lt 10) {
+        throw "LocalTube Dub Engine requires Windows 10/11 x64."
+    }
+    Invoke-RuntimeVerification $SourceRoot $Version
+
+    if (Test-Path -LiteralPath $RuntimeRoot -PathType Container) {
+        $HadPreviousRuntime = $true
+        $PreviousVersion = Get-RuntimeVersion $RuntimeRoot
+    }
+    Stop-Engine $RuntimeRoot $PreviousVersion
+    $OperationStarted = $true
+
+    Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path (Split-Path -Parent $RuntimeRoot) -Force | Out-Null
+    New-Item -ItemType Directory -Path $StagingRoot -Force | Out-Null
+    Get-ChildItem -LiteralPath $SourceRoot -Force |
+        Copy-Item -Destination $StagingRoot -Recurse -Force
+    Invoke-RuntimeVerification $StagingRoot $Version
+
+    if ($HadPreviousRuntime) {
+        Move-Item -LiteralPath $RuntimeRoot -Destination $BackupRoot
+    }
+    $ActivationStarted = $true
+    Move-Item -LiteralPath $StagingRoot -Destination $RuntimeRoot
+    Invoke-RuntimeVerification $RuntimeRoot $Version
+    Register-NativeHost $RuntimeRoot
+    Register-PerUserStartup $RuntimeRoot $Version
+    if ($env:LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE -eq "1") {
+        throw "Injected installer failure after activation."
+    }
+    Start-And-TestEngine $RuntimeRoot $Version
+
+    $ActivationStarted = $false
+    Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "LocalTube Dub Engine $Version installed for the current user."
+    Write-Host "Runtime: $RuntimeRoot"
+} catch {
+    if ($OperationStarted) {
+        try {
+            Stop-Engine $RuntimeRoot $Version
+        } catch {
+            Write-Warning "The failed runtime could not be stopped through verified ownership."
+        }
+        Restore-PreviousRuntime
+    }
+    Write-Error $_
+    exit 1
+}
