@@ -94,4 +94,6 @@ trap - EXIT
 echo
 echo "安装完成。私有运行时已复制到：$RUNTIME_ROOT"
 echo "请完全退出并重新打开 Chrome，然后在 LocalTube Dub 中点击“检查 Engine”。"
-read -r -p "按回车键关闭窗口..." _
+if [[ -t 0 ]]; then
+  read -r -p "按回车键关闭窗口..." _ || true
+fi

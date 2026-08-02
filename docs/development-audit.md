@@ -1,7 +1,15 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-07-31
-Current reviewed version: 0.2.1
+Last reviewed: 2026-08-02
+Current reviewed version: 0.2.2
+
+## 0.2.2 Verification Evidence
+
+- macOS private-runtime console commands now launch the bundled Python through paths relative to their installed `bin` directory, so package extraction and installation cannot retain deleted build-time interpreter paths.
+- Runtime assembly self-tests exercise a relocated command from a directory containing spaces, and final package smoke tests execute both `yt-dlp` and `edge-tts` before and after installation.
+- The macOS installer pauses only when attached to an interactive terminal, so automation receives a successful exit code after a healthy installation.
+- Cross-platform CI artifact upload paths and the Windows installation smoke command are locked to `0.2.2` by the open-source compliance verifier.
+- Release metadata, deterministic release checks, and package identifiers are synchronized to `0.2.2`.
 
 ## 0.2.1 Verification Evidence
 

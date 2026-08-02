@@ -386,6 +386,8 @@ def verify_engine(
             fail("Engine installer was not bound to the requested extension ID and version")
         if "ditto \"$ROOT_DIR\" \"$STAGING_ROOT\"" not in installer or "LOCAL_DUB_RUNTIME_DIR=\"$RUNTIME_ROOT\"" not in installer:
             fail("Engine installer does not atomically copy its bundled runtime")
+        if 'if [[ -t 0 ]]' not in installer or 'read -r -p "按回车键关闭窗口..." _ || true' not in installer:
+            fail("Engine installer must not report failure when a non-interactive install reaches EOF")
         if re.search(r"\b(?:pip|brew|curl|wget)\b", installer):
             fail("customer Engine installer must not invoke package managers or network tools")
         dependency_installer = archive.read(f"{root}/scripts/install_engine_deps_macos.sh").decode("utf-8")

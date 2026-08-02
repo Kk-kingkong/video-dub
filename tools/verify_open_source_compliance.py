@@ -9,7 +9,7 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.2.1"
+EXPECTED_VERSION = "0.2.2"
 CHROME_WEB_STORE_ITEM_ID = "ikoenamldegccnhmjjnlkffocdkbbbmo"
 PUBLIC_SITE = "https://kk-kingkong.github.io/video-dub/"
 PUBLIC_PRIVACY = f"{PUBLIC_SITE}privacy-policy.html"
@@ -159,6 +159,14 @@ def verify_cross_platform_ci() -> None:
         "$PSNativeCommandUseErrorActionPreference = $true",
     ):
         require(phrase.casefold() in workflow.casefold(), f"cross-platform CI missing: {phrase}")
+    for artifact in (
+        f"LocalTube-Dub-extension-v{EXPECTED_VERSION}.zip",
+        f"LocalTube-Dub-Engine-v{EXPECTED_VERSION}-macOS-${{{{ matrix.arch }}}}.zip",
+        f"LocalTube-Dub-v{EXPECTED_VERSION}-SHA256SUMS.txt",
+        f"LocalTube-Dub-Engine-v{EXPECTED_VERSION}-Windows-x64.zip",
+        f"LocalTube-Dub-v{EXPECTED_VERSION}-Windows-x64-SHA256SUMS.txt",
+    ):
+        require(artifact in workflow, f"cross-platform CI release artifact mismatch: {artifact}")
 
 
 def verify_no_obvious_secrets() -> None:

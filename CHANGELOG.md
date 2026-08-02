@@ -1,5 +1,13 @@
 # LocalTube Dub Changelog
 
+## 0.2.2 - 2026-08-02
+
+- Fixed macOS Engine commands such as `yt-dlp` and `edge-tts` retaining deleted build-time Python paths after installation.
+- Made packaged Python command entrypoints relocate with the private runtime, including installation paths containing spaces.
+- Added release smoke coverage that executes caption and speech command tools both before and after Engine installation.
+- Fixed successful non-interactive macOS installation being reported with exit code 1 when no terminal input was available.
+- Synchronized macOS and Windows GitHub Actions artifact paths to `0.2.2` and added a compliance regression check for future releases.
+
 ## 0.2.1 - 2026-07-31
 
 - Added automatic temporary lightweight mode when the companion Engine is unavailable.

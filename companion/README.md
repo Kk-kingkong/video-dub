@@ -6,7 +6,7 @@ The extension can be installed from the store, but the local AI engine must be i
 
 ## Customer packages
 
-Release `0.2.1` provides matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
+Release `0.2.2` provides matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
 
 - macOS: unzip the matching architecture package and open `Install LocalTube Dub Engine.command`.
 - Windows: unzip the x64 package and run `Install LocalTube Dub Engine.cmd`.
@@ -58,7 +58,7 @@ The release package is built and smoke-tested on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.1-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.2-Windows-x64.zip
 ```
 
 ## Smoke tests

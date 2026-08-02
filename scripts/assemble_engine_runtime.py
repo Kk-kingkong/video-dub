@@ -346,6 +346,37 @@ def _install_wheels(python_bin: Path, wheels: list[Path], *, testing: bool) -> N
         raise RuntimeAssemblyError(f"offline wheel installation failed: {detail}")
 
 
+def _make_unix_python_entrypoints_relocatable(runtime_dir: Path, platform: str) -> None:
+    if platform == "windows":
+        return
+    runtime_bin = runtime_dir / "bin"
+    for command in sorted(runtime_bin.iterdir()):
+        if command.is_symlink() or not command.is_file():
+            continue
+        payload = command.read_bytes()
+        first_line, separator, body = payload.partition(b"\n")
+        if not separator or not first_line.startswith(b"#!"):
+            continue
+        interpreter = first_line[2:].decode("utf-8", errors="replace").strip().split(maxsplit=1)[0]
+        if not interpreter.startswith("/") or not Path(interpreter).name.lower().startswith("python"):
+            continue
+
+        entrypoint = runtime_bin / f".{command.name}.entrypoint.py"
+        if entrypoint.exists():
+            raise RuntimeAssemblyError(f"private runtime entrypoint collision: {entrypoint.name}")
+        original_mode = command.stat().st_mode
+        os.replace(command, entrypoint)
+        entrypoint.write_bytes(b"#!/usr/bin/env python3\n" + body)
+        entrypoint.chmod(original_mode & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+        command.write_text(
+            "#!/bin/sh\n"
+            'SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)\n'
+            f'exec "$SCRIPT_DIR/python" "$SCRIPT_DIR/{entrypoint.name}" "$@"\n',
+            encoding="utf-8",
+        )
+        command.chmod(original_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
 def _write_sitecustomize(runtime_dir: Path, platform: str) -> None:
     python_bin = _runtime_python(runtime_dir, platform)
     version = subprocess.run(
@@ -669,6 +700,7 @@ def assemble_runtime(
         runtime_dir = staging / "runtime"
         shutil.move(str(python_root), runtime_dir)
         _install_wheels(_runtime_python(runtime_dir, platform), wheel_paths, testing=testing)
+        _make_unix_python_entrypoints_relocatable(runtime_dir, platform)
         for artifact, executable_path in zip(target["executables"], executable_paths):
             target_path = (
                 runtime_dir / str(artifact["installAs"])
@@ -718,6 +750,13 @@ def run_self_test(output: Path) -> None:
         python_binary = python_tree / "bin" / "python"
         python_binary.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
         python_binary.chmod(0o755)
+        fixture_command = python_tree / "bin" / "fixture-cli"
+        fixture_command.write_text(
+            "#!/deleted/build/runtime/bin/python\n"
+            "print('fixture command')\n",
+            encoding="utf-8",
+        )
+        fixture_command.chmod(0o755)
         archive = root / "python.tar.gz"
         with tarfile.open(archive, "w:gz") as tar:
             tar.add(python_tree, arcname="python")
@@ -802,6 +841,21 @@ def run_self_test(output: Path) -> None:
             raise RuntimeAssemblyError("self-test installed-tree digest did not detect tampering")
         if not (result / "bin" / "python").is_file() or not (result / "bin" / "ffmpeg").is_file():
             raise RuntimeAssemblyError("self-test runtime is incomplete")
+        relocated_command = result / "bin" / "fixture-cli"
+        relocated_payload = relocated_command.read_text(encoding="utf-8")
+        relocated_entrypoint = result / "bin" / ".fixture-cli.entrypoint.py"
+        if "$SCRIPT_DIR/python" not in relocated_payload or not relocated_entrypoint.is_file():
+            raise RuntimeAssemblyError("self-test Python entrypoint is not relocatable")
+        if b"/deleted/build" in relocated_entrypoint.read_bytes():
+            raise RuntimeAssemblyError("self-test Python entrypoint retained its build-time interpreter")
+        relocated_probe = subprocess.run(
+            [str(relocated_command), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if relocated_probe.returncode != 0:
+            raise RuntimeAssemblyError("self-test relocated Python entrypoint is not executable")
         unsafe_archive = root / "unsafe.tar.gz"
         with tarfile.open(unsafe_archive, "w:gz") as tar:
             bad = root / "bad"

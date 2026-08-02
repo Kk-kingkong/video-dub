@@ -29,6 +29,8 @@ if [[ ! -x "$ENGINE_ROOT/.venv/bin/python" || ! -f "$ENGINE_ROOT/.venv/runtime-l
   exit 1
 fi
 "$ENGINE_ROOT/.venv/bin/python" -c 'import curl_cffi, edge_tts, sherpa_onnx, yt_dlp; import shutil; raise SystemExit(0 if shutil.which("ffmpeg") else 1)'
+"$ENGINE_ROOT/.venv/bin/yt-dlp" --version >/dev/null
+"$ENGINE_ROOT/.venv/bin/edge-tts" --help >/dev/null
 
 FAIL_CLOSED_ROOT="$TEMP_ROOT/fail-closed"
 ditto "$ENGINE_ROOT" "$FAIL_CLOSED_ROOT"
@@ -152,6 +154,8 @@ if lock.get("architecture") != architecture or lock.get("pythonExecutable") != "
 PY
 
 "$RUNTIME_DIR/.venv/bin/python" -c 'import curl_cffi, edge_tts, sherpa_onnx, yt_dlp; import shutil; raise SystemExit(0 if shutil.which("ffmpeg") else 1)'
+"$RUNTIME_DIR/.venv/bin/yt-dlp" --version >/dev/null
+"$RUNTIME_DIR/.venv/bin/edge-tts" --help >/dev/null
 LOCAL_DUB_HOST=127.0.0.1 \
 LOCAL_DUB_PORT=18787 \
   "$RUNTIME_DIR/.venv/bin/python" "$RUNTIME_DIR/server/local_dub_server.py" >"$TEMP_ROOT/engine.log" 2>&1 &
