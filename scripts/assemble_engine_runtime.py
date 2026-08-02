@@ -848,14 +848,15 @@ def run_self_test(output: Path) -> None:
             raise RuntimeAssemblyError("self-test Python entrypoint is not relocatable")
         if b"/deleted/build" in relocated_entrypoint.read_bytes():
             raise RuntimeAssemblyError("self-test Python entrypoint retained its build-time interpreter")
-        relocated_probe = subprocess.run(
-            [str(relocated_command), "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if relocated_probe.returncode != 0:
-            raise RuntimeAssemblyError("self-test relocated Python entrypoint is not executable")
+        if os.name != "nt":
+            relocated_probe = subprocess.run(
+                [str(relocated_command), "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if relocated_probe.returncode != 0:
+                raise RuntimeAssemblyError("self-test relocated Python entrypoint is not executable")
         unsafe_archive = root / "unsafe.tar.gz"
         with tarfile.open(unsafe_archive, "w:gz") as tar:
             bad = root / "bad"

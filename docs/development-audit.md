@@ -1,7 +1,13 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-08-02
-Current reviewed version: 0.2.2
+Last reviewed: 2026-08-03
+Current reviewed version: 0.2.3
+
+## 0.2.3 Verification Evidence
+
+- Cross-platform runtime verification retains the macOS entrypoint relocation structure checks on every host but executes the generated POSIX wrapper only on compatible systems.
+- Windows CI no longer treats a macOS shell entrypoint as a Windows executable during source verification.
+- Release metadata, deterministic checks, package identifiers, documentation, and CI artifact paths are synchronized to `0.2.3`.
 
 ## 0.2.2 Verification Evidence
 

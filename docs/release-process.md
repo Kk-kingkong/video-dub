@@ -27,7 +27,7 @@ Build the Windows x64 Engine on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.2-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.3-Windows-x64.zip
 ```
 
 For a customer-facing build, inject a platform-neutral Engine download index and the support page at build time. The download URL must let users choose macOS Apple Silicon, macOS Intel, or Windows x64; it must not point every platform to one architecture-specific ZIP. Both values are optional for an offline private beta, but any configured URL must use HTTPS:

@@ -65,7 +65,7 @@ Chinese (Simplified) for the first listing, followed by an English localization.
 - Optional 1400 x 560 marquee tile.
 - Optional public YouTube demonstration video.
 
-Screenshots must show the shipping `0.2.2` UI and must not contain API keys, private videos, account information, or unavailable features.
+Screenshots must show the shipping `0.2.3` UI and must not contain API keys, private videos, account information, or unavailable features.
 
 ## Publisher URLs
 

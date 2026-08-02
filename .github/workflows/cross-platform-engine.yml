@@ -55,9 +55,9 @@ jobs:
         with:
           name: localtube-dub-macos-${{ matrix.arch }}
           path: |
-            dist/LocalTube-Dub-extension-v0.2.2.zip
-            dist/LocalTube-Dub-Engine-v0.2.2-macOS-${{ matrix.arch }}.zip
-            dist/LocalTube-Dub-v0.2.2-SHA256SUMS.txt
+            dist/LocalTube-Dub-extension-v0.2.3.zip
+            dist/LocalTube-Dub-Engine-v0.2.3-macOS-${{ matrix.arch }}.zip
+            dist/LocalTube-Dub-v0.2.3-SHA256SUMS.txt
           if-no-files-found: error
 
   windows-engine:
@@ -93,11 +93,11 @@ jobs:
       - name: Install, repair, health-check, and uninstall
         shell: pwsh
         timeout-minutes: 15
-        run: py tools/verify_windows_package.py --install-smoke dist/LocalTube-Dub-Engine-v0.2.2-Windows-x64.zip
+        run: py tools/verify_windows_package.py --install-smoke dist/LocalTube-Dub-Engine-v0.2.3-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: localtube-dub-windows-x64
           path: |
-            dist/LocalTube-Dub-Engine-v0.2.2-Windows-x64.zip
-            dist/LocalTube-Dub-v0.2.2-Windows-x64-SHA256SUMS.txt
+            dist/LocalTube-Dub-Engine-v0.2.3-Windows-x64.zip
+            dist/LocalTube-Dub-v0.2.3-Windows-x64-SHA256SUMS.txt
           if-no-files-found: error

@@ -1,5 +1,11 @@
 # LocalTube Dub Changelog
 
+## 0.2.3 - 2026-08-03
+
+- Fixed the release runtime self-test attempting to execute a generated macOS shell entrypoint on Windows CI.
+- Kept structural relocation checks active on every platform while reserving POSIX execution checks for compatible hosts.
+- Synchronized Store, Engine, Windows package, documentation, and CI artifact versions to `0.2.3`.
+
 ## 0.2.2 - 2026-08-02
 
 - Fixed macOS Engine commands such as `yt-dlp` and `edge-tts` retaining deleted build-time Python paths after installation.

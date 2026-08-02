@@ -35,8 +35,8 @@ REGISTRY_ROOT = (
     r"HKCU\Software\Google\Chrome\NativeMessagingHosts"
     rf"\{NATIVE_HOST_NAME}"
 )
-WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.2-Windows-x64.zip"
-WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.2-Windows-x64-SHA256SUMS.txt"
+WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.3-Windows-x64.zip"
+WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.3-Windows-x64-SHA256SUMS.txt"
 WINDOWS_TEMPLATES = {
     "launcher": ROOT_DIR / "packaging" / "windows" / "Install LocalTube Dub Engine.cmd.in",
     "installer": ROOT_DIR / "packaging" / "windows" / "install-engine.ps1.in",
@@ -197,7 +197,7 @@ def verify_native_health_identity() -> None:
     runtime_root = ROOT_DIR / "Windows Runtime 路径"
     identity = {
         "service": "localtube-dub",
-        "engineVersion": "0.2.2",
+        "engineVersion": "0.2.3",
         "protocolVersion": 2,
         "platform": "windows",
         "architecture": "x64",
@@ -506,7 +506,7 @@ def wait_for_exact_health(
                 health = json.loads(response.read())
             expected = {
                 "service": "localtube-dub",
-                "engineVersion": "0.2.2",
+                "engineVersion": "0.2.3",
                 "protocolVersion": 2,
                 "platform": "windows",
                 "architecture": "x64",
@@ -544,7 +544,7 @@ def invoke_manager(
             "-Action",
             action,
             "-ExpectedVersion",
-            "0.2.2",
+            "0.2.3",
             "-ExpectedRuntimeRoot",
             str(runtime_root),
             "-StateRootOverride",
@@ -767,7 +767,7 @@ def verify_install_smoke(package: Path) -> None:
                         "-Action",
                         "Stop",
                         "-ExpectedVersion",
-                        "0.2.2",
+                        "0.2.3",
                         "-ExpectedRuntimeRoot",
                         str(runtime_root),
                         "-StateRootOverride",
@@ -836,7 +836,7 @@ def verify_install_smoke(package: Path) -> None:
                 runtime_root,
                 state_path,
             )
-            require(health["engineVersion"] == "0.2.2", "wrong Engine version accepted")
+            require(health["engineVersion"] == "0.2.3", "wrong Engine version accepted")
 
             stale_state = dict(initial_state)
             stale_state["pid"] = os.getpid()
