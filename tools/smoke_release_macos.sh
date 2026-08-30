@@ -94,12 +94,21 @@ PLIST_PATH="$TEMP_ROOT/com.localtube.dub.engine.http.plist"
 MANIFEST_PATH="$TEMP_ROOT/com.localtube.dub.engine.json"
 RUNTIME_DIR="$TEMP_ROOT/runtime"
 LOG_DIR="$TEMP_ROOT/logs"
+/usr/bin/xattr -w com.apple.quarantine "0283;00000000;LocalTubeDubTest;00000000-0000-0000-0000-000000000000" \
+  "$ENGINE_ROOT/.venv/bin/python3.11"
+/usr/bin/xattr -w com.apple.quarantine "0283;00000000;LocalTubeDubTest;00000000-0000-0000-0000-000000000000" \
+  "$ENGINE_ROOT/.venv/lib/libpython3.11.dylib"
 LOCAL_DUB_INSTALL_DRY_RUN=1 \
 LOCAL_DUB_LAUNCH_AGENT_PATH="$PLIST_PATH" \
 LOCAL_DUB_NATIVE_MANIFEST_PATH="$MANIFEST_PATH" \
 LOCAL_DUB_RUNTIME_DIR="$RUNTIME_DIR" \
 LOCAL_DUB_LOG_DIR="$LOG_DIR" \
   "$ENGINE_ROOT/Install LocalTube Dub Engine.command"
+if /usr/bin/xattr -p com.apple.quarantine "$ENGINE_ROOT/.venv/bin/python3.11" >/dev/null 2>&1 \
+  || /usr/bin/xattr -p com.apple.quarantine "$ENGINE_ROOT/.venv/lib/libpython3.11.dylib" >/dev/null 2>&1; then
+  echo "Installer did not clear macOS download quarantine before launching the bundled runtime."
+  exit 1
+fi
 
 ROLLBACK_RUNTIME="$TEMP_ROOT/rollback-runtime"
 mkdir -p "$ROLLBACK_RUNTIME"

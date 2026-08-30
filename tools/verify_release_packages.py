@@ -388,6 +388,10 @@ def verify_engine(
             fail("Engine installer does not atomically copy its bundled runtime")
         if 'if [[ -t 0 ]]' not in installer or 'read -r -p "按回车键关闭窗口..." _ || true' not in installer:
             fail("Engine installer must not report failure when a non-interactive install reaches EOF")
+        quarantine_clear = installer.find('/usr/bin/xattr -dr com.apple.quarantine "$ROOT_DIR"')
+        runtime_verify = installer.find('LOCAL_DUB_CUSTOMER_RELEASE=1 "$ROOT_DIR/scripts/install_engine_deps_macos.sh"')
+        if quarantine_clear < 0 or runtime_verify < 0 or quarantine_clear > runtime_verify:
+            fail("Engine installer must clear its downloaded runtime quarantine before integrity verification")
         if re.search(r"\b(?:pip|brew|curl|wget)\b", installer):
             fail("customer Engine installer must not invoke package managers or network tools")
         dependency_installer = archive.read(f"{root}/scripts/install_engine_deps_macos.sh").decode("utf-8")
