@@ -3,7 +3,7 @@
 ## 0.2.4 - 2026-08-31
 
 - Fixed macOS terminating the bundled Engine Python with `Killed: 9` after a quarantined download was extracted by Safari, Chrome, or archive tools such as Keka.
-- The customer-authorized installer now removes the download quarantine only from its own Engine directory before running the existing runtime integrity verification.
+- The customer-authorized installer now removes the download quarantine only from its own Engine directory, without following symbolic links, before running the existing runtime integrity verification.
 - Added a macOS release regression test that installs a runtime whose Python executable and library carry quarantine attributes.
 - Synchronized Store, Engine, Windows package, documentation, and CI artifact versions to `0.2.4`.
 
