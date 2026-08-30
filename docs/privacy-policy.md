@@ -41,7 +41,7 @@ Removing the extension clears its Chrome extension storage. The optional desktop
 
 ## YouTube captions and active-video requests
 
-The extension communicates with YouTube only for the active video. It first uses caption information already available to the current page, then may request the active video's caption or player data from YouTube. It does not monitor unrelated browsing pages.
+The extension communicates with YouTube only for the active video. It first uses caption information already available to the current page, then may request the active video's caption or player data from YouTube. To support caption links protected by YouTube's runtime request token, the page probe observes only `youtube.com/api/timedtext` responses fetched by YouTube's own player and reuses that response locally. It does not inspect unrelated requests, monitor unrelated browsing pages, or send the captured caption response to LocalTube Dub or another service.
 
 When the optional Engine uses yt-dlp, it first attempts public caption access. If YouTube requires authentication or a bot check, the Engine may ask yt-dlp to read the local Chrome YouTube session and send the necessary request back to YouTube for the active video. YouTube cookies are not sent to LocalTube Dub, AI Providers, or Microsoft text-to-speech. Advanced users can disable browser-cookie fallback with the Engine setting documented in `README.md`.
 

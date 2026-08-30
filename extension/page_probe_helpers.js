@@ -50,9 +50,36 @@
     );
   }
 
+  function isCaptionPayloadUrl(value) {
+    try {
+      const url = new URL(String(value || ""), "https://www.youtube.com/");
+      return url.protocol === "https:" &&
+        (url.hostname === "youtube.com" || url.hostname.endsWith(".youtube.com")) &&
+        url.pathname === "/api/timedtext";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function pickPlayerCaptionTrack(tracks, preferredLanguage = "") {
+    const list = (Array.isArray(tracks) ? tracks : []).filter((track) => track?.languageCode);
+    const preferred = String(preferredLanguage || "").toLowerCase().split(/[-_]/)[0];
+    const languageMatches = (track) => String(track.languageCode || "").toLowerCase().split(/[-_]/)[0] === preferred;
+    return (
+      list.find((track) => preferred && languageMatches(track) && track.kind !== "asr") ||
+      list.find((track) => preferred && languageMatches(track)) ||
+      list.find((track) => String(track.languageCode || "").toLowerCase().startsWith("en") && track.kind !== "asr") ||
+      list.find((track) => track.kind !== "asr") ||
+      list[0] ||
+      null
+    );
+  }
+
   const api = {
+    isCaptionPayloadUrl,
     normalizePlayerResponse,
     normalizeTrack,
+    pickPlayerCaptionTrack,
     safeJsonParse,
     selectCurrentPlayerResponse
   };

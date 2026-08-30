@@ -1,5 +1,12 @@
 # LocalTube Dub Changelog
 
+## 0.2.5 - 2026-08-31
+
+- Fixed lightweight mode repeatedly receiving empty YouTube `timedtext` responses and falling through to the desktop Engine.
+- Lightweight mode now reuses subtitle responses fetched by YouTube's own player, including the player's runtime request token, before trying the existing direct page and Engine fallbacks.
+- Caption interception is limited to the active video's YouTube `api/timedtext` response and remains on the current page.
+- Synchronized Store, Engine, Windows package, documentation, and CI artifact versions to `0.2.5`.
+
 ## 0.2.4 - 2026-08-31
 
 - Fixed macOS terminating the bundled Engine Python with `Killed: 9` after a quarantined download was extracted by Safari, Chrome, or archive tools such as Keka.
