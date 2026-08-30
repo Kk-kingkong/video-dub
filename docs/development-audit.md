@@ -1,7 +1,14 @@
 # LocalTube Dub Development Audit
 
 Last reviewed: 2026-08-31
-Current reviewed version: 0.2.4
+Current reviewed version: 0.2.5
+
+## 0.2.5 Verification Evidence
+
+- Current YouTube `api/timedtext` links can return HTTP 200 with an empty body when replayed without the player-generated runtime token, which explains lightweight mode falling through to yt-dlp despite visible captions.
+- The document-start page probe now observes only YouTube `api/timedtext` responses, requests the selected player caption track when necessary, and passes the already-authorized response to the isolated extension context without sending it elsewhere.
+- A deterministic page-probe harness delays caption-track availability, verifies retry behavior, and confirms the captured JSON3 payload reaches lightweight caption parsing.
+- Release metadata, deterministic checks, package identifiers, documentation, and CI artifact paths are synchronized to `0.2.5`.
 
 ## 0.2.4 Verification Evidence
 

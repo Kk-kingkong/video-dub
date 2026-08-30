@@ -5116,6 +5116,31 @@ async function resolveVideoCaptionsFromPage(videoId) {
     };
   }
 
+  const playerPayload = await requestPlayerCaptionPayload(
+    videoId,
+    state.settings.targetLanguage || state.settings.sourceLanguage
+  );
+  const playerCues = parseCaptionPayload(playerPayload?.text || "");
+  if (playerCues.length) {
+    let languageCode = "";
+    try {
+      languageCode = new URL(playerPayload.url).searchParams.get("lang") || "";
+    } catch (error) {
+      // Fall back to the selected page track below.
+    }
+    return {
+      status: "captions",
+      cues: playerCues,
+      track: {
+        ...(sourceResult.tracks.find((track) => track.languageCode === languageCode) || {}),
+        baseUrl: playerPayload.url,
+        languageCode: languageCode || sourceResult.tracks[0]?.languageCode || "",
+        source: "page-player-capture"
+      },
+      tracks: sourceResult.tracks,
+      source: "page-player-capture"
+    };
+  }
   const tracksToTry = limitCaptionTrackAttempts(
     rankCaptionTracks(sourceResult.tracks, preferredCaptionLanguage()),
     state.settings.targetLanguage
@@ -5144,6 +5169,37 @@ async function resolveVideoCaptionsFromPage(videoId) {
     tracks: sourceResult.tracks,
     error: `检测到 ${sourceResult.tracks.length} 个字幕轨道，但都没有读取到字幕内容：${errors.join("；") || "未知错误"}`
   };
+}
+
+function requestPlayerCaptionPayload(videoId, preferredLanguage, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    const requestId = `player-captions-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const cleanup = () => {
+      clearTimeout(timer);
+      document.removeEventListener("localtube-dub:player-captions", onResponse);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(null);
+    }, timeoutMs);
+    const onResponse = (event) => {
+      if (event?.detail?.requestId !== requestId) {
+        return;
+      }
+      cleanup();
+      try {
+        resolve(JSON.parse(event.detail.payload || "{}"));
+      } catch (error) {
+        resolve(null);
+      }
+    };
+    document.addEventListener("localtube-dub:player-captions", onResponse);
+    document.dispatchEvent(
+      new CustomEvent("localtube-dub:request-player-captions", {
+        detail: { requestId, videoId, preferredLanguage }
+      })
+    );
+  });
 }
 
 async function collectCaptionTracks(videoId) {

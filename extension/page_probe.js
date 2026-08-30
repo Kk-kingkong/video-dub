@@ -3,7 +3,11 @@
   const RESPONSE_EVENT = "localtube-dub:page-state";
   const REQUEST_MESSAGE = "localtube-dub:request-page-state";
   const RESPONSE_MESSAGE = "localtube-dub:page-state";
-  const { selectCurrentPlayerResponse } = globalThis.LocalTubeDubPageProbeHelpers;
+  const CAPTION_REQUEST_EVENT = "localtube-dub:request-player-captions";
+  const CAPTION_RESPONSE_EVENT = "localtube-dub:player-captions";
+  const { isCaptionPayloadUrl, pickPlayerCaptionTrack, selectCurrentPlayerResponse } = globalThis.LocalTubeDubPageProbeHelpers;
+  const captionPayloads = new Map();
+  const captionWaiters = new Map();
 
   function currentVideoId() {
     try {
@@ -133,9 +137,127 @@
     );
   }
 
+  function respondWithCaption(requestId, payload = null) {
+    document.dispatchEvent(
+      new CustomEvent(CAPTION_RESPONSE_EVENT, {
+        detail: { requestId, payload: JSON.stringify(payload || {}) }
+      })
+    );
+  }
+
+  function rememberCaptionPayload(url, text) {
+    if (!isCaptionPayloadUrl(url) || !String(text || "").trim()) {
+      return;
+    }
+    let videoId = currentVideoId();
+    try {
+      videoId = new URL(url, location.href).searchParams.get("v") || videoId;
+    } catch (error) {
+      // Keep the active video id.
+    }
+    if (!videoId) {
+      return;
+    }
+    const payload = { videoId, url: String(url), text: String(text) };
+    captionPayloads.set(videoId, payload);
+    for (const [requestId, waiter] of captionWaiters) {
+      if (waiter.videoId !== videoId) {
+        continue;
+      }
+      clearTimeout(waiter.timer);
+      captionWaiters.delete(requestId);
+      respondWithCaption(requestId, payload);
+    }
+  }
+
+  function installCaptionResponseCapture() {
+    const originalFetch = window.fetch;
+    if (typeof originalFetch === "function") {
+      window.fetch = async function localTubeCaptionFetch(...args) {
+        const response = await originalFetch.apply(this, args);
+        const url = response?.url || String(args[0]?.url || args[0] || "");
+        if (isCaptionPayloadUrl(url)) {
+          response.clone().text().then((text) => rememberCaptionPayload(url, text)).catch(() => {});
+        }
+        return response;
+      };
+    }
+
+    const xhr = window.XMLHttpRequest;
+    if (!xhr?.prototype) {
+      return;
+    }
+    const urls = new WeakMap();
+    const originalOpen = xhr.prototype.open;
+    const originalSend = xhr.prototype.send;
+    xhr.prototype.open = function localTubeCaptionOpen(method, url, ...args) {
+      urls.set(this, String(url || ""));
+      return originalOpen.call(this, method, url, ...args);
+    };
+    xhr.prototype.send = function localTubeCaptionSend(...args) {
+      const url = urls.get(this) || "";
+      if (isCaptionPayloadUrl(url)) {
+        this.addEventListener("load", () => {
+          try {
+            const text = this.responseType === "json" ? JSON.stringify(this.response) : this.responseText;
+            rememberCaptionPayload(this.responseURL || url, text);
+          } catch (error) {
+            // Ignore non-text subtitle transports.
+          }
+        }, { once: true });
+      }
+      return originalSend.apply(this, args);
+    };
+  }
+
+  function requestPlayerCaptionPayload(event) {
+    const requestId = String(event?.detail?.requestId || "");
+    const videoId = String(event?.detail?.videoId || currentVideoId());
+    if (!requestId || !videoId) {
+      return;
+    }
+    const cached = captionPayloads.get(videoId);
+    if (cached) {
+      respondWithCaption(requestId, cached);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      captionWaiters.delete(requestId);
+      respondWithCaption(requestId);
+    }, 3500);
+    captionWaiters.set(requestId, { videoId, timer });
+
+    const activateCaptions = (attempt = 0) => {
+      if (!captionWaiters.has(requestId)) {
+        return;
+      }
+      const player = document.getElementById("movie_player");
+      try {
+        player?.loadModule?.("captions");
+        const options = player?.getOptions?.() || [];
+        const moduleName = options.includes("captions") ? "captions" : options.includes("cc") ? "cc" : "captions";
+        const tracks = player?.getOption?.(moduleName, "tracklist") || [];
+        const track = pickPlayerCaptionTrack(tracks, event?.detail?.preferredLanguage);
+        if (track) {
+          player.setOption(moduleName, "track", track);
+          return;
+        }
+      } catch (error) {
+        // The player caption module may still be loading.
+      }
+      if (attempt < 11) {
+        setTimeout(() => activateCaptions(attempt + 1), 150);
+      }
+    };
+    activateCaptions();
+  }
+
+  installCaptionResponseCapture();
   document.addEventListener(REQUEST_EVENT, (event) => {
     respond(event?.detail?.requestId || "");
   });
+  document.addEventListener(CAPTION_REQUEST_EVENT, requestPlayerCaptionPayload);
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin || event.data?.source !== REQUEST_MESSAGE) {

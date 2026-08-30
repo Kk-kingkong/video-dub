@@ -86,6 +86,95 @@ function testPageProbePlayerResponseSelection() {
   assert.equal(requestBody.context.client.visitorData, "visitor");
   assert.equal(Object.hasOwn(requestBody.context, "unrelated"), false);
   assert.equal(helpers.makeInnertubePlayerRequest({ apiKey: "missing-version" }, "current-video"), null);
+
+  assert.equal(
+    pageProbeHelpers.isCaptionPayloadUrl("https://www.youtube.com/api/timedtext?v=current-video&lang=en"),
+    true
+  );
+  assert.equal(
+    pageProbeHelpers.isCaptionPayloadUrl("https://www.youtube.com/youtubei/v1/player?prettyPrint=false"),
+    false
+  );
+  assert.equal(
+    pageProbeHelpers.pickPlayerCaptionTrack(
+      [
+        { languageCode: "ja", kind: "" },
+        { languageCode: "en", kind: "asr" },
+        { languageCode: "en-GB", kind: "" }
+      ],
+      "en-US"
+    ).languageCode,
+    "en-GB"
+  );
+}
+
+async function testPageProbeCaptionCapture() {
+  const listeners = new Map();
+  const addEventListener = (type, listener) => {
+    listeners.set(type, [...(listeners.get(type) || []), listener]);
+  };
+  const dispatchEvent = (event) => {
+    for (const listener of listeners.get(event.type) || []) {
+      listener(event);
+    }
+  };
+  class TestEvent {
+    constructor(type, init = {}) {
+      this.type = type;
+      this.detail = init.detail;
+    }
+  }
+  class TestXhr {
+    open() {}
+    send() {}
+    addEventListener() {}
+  }
+  const captionUrl = "https://www.youtube.com/api/timedtext?v=current-video&lang=en&fmt=json3";
+  let trackReads = 0;
+  const window = {
+    addEventListener,
+    postMessage() {},
+    fetch: async () => ({
+      url: captionUrl,
+      clone: () => ({ text: async () => '{"events":[{"tStartMs":0,"dDurationMs":1000,"segs":[{"utf8":"Hello"}]}]}' })
+    }),
+    XMLHttpRequest: TestXhr
+  };
+  const player = {
+    loadModule() {},
+    getOptions: () => ["captions"],
+    getOption: () => (++trackReads < 2 ? [] : [{ languageCode: "en", kind: "" }]),
+    setOption: () => window.fetch(captionUrl)
+  };
+  const document = {
+    addEventListener,
+    dispatchEvent,
+    getElementById: () => player,
+    querySelector: () => null
+  };
+  const context = {
+    CustomEvent: TestEvent,
+    URL,
+    clearTimeout,
+    console,
+    document,
+    location: { href: "https://www.youtube.com/watch?v=current-video", origin: "https://www.youtube.com" },
+    setTimeout,
+    window,
+    LocalTubeDubPageProbeHelpers: pageProbeHelpers
+  };
+  context.globalThis = context;
+  let captured = null;
+  document.addEventListener("localtube-dub:player-captions", (event) => {
+    captured = JSON.parse(event.detail.payload || "{}");
+  });
+  vm.runInNewContext(fs.readFileSync(path.join(root, "extension", "page_probe.js"), "utf8"), context);
+  document.dispatchEvent(new TestEvent("localtube-dub:request-player-captions", {
+    detail: { requestId: "caption-test", videoId: "current-video", preferredLanguage: "en" }
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(captured?.videoId, "current-video");
+  assert.match(captured?.text || "", /Hello/);
 }
 
 function testVoiceOptions() {
@@ -2324,7 +2413,7 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
   assert.equal(manifest.content_scripts[0].world, "MAIN");
   assert.deepEqual(manifest.content_scripts[1].js, ["voice_helpers.js", "content_helpers.js", "content.js"]);
-  assert.equal(manifest.version, "0.2.4");
+  assert.equal(manifest.version, "0.2.5");
   assert.equal(manifest.permissions.includes("downloads"), false);
   assert.deepEqual(manifest.permissions, ["activeTab", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.optional_permissions, ["offscreen", "tabCapture"]);
@@ -3065,7 +3154,7 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /localtube\.clearTranslationCache/);
   assert.match(popupHtml, /id="cacheTranslations"/);
   assert.match(popupHtml, /id="clearTranslationCache"/);
-  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.4<\/span>/);
+  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.5<\/span>/);
   assert.match(popupHtml, /id="testProvider"[^>]*>验证翻译 Key<\/button>/);
   assert.match(popup, /saveAndValidateApiKey/);
   assert.match(popupHtml, /免费 \/ 自带 Key/);
@@ -3132,6 +3221,10 @@ function testManifestAndFlowGuards() {
   assert.match(pageProbe, /window\.ytInitialPlayerResponse/);
   assert.match(pageProbe, /window\.postMessage/);
   assert.match(pageProbe, /localtube-dub:request-page-state/);
+  assert.match(pageProbe, /localtube-dub:request-player-captions/);
+  assert.match(pageProbe, /response\.clone\(\)\.text\(\)/);
+  assert.match(content, /requestPlayerCaptionPayload\(videoId/);
+  assert.match(content, /source: "page-player-capture"/);
   const installJs = fs.readFileSync(path.join(root, "extension", "install.js"), "utf8");
   const installHtml = fs.readFileSync(path.join(root, "extension", "install.html"), "utf8");
   const releaseInfo = JSON.parse(fs.readFileSync(path.join(root, "extension", "release-info.json"), "utf8"));
@@ -3156,7 +3249,7 @@ function testManifestAndFlowGuards() {
   assert.match(installHtml, /一键重启 Engine/);
   assert.match(installHtml, /修复开机自启/);
   assert.match(installHtml, /一键安装本地转写/);
-  assert.match(installHtml, /Windows 一键本地 Whisper 尚未包含在 0\.2\.4 安装包中/);
+  assert.match(installHtml, /Windows 一键本地 Whisper 尚未包含在 0\.2\.5 安装包中/);
   assert.match(installHtml, /自动处理自身目录的下载隔离属性/);
   assert.match(installHtml, /whisper\.cpp/);
   assert.match(installHtml, /Address already in use/);
@@ -3275,8 +3368,8 @@ function testManifestAndFlowGuards() {
   const liveVoiceHarness = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.js"), "utf8");
   const liveVoiceHarnessHtml = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.html"), "utf8");
   assert.match(liveVoiceHarness, /syncLiveVoiceMediaElements/);
-  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.4/);
-  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.4/);
+  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.5/);
+  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.5/);
   assert.match(liveVoiceHarness, /data-action='self-test'/);
   assert.match(liveVoiceHarness, /late\.expectedEnd <= 5\.05/);
   assert.match(liveVoiceHarness, /late\.playbackRate <= 1\.2/);
@@ -3439,7 +3532,7 @@ function testManifestAndFlowGuards() {
   assert.match(changelog, /Native Host/);
   assert.match(changelog, /0\.1\.91/);
   assert.match(changelog, /single customer workflow/);
-  assert.match(developmentAudit, /Current reviewed version: 0\.2\.4/);
+  assert.match(developmentAudit, /Current reviewed version: 0\.2\.5/);
   assert.match(developmentAudit, /ikoenamldegccnhmjjnlkffocdkbbbmo/);
   assert.match(developmentAudit, /Dubbed voice-track export/);
   assert.match(developmentAudit, /Subtitle export/);
@@ -3452,6 +3545,7 @@ function testManifestAndFlowGuards() {
 async function main() {
   testOptionalHostPermissions();
   testPageProbePlayerResponseSelection();
+  await testPageProbeCaptionCapture();
   testCaptionTrackPicking();
   testCaptionRequestBudget();
   testVoiceOptions();
