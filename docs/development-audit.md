@@ -1,7 +1,14 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-08-03
-Current reviewed version: 0.2.3
+Last reviewed: 2026-08-31
+Current reviewed version: 0.2.4
+
+## 0.2.4 Verification Evidence
+
+- A downloaded Engine extracted with recursive `com.apple.quarantine` attributes reproduces macOS terminating or indefinitely blocking its bundled Python before installer verification can start.
+- The customer-authorized installer clears only its own Engine directory's download quarantine without following symbolic links, and then runs the existing complete runtime-lock and installed-tree verification before activation.
+- macOS release smoke coverage applies quarantine to both the bundled Python executable and `libpython` and verifies successful installation plus removal of both attributes.
+- Release metadata, deterministic checks, package identifiers, documentation, and CI artifact paths are synchronized to `0.2.4`.
 
 ## 0.2.3 Verification Evidence
 

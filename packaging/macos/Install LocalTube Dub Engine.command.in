@@ -55,6 +55,15 @@ echo "LocalTube Dub Engine $VERSION"
 echo "将为 Chrome 扩展 $EXTENSION_ID 安装本地字幕、配音和开机自启服务。"
 echo
 
+if /usr/bin/xattr -p com.apple.quarantine "$ROOT_DIR" >/dev/null 2>&1 \
+  || /usr/bin/xattr -p com.apple.quarantine "$ROOT_DIR/.venv/bin/python" >/dev/null 2>&1; then
+  echo "正在准备从网络下载的 Engine 运行组件..."
+  if ! /usr/bin/xattr -drs com.apple.quarantine "$ROOT_DIR"; then
+    echo "无法解除此 Engine 目录的 macOS 下载隔离属性。请将安装包解压到可写目录后重试。"
+    exit 1
+  fi
+fi
+
 LOCAL_DUB_CUSTOMER_RELEASE=1 "$ROOT_DIR/scripts/install_engine_deps_macos.sh"
 
 rm -rf "$STAGING_ROOT" "$BACKUP_ROOT"

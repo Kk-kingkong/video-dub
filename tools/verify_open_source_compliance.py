@@ -9,7 +9,7 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.2.3"
+EXPECTED_VERSION = "0.2.4"
 CHROME_WEB_STORE_ITEM_ID = "ikoenamldegccnhmjjnlkffocdkbbbmo"
 PUBLIC_SITE = "https://kk-kingkong.github.io/video-dub/"
 PUBLIC_PRIVACY = f"{PUBLIC_SITE}privacy-policy.html"

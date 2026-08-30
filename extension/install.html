@@ -29,7 +29,7 @@
       <section>
         <h2>第一次使用要准备什么</h2>
         <p data-audience="customer">下载与扩展版本一致、适合你的 Engine ZIP：macOS Apple Silicon、macOS Intel 或 Windows 10/11 x64。macOS 解压后双击“Install LocalTube Dub Engine.command”；Windows 解压后运行“Install LocalTube Dub Engine.cmd”。安装包自带固定 Python、yt-dlp、FFmpeg 和配音依赖，日常使用不需要终端。</p>
-        <p data-audience="customer">Microsoft 自然在线是默认配音；选择 Kokoro 后可在扩展里主动安装约 140 MB 的本地模型。macOS 还提供仅限 macOS 的系统音色保底。当前开发包尚未签名和公证，系统可能显示首次打开警告。</p>
+        <p data-audience="customer">Microsoft 自然在线是默认配音；选择 Kokoro 后可在扩展里主动安装约 140 MB 的本地模型。macOS 还提供仅限 macOS 的系统音色保底。当前开发包尚未签名和公证，系统可能显示首次打开警告；0.2.4 安装器会在你主动运行后自动处理自身目录的下载隔离属性。</p>
         <p data-audience="developer">源码开发需要 Python 3.10+、yt-dlp 和正在运行的 LocalTube Dub Engine。macOS 一键依赖脚本会检查 Python 版本并创建项目独立环境。Microsoft 自然在线只发送待朗读字幕；Kokoro 在本机生成中英文配音；系统自带 say 仅限 macOS。只看有字幕视频时不需要 Whisper；没有字幕的视频可以使用本地或自己的 Groq / Deepgram / OpenAI 转写。</p>
       </section>
 
@@ -63,7 +63,7 @@
 
       <section>
         <h2>无字幕视频免费本地转写</h2>
-        <p data-audience="customer">只有无字幕视频才需要这一步。macOS 本地转写安装会下载约 142 MB 的多语言模型并保存在本机，不需要转写 API Key。Windows 用户当前可填写自己的 Groq / Deepgram / OpenAI 转写 Key；Windows 一键本地 Whisper 尚未包含在 0.2.3 安装包中。</p>
+        <p data-audience="customer">只有无字幕视频才需要这一步。macOS 本地转写安装会下载约 142 MB 的多语言模型并保存在本机，不需要转写 API Key。Windows 用户当前可填写自己的 Groq / Deepgram / OpenAI 转写 Key；Windows 一键本地 Whisper 尚未包含在 0.2.4 安装包中。</p>
         <p data-audience="developer">它会安装 whisper.cpp、ffmpeg，并下载约 142 MB 的多语言 base 模型。可在“免费 / 自带 Key”模式中同时选择 Chrome 本地翻译和本地 Engine 转写。Engine 会先准备首段音频，并在播放过程中提前滚动转写后续片段。先完成 Native Host 安装，再点击一键安装；安装完成后会自动启动或重启 Engine。</p>
         <button class="copy-button" id="installWhisperButton" type="button">一键安装本地转写</button>
         <p id="whisperInstallStatus" class="inline-status">尚未安装</p>
