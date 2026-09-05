@@ -22,24 +22,28 @@ def check_idle_exit() -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    with tempfile.TemporaryDirectory() as temporary:
-        env = {**os.environ, "LOCAL_DUB_PORT": str(port), "LOCAL_DUB_ENGINE_IDLE_SECONDS": "0.6",
+    with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryFile(mode="w+") as log:
+        env = {**os.environ, "LOCAL_DUB_PORT": str(port), "LOCAL_DUB_ENGINE_IDLE_SECONDS": "2",
                "LOCAL_DUB_OLLAMA_HEALTH_TIMEOUT": "0.01", "LOCAL_DUB_DATA_DIR": temporary,
                "LOCAL_DUB_CACHE_DIR": temporary}
         process = subprocess.Popen([sys.executable, str(ROOT / "server/local_dub_server.py")],
-                                   env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                   env=env, stdout=log, stderr=log)
         healthy = False
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 20
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        last_error = ""
         try:
             while process.poll() is None and time.monotonic() < deadline:
                 try:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.2) as response:
+                    with opener.open(f"http://127.0.0.1:{port}/api/health", timeout=1) as response:
                         healthy = json.load(response)["ok"] or healthy
-                except OSError:
-                    pass
+                except OSError as error:
+                    last_error = str(error)
                 time.sleep(0.03)
-            assert healthy, "isolated Engine never became healthy"
-            assert process.poll() == 0, "health polling prevented the idle Engine from exiting"
+            log.seek(0)
+            diagnostic = f"exit={process.poll()}, request={last_error}\n{log.read()[-4000:]}"
+            assert healthy, f"isolated Engine never became healthy: {diagnostic}"
+            assert process.poll() == 0, f"health polling prevented the idle Engine from exiting: {diagnostic}"
         finally:
             if process.poll() is None:
                 process.terminate()

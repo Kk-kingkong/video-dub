@@ -9,7 +9,7 @@
 3. 安装完成后完全退出并重新打开 Chrome。
 4. 在扩展弹窗或 YouTube 面板中点击“检查 Engine”。
 
-安装器会把完整的私有运行时复制到 `~/Library/Application Support/LocalTube Dub/engine-runtime`，其中已包含 Python、yt-dlp、ffmpeg、Kokoro 运行时、Microsoft 自然在线语音依赖、Native Messaging Host 和登录自动启动服务。主 Engine 安装不需要 Homebrew、预装 Python、pip、编译器或额外终端命令。Kokoro 模型不会随安装包下载，用户只在扩展中明确选择“安装本地模型”后才会下载它。只有用户主动选择“自然在线”时，待朗读字幕才会发送给 Microsoft。
+安装器会把完整的私有运行时复制到 `~/Library/Application Support/LocalTube Dub/engine-runtime`，其中已包含 Python、yt-dlp、ffmpeg、Kokoro 运行时、Microsoft 自然在线语音依赖和 Native Messaging Host。Engine 在翻译或配音时按需启动，空闲 5 分钟后退出；升级会移除旧版登录自启动。主 Engine 安装不需要 Homebrew、预装 Python、pip、编译器或额外终端命令。Kokoro 模型不会随安装包下载，用户只在扩展中明确选择“安装本地模型”后才会下载它。只有用户主动选择“自然在线”时，待朗读字幕才会发送给 Microsoft。
 
 ## 无字幕视频
 

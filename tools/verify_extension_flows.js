@@ -2222,61 +2222,6 @@ function testNormalizedEngineHealthCapabilities() {
   );
 }
 
-async function testCaptionEngineFailureFallbackHarness() {
-  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
-  const withTimeoutResult = vm.runInNewContext(
-    `(function withTimeoutResult(promise, timeoutMs, timeoutMessage, options = {}) {${extractFunctionBody(content, "withTimeoutResult")}})`,
-    { setTimeout, clearTimeout }
-  );
-  let pageReadCount = 0;
-  const resolveCaptions = vm.runInNewContext(
-    `(async function resolveVideoCaptions(operationId, options = {}) {${extractFunctionBody(content, "resolveVideoCaptions")}})`,
-    {
-      state: {
-        runtimeProfile: { useCaptionEngine: true },
-        settings: { targetLanguage: "zh-CN", ttsEngine: "edge" }
-      },
-      getCurrentVideoId: () => "video-1",
-      setStatus() {},
-      resolveVideoCaptionsFromPage: async () => {
-        pageReadCount += 1;
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        return {
-          status: "captions",
-          cues: [{ id: "page", start: 0, end: 1, text: "hello" }],
-          track: { languageCode: "en", source: "page-main-world" },
-          source: "page-main-world"
-        };
-      },
-      withTimeoutResult,
-      getCaptionFailureBackoff: () => null,
-      assertOperationActive() {},
-      fetchEngineCaptions: () => new Promise(() => {}),
-      captionEngineWaitTimeout: () => 2,
-      rememberCaptionFailure() {},
-      isTargetLanguageTrack: () => false,
-      lightweightFallbackDecision: helpers.lightweightFallbackDecision,
-      activateLightweightMode: () => {
-        activationCount += 1;
-        return true;
-      },
-      pickBestResolvedCaptionResult: () => null,
-      buildCaptionReadFailureMessage: () => "caption failure",
-      classifyCaptionErrorCode: () => "CAPTION_ENGINE_UNAVAILABLE",
-      CAPTION_FAST_TIMEOUT_MS: 1,
-      CAPTION_TOTAL_TIMEOUT_MS: 20,
-      CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS: 2,
-      LIGHTWEIGHT_CAPTIONS_UNAVAILABLE_MESSAGE: "请恢复 Engine 后重试完整模式，或换一个有字幕的视频。"
-    }
-  );
-  let activationCount = 0;
-  const result = await resolveCaptions(4);
-  assert.equal(activationCount, 0, "a short target-caption wait does not prove Engine failure");
-  assert.equal(pageReadCount, 1, "the active page caption read must be started only once");
-  assert.equal(result.source, "page-main-world");
-  assert.equal(result.cues[0].id, "page", "the already-started page caption result must complete the same operation");
-}
-
 async function testCaptionReadDeadlineAndPageRace() {
   const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
   async function run({ pageAt = Infinity, engineAt = Infinity, pageLanguage = "en", engineLanguage = "", engineCode = "", mode = "full", elapsedBeforeResolve = 0 } = {}) {
@@ -2351,7 +2296,8 @@ async function testCaptionReadDeadlineAndPageRace() {
   assert.ok(slowHealth.elapsed <= 23000, "Engine health time must consume the same caption deadline");
   const latePage = await run({ pageAt: 7000 });
   assert.equal(latePage.result.source, "page-main-world");
-  assert.ok(latePage.elapsed <= 9000, "page success after the fast read must escape a slow Engine after a short target-caption grace period");
+  assert.equal(latePage.elapsed, 9000, "page success must use only the two-second target-caption grace period");
+  assert.equal(latePage.result.cues[0].text, "page-main-world", "the already-started page caption result must complete the same operation");
   assert.equal(latePage.lightweight, false, "a short target-caption grace period does not prove Engine failure");
   const targetEngine = await run({ pageAt: 7000, engineAt: 2000, engineLanguage: "zh-CN" });
   assert.equal(targetEngine.result.source, "caption-engine", "target captions retain priority when Engine responds within the grace period");
@@ -4108,7 +4054,6 @@ async function main() {
   await testPreviewPreparationOwnership();
   await testPreviewResumeWaitsForEngine();
   await testPlayingPreviewKeepsEngineAwake();
-  await testCaptionEngineFailureFallbackHarness();
   await testEngineActionErrorSanitization();
   await testEngineVoiceFailureHarness();
   await testEngineHealthResponseOrdering();
