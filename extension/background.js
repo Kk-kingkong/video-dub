@@ -704,7 +704,7 @@ async function checkProviderHealth(settings = {}) {
     } catch (error) {
       return {
         ok: false,
-        code: "ENGINE_NOT_INSTALLED",
+        code: error.code || "ENGINE_NOT_INSTALLED",
         error: error.message || String(error)
       };
     }
@@ -754,6 +754,9 @@ async function checkCaptionEngineHealth(settings = {}, options = {}) {
       errors.push(`Native Engine：${nativePayload?.error || "健康检查失败"}`);
     }
   } catch (error) {
+    if (error.code === "NATIVE_HOST_FORBIDDEN") {
+      return { ok: false, code: error.code, error: error.message };
+    }
     errors.push(`Native Engine：${error.message || String(error)}`);
   }
 
@@ -1228,6 +1231,9 @@ async function restartLocalEngine(settings = {}) {
   try {
     nativePayload = await sendNativeMessage({ type: "restart-http" });
   } catch (error) {
+    if (error.code === "NATIVE_HOST_FORBIDDEN") {
+      return { ok: false, code: error.code, error: error.message };
+    }
     const message = error.message || String(error);
     const recovered = await recoverHttpEngineAfterNativeError(localEndpoint, 10000, {
       restarted: true,
@@ -1292,6 +1298,9 @@ async function startLocalEngine(settings = {}) {
   try {
     nativePayload = await sendNativeMessage({ type: "start-http" });
   } catch (error) {
+    if (error.code === "NATIVE_HOST_FORBIDDEN") {
+      return { ok: false, code: error.code, error: error.message };
+    }
     const message = error.message || String(error);
     const recovered = await recoverHttpEngineAfterNativeError(localEndpoint, 10000, {
       started: true,
@@ -1352,8 +1361,10 @@ async function installLocalWhisper() {
   } catch (error) {
     return {
       ok: false,
-      code: "NATIVE_HOST_NOT_INSTALLED",
-      error: `一键安装本地转写需要先安装 Native Host。${error.message || String(error)}`
+      code: error.code || "NATIVE_HOST_NOT_INSTALLED",
+      error: error.code === "NATIVE_HOST_FORBIDDEN"
+        ? error.message
+        : `一键安装本地转写需要先安装 Native Host。${error.message || String(error)}`
     };
   }
 }
@@ -1372,8 +1383,10 @@ async function installEngineAutostart() {
   } catch (error) {
     return {
       ok: false,
-      code: "NATIVE_HOST_NOT_INSTALLED",
-      error: `修复按需启动需要先安装 Native Host。${error.message || String(error)}`
+      code: error.code || "NATIVE_HOST_NOT_INSTALLED",
+      error: error.code === "NATIVE_HOST_FORBIDDEN"
+        ? error.message
+        : `修复按需启动需要先安装 Native Host。${error.message || String(error)}`
     };
   }
 }
@@ -1446,6 +1459,10 @@ async function autoStartCaptionHttpEngine(endpoint, errors = [], timeoutMs = 100
         return null;
       } catch (error) {
         errors.push(`Native 自动启动异常：${error.message || String(error)}`);
+        if (error.code === "NATIVE_HOST_FORBIDDEN") {
+          captionEngineAutoStartCooldownUntil = Date.now() + 15000;
+          return null;
+        }
         const recovered = await recoverHttpEngineAfterNativeError(endpoint, Math.max(0, deadline - Date.now()), {
           autoStarted: true,
           recoveredAfterNativeExit: true,
@@ -2931,7 +2948,12 @@ function sendNativeMessage(message, timeoutMs = 0) {
       if (timer) clearTimeout(timer);
       const error = chrome.runtime.lastError;
       if (error) {
-        reject(new Error(error.message));
+        const nativeError = new Error(error.message);
+        if (/access to the specified native messaging host is forbidden/i.test(nativeError.message)) {
+          nativeError.code = "NATIVE_HOST_FORBIDDEN";
+          nativeError.message = `Chrome 拒绝当前扩展访问 Native Host，通常是 Engine 安装包绑定的扩展 ID 与当前扩展不一致。当前扩展 ID：${chrome.runtime.id}。请打开安装说明，按当前扩展 ID 重新绑定 Native Host。${nativeError.message}`;
+        }
+        reject(nativeError);
         return;
       }
       resolve(response);

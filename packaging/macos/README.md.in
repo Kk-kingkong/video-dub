@@ -1,6 +1,6 @@
 # LocalTube Dub Engine __VERSION__
 
-这个配套安装包对应 Chrome 扩展 ID：`__EXTENSION_ID__`。
+双击安装时默认绑定 Chrome 商店扩展 ID：`__EXTENSION_ID__`。
 
 ## 第一次安装
 
@@ -10,6 +10,22 @@
 4. 在扩展弹窗或 YouTube 面板中点击“检查 Engine”。
 
 安装器会把完整的私有运行时复制到 `~/Library/Application Support/LocalTube Dub/engine-runtime`，其中已包含 Python、yt-dlp、ffmpeg、Kokoro 运行时、Microsoft 自然在线语音依赖和 Native Messaging Host。Engine 在翻译或配音时按需启动，空闲 5 分钟后退出；升级会移除旧版登录自启动。主 Engine 安装不需要 Homebrew、预装 Python、pip、编译器或额外终端命令。Kokoro 模型不会随安装包下载，用户只在扩展中明确选择“安装本地模型”后才会下载它。只有用户主动选择“自然在线”时，待朗读字幕才会发送给 Microsoft。
+
+## 加载已解压的扩展或 ZIP 测试包
+
+Chrome 为已解压扩展分配的 ID 可能与商店 ID 不同。打开扩展安装说明或 `chrome://extensions`，复制 LocalTube Dub 的实际 ID；在此解压后的 Engine 安装包目录打开终端，将下面的 `YOUR_EXTENSION_ID` 替换后运行：
+
+```bash
+bash "./Install LocalTube Dub Engine.command" YOUR_EXTENSION_ID
+```
+
+已经安装过 Engine 时，也可以直接重新绑定当前扩展：
+
+```bash
+bash "$HOME/Library/Application Support/LocalTube Dub/engine-runtime/companion/install_native_host_macos.sh" YOUR_EXTENSION_ID
+```
+
+出现 `Access to the specified native messaging host is forbidden` 表示扩展未获此 Engine 的访问授权；重复重启 Chrome 不能修复 ID 不匹配。重新绑定后再检查 Engine。升级扩展时保持已解压目录不变；如果更换目录导致 ID 改变，需要重新绑定。以后升级 Engine 安装包也应传入该 ID。
 
 ## 无字幕视频
 

@@ -752,7 +752,7 @@ async function refreshEngineStatus() {
   }
 
   applyEnginePlatformPolicy("");
-  setEngineStatus("error", "字幕 Engine 未连接", shortEngineHealthError(response?.error));
+  setEngineStatus("error", response?.code === "NATIVE_HOST_FORBIDDEN" ? "Engine 需要绑定当前扩展" : "字幕 Engine 未连接", shortEngineHealthError(response?.error, response?.code));
 }
 
 function setEngineStatus(status, title, detail) {
@@ -764,8 +764,11 @@ function setEngineStatus(status, title, detail) {
   nodes.engineStatusMeta.textContent = detail;
 }
 
-function shortEngineHealthError(error) {
+function shortEngineHealthError(error, code) {
   const message = String(error || "");
+  if (code === "NATIVE_HOST_FORBIDDEN" || /native messaging host is forbidden/i.test(message)) {
+    return "Chrome 拒绝访问 Engine，通常是扩展 ID 与安装配置不匹配。请打开安装说明，按当前扩展 ID 修复绑定。";
+  }
   if (/timeout|超时/i.test(message)) {
     return "本地服务响应超时：确认启动 Engine 的终端没有卡住，或关闭后重新运行启动命令。";
   }

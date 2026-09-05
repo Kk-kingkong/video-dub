@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+EXTENSION_ID="${1-__EXTENSION_ID__}"
+if [[ ! "$EXTENSION_ID" =~ ^[a-p]{32}$ ]]; then
+  echo "Invalid Chrome extension ID: IDs must contain exactly 32 lowercase letters from a to p."
+  exit 1
+fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTENSION_ID="__EXTENSION_ID__"
 VERSION="__VERSION__"
 RUNTIME_ROOT="${LOCAL_DUB_RUNTIME_DIR:-$HOME/Library/Application Support/LocalTube Dub/engine-runtime}"
 DRY_RUN="${LOCAL_DUB_INSTALL_DRY_RUN:-0}"

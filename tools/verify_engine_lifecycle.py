@@ -165,7 +165,7 @@ def check_idle_shutdown_drains_queued_work() -> None:
 
 def check_macos_on_demand_registration() -> None:
     with tempfile.TemporaryDirectory() as temporary:
-        root = Path(temporary)
+        root = Path(temporary) / "package"
         for name in ("scripts/install_engine_autostart_macos.sh", "scripts/uninstall_engine_autostart_macos.sh",
                      "companion/install_native_host_macos.sh", "companion/native_host_launcher_macos.sh",
                      "companion/native_host.py", "server/local_dub_server.py", "server/kokoro_tts.py"):
@@ -194,6 +194,43 @@ def check_macos_on_demand_registration() -> None:
             assert Path(native["path"]) == (root / "companion/native_host_launcher_macos.sh").resolve()
         assert "bootout" in log.read_text()
         assert "bootstrap" not in log.read_text() and "kickstart" not in log.read_text()
+
+        python_trap = Path(temporary) / "no-system-python"
+        python_trap.mkdir()
+        trap_script = python_trap / "python3"
+        trap_script.write_text('#!/bin/sh\necho "System Python must not be needed for Native registration" >&2\nexit 37\n')
+        trap_script.chmod(0o755)
+        repaired = subprocess.run([str(root / "companion/install_native_host_macos.sh"), "b" * 32],
+                                  env={**env, "PATH": str(python_trap) + os.pathsep + env["PATH"]},
+                                  capture_output=True, text=True, timeout=15)
+        assert repaired.returncode == 0, repaired.stdout + repaired.stderr
+        assert json.loads(manifest.read_text())["allowed_origins"] == ["chrome-extension://" + "b" * 32 + "/"]
+
+        # Exercise the customer entry point, including re-registration for an unpacked ZIP.
+        installer = root / "Install LocalTube Dub Engine.command"
+        installer.write_text((ROOT / "packaging/macos/Install LocalTube Dub Engine.command.in")
+                             .read_text().replace("__EXTENSION_ID__", "a" * 32)
+                             .replace("__VERSION__", "test"))
+        installer.chmod(0o755)
+        deps = root / "scripts/install_engine_deps_macos.sh"
+        deps.write_text("#!/bin/sh\nexit 0\n")
+        deps.chmod(0o755)
+        installed = Path(temporary) / "installed"
+        env.update(LOCAL_DUB_INSTALL_DRY_RUN="1", LOCAL_DUB_RUNTIME_DIR=str(installed))
+        for arguments, expected_id in (([], "a" * 32), (["b" * 32], "b" * 32)):
+            subprocess.run([str(installer), *arguments], env=env, check=True,
+                           capture_output=True, text=True, timeout=15)
+            assert json.loads(manifest.read_text())["allowed_origins"] == [
+                f"chrome-extension://{expected_id}/"], "release installer ignored the requested extension ID"
+        unchanged = manifest.read_bytes()
+        marker = installed / "keep.txt"
+        marker.write_text("previous runtime")
+        for invalid_id in ("", "A" * 32, "a" * 31, "a" * 33, "a" * 31 + "q", "a" * 32 + "\n", "*"):
+            failed = subprocess.run([str(installer), invalid_id], env=env,
+                                    capture_output=True, text=True, timeout=15)
+            assert failed.returncode != 0, "release installer accepted an invalid extension ID"
+            assert manifest.read_bytes() == unchanged and marker.read_text() == "previous runtime", \
+                "invalid extension ID modified the existing installation"
 
 
 if __name__ == "__main__":

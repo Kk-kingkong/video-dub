@@ -5,6 +5,8 @@ const { normalizeReleaseInfo } = globalThis.LocalTubeDubInstallHelpers;
 initializeReleaseView();
 
 document.querySelector("#extensionId").textContent = extensionId;
+document.querySelector("#macBindingCommand").textContent = `"$HOME/Library/Application Support/LocalTube Dub/engine-runtime/companion/install_native_host_macos.sh" ${extensionId}`;
+document.querySelector("#windowsBindingCommand").textContent = `& ".\\Install LocalTube Dub Engine.cmd" -ExtensionId ${extensionId}`;
 document.querySelector("#dependencyCommand").textContent = `cd ${projectPath}
 ./scripts/install_engine_deps_macos.sh`;
 document.querySelector("#startCommand").textContent = `cd ${projectPath}
@@ -46,6 +48,7 @@ async function initializeReleaseView() {
   }
   const normalized = normalizeReleaseInfo(releaseInfo, chrome.runtime.getManifest().version);
   document.body.dataset.releaseChannel = normalized.channel;
+  document.querySelector("#extensionBindingSection").hidden = !normalized.extensionId || normalized.extensionId === extensionId;
   if (normalized.channel === "development") {
     return;
   }
@@ -106,6 +109,7 @@ startButton?.addEventListener("click", async () => {
   try {
     const response = await chrome.runtime.sendMessage({ type: "localtube.startEngine" });
     if (!response?.ok) {
+      if (response?.code === "NATIVE_HOST_FORBIDDEN") document.querySelector("#extensionBindingSection").hidden = false;
       restartStatus.textContent = response?.error || "启动失败，请复制启动命令手动启动。";
       return;
     }
@@ -127,6 +131,7 @@ restartButton?.addEventListener("click", async () => {
   try {
     const response = await chrome.runtime.sendMessage({ type: "localtube.restartEngine" });
     if (!response?.ok) {
+      if (response?.code === "NATIVE_HOST_FORBIDDEN") document.querySelector("#extensionBindingSection").hidden = false;
       restartStatus.textContent = response?.error || "重启失败，请复制启动命令手动启动。";
       return;
     }

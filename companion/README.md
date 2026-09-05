@@ -6,12 +6,26 @@ The extension can be installed from the store, but the local AI engine must be i
 
 ## Customer packages
 
-Development version `0.2.6` prepares matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
+Development version `0.2.7` prepares matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
 
 - macOS: unzip the matching architecture package and open `Install LocalTube Dub Engine.command`.
 - Windows: unzip the x64 package and run `Install LocalTube Dub Engine.cmd`.
 
 Both installers register the current-user Native Messaging host and remove legacy login startup. Windows briefly starts the loopback Engine to verify installation, then stops it. User operations start Engine on demand; it exits after five idle minutes. Active requests, background jobs, model downloads and audio downloads prevent idle exit. Passive status checks do not wake it or extend its idle timer. The current development packages are unsigned and unnotarized.
+
+For an unpacked extension or ZIP test build, Chrome may assign a different ID from the Store ID used by a double-click installation. Copy LocalTube Dub's actual ID from the extension install page or `chrome://extensions`. From the extracted Engine package directory, replace `YOUR_EXTENSION_ID` and run:
+
+```bash
+# macOS
+bash "./Install LocalTube Dub Engine.command" YOUR_EXTENSION_ID
+```
+
+```powershell
+# Windows (PowerShell)
+& ".\Install LocalTube Dub Engine.cmd" -ExtensionId YOUR_EXTENSION_ID
+```
+
+On macOS, an already installed Engine can also be rebound with `bash "$HOME/Library/Application Support/LocalTube Dub/engine-runtime/companion/install_native_host_macos.sh" YOUR_EXTENSION_ID`. A Native Messaging `forbidden` error means the extension is not authorized by the host; restarting Chrome alone does not fix an ID mismatch. Recheck Engine after registration. Keep the unpacked extension directory unchanged when upgrading; rebind if moving it changes its ID. Pass the same explicit ID when upgrading Engine.
 
 Kokoro is optional and not bundled in the Engine ZIP. Select **Kokoro high-quality local** in the extension and click **Install model**. The Engine downloads and verifies the fixed model data before local Chinese/English synthesis becomes available.
 
@@ -58,7 +72,7 @@ The release package is built and smoke-tested on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.6-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.7-Windows-x64.zip
 ```
 
 ## Smoke tests
@@ -80,10 +94,10 @@ The release builders package this folder with the Engine and scripts:
 py scripts/build_release_windows.py
 ```
 
-The generated ZIPs include install, repair/startup, health, and uninstall flows bound to the Store extension ID. They remain unsigned and unnotarized. Before describing them as signed production installers:
+The generated ZIPs include install, repair/startup, health, and uninstall flows bound to the Store extension ID by default; an explicit validated ID supports unpacked testing. They remain unsigned and unnotarized. Before describing them as signed production installers:
 
 - macOS: signed and notarized `.pkg` or `.dmg` that installs the native host manifest and app binary.
 - Windows: signed `.msi` or `.exe` that writes the Native Messaging registry key.
 - Linux: `.deb`/`.rpm` or shell installer for the native host manifest path.
 
-The installer must write `allowed_origins` with the final Chrome Web Store extension ID.
+The installer must write `allowed_origins` with the final Chrome Web Store extension ID or the explicitly supplied unpacked extension ID.

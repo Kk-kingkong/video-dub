@@ -1968,6 +1968,47 @@ function testInstallReleaseInfo() {
   ]);
 }
 
+async function testUnpackedEngineBindingHelp() {
+  const source = fs.readFileSync(path.join(root, "extension", "install.js"), "utf8");
+  const makeNode = () => ({ hidden: true, textContent: "", append() {}, replaceChildren() {}, addEventListener() {} });
+  const nodes = new Map();
+  const document = {
+    body: { dataset: {} },
+    querySelector(selector) {
+      if (!nodes.has(selector)) nodes.set(selector, makeNode());
+      return nodes.get(selector);
+    },
+    querySelectorAll: () => [],
+    createElement: makeNode,
+    createTextNode: makeNode
+  };
+  const runtimeId = "bbjahdflbnheakdkgfjdfkdbndabbjpd";
+  const releaseInfo = { channel: "store", extensionId: "ikoenamldegccnhmjjnlkffocdkbbbmo" };
+  const context = vm.createContext({
+    document,
+    chrome: { runtime: { id: runtimeId, getURL: (name) => name, getManifest: () => ({ version: "test" }) } },
+    fetch: async () => ({ ok: true, json: async () => releaseInfo }),
+    LocalTubeDubInstallHelpers: installHelpers
+  });
+  vm.runInContext(source, context);
+  await context.initializeReleaseView();
+  assert.equal(document.querySelector("#extensionBindingSection").hidden, false, "unpacked ZIP must expose ID repair instructions in the customer view");
+  assert.equal(document.querySelector("#extensionId").textContent, runtimeId);
+  assert.match(document.querySelector("#macBindingCommand").textContent, new RegExp(`install_native_host_macos\\.sh" ${runtimeId}`));
+  assert.match(document.querySelector("#windowsBindingCommand").textContent, new RegExp(`-ExtensionId ${runtimeId}`));
+  releaseInfo.extensionId = runtimeId;
+  await context.initializeReleaseView();
+  assert.equal(document.querySelector("#extensionBindingSection").hidden, true, "matching Store installs do not need rebinding");
+
+  const popup = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");
+  const format = vm.runInNewContext(`(function shortEngineHealthError(error, code) {${extractFunctionBody(popup, "shortEngineHealthError")}})`);
+  assert.match(format("Access to the specified native messaging host is forbidden.", "NATIVE_HOST_FORBIDDEN"), /扩展 ID/);
+  assert.doesNotMatch(format("Access to the specified native messaging host is forbidden.", "NATIVE_HOST_FORBIDDEN"), /安装 yt-dlp/);
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const formatPanel = vm.runInNewContext(`(function shortEngineError(error) {${extractFunctionBody(content, "shortEngineError")}})`);
+  assert.match(formatPanel("Access to the specified native messaging host is forbidden."), /扩展 ID/);
+}
+
 function testTranscriptionRequestRegistry() {
   const registry = backgroundHelpers.createTranscriptionRequestRegistry();
   const first = registry.begin("one");
@@ -2882,7 +2923,7 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
   assert.equal(manifest.content_scripts[0].world, "MAIN");
   assert.deepEqual(manifest.content_scripts[1].js, ["voice_helpers.js", "content_helpers.js", "content.js"]);
-  assert.equal(manifest.version, "0.2.6");
+  assert.equal(manifest.version, "0.2.7");
   assert.equal(manifest.permissions.includes("downloads"), false);
   assert.deepEqual(manifest.permissions, ["activeTab", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.optional_permissions, ["offscreen", "tabCapture"]);
@@ -3616,7 +3657,7 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /localtube\.clearTranslationCache/);
   assert.match(popupHtml, /id="cacheTranslations"/);
   assert.match(popupHtml, /id="clearTranslationCache"/);
-  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.6<\/span>/);
+  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.7<\/span>/);
   assert.match(popupHtml, /id="testProvider"[^>]*>验证翻译 Key<\/button>/);
   assert.match(popup, /saveAndValidateApiKey/);
   assert.match(popupHtml, /免费 \/ 自带 Key/);
@@ -3830,8 +3871,8 @@ function testManifestAndFlowGuards() {
   const liveVoiceHarness = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.js"), "utf8");
   const liveVoiceHarnessHtml = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.html"), "utf8");
   assert.match(liveVoiceHarness, /syncLiveVoiceMediaElements/);
-  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.6/);
-  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.6/);
+  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.7/);
+  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.7/);
   assert.match(liveVoiceHarness, /data-action='self-test'/);
   assert.match(liveVoiceHarness, /late\.expectedEnd <= 5\.05/);
   assert.match(liveVoiceHarness, /late\.playbackRate <= 1\.2/);
@@ -3992,7 +4033,7 @@ function testManifestAndFlowGuards() {
   assert.match(changelog, /Native Host/);
   assert.match(changelog, /0\.1\.91/);
   assert.match(changelog, /single customer workflow/);
-  assert.match(developmentAudit, /Current reviewed version: 0\.2\.6/);
+  assert.match(developmentAudit, /Current reviewed version: 0\.2\.7/);
   assert.match(developmentAudit, /ikoenamldegccnhmjjnlkffocdkbbbmo/);
   assert.match(developmentAudit, /Dubbed voice-track export/);
   assert.match(developmentAudit, /Subtitle export/);
@@ -4044,6 +4085,7 @@ async function main() {
   testBrowserSpeechPlaybackOwnership();
   testVideoEventsSyncVoiceWithoutAnimationFrames();
   testInstallReleaseInfo();
+  await testUnpackedEngineBindingHelp();
   testTranscriptionRequestRegistry();
   testNoCaptionStartupOrder();
   await testStartOperationHealthHarness();

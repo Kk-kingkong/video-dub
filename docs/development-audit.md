@@ -1,7 +1,13 @@
 # LocalTube Dub Development Audit
 
 Last reviewed: 2026-09-05
-Current reviewed version: 0.2.6 (GitHub testing release)
+Current reviewed version: 0.2.7 (GitHub testing release)
+
+## 0.2.7 Unpacked Extension Binding Fix
+
+- A ZIP loaded unpacked can receive a different Chrome ID from the Store ID. The Engine installer now accepts an explicit validated ID; package integrity checks continue to verify the official package identity.
+- Native access denial is reported as an ID binding problem, and the install page exposes current-ID repair instructions without requiring a source checkout.
+- Regressions cover default registration, unpacked re-registration, invalid-ID rejection before mutation, and preserving actionable errors through health/start/restart.
 
 ## 0.2.6 Playback and Integrity Audit
 

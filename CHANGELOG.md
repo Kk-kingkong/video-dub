@@ -1,5 +1,12 @@
 # LocalTube Dub Changelog
 
+## 0.2.7 - 2026-09-05
+
+- Fixed Engine registration for extensions loaded unpacked from ZIP: macOS and Windows installers accept a validated explicit extension ID while preserving the default Store ID and package integrity checks.
+- Distinguish Native Host access denial from a missing installation, show current-ID repair instructions, and skip startup recovery polling when Chrome denies access.
+- Use the bundled Python when registering the macOS Native Host, so repair does not require system Python.
+- Added regression checks for unpacked registration, invalid IDs, and installation-page / popup guidance.
+
 ## 0.2.6 - 2026-09-05
 
 - Fixed completed live speech clips being restarted by the media synchronization loop before end-event cleanup.

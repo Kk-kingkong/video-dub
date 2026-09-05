@@ -65,6 +65,40 @@ async function main() {
   await Promise.all([autoStart("http://127.0.0.1:8787", [], 30), autoStart("http://127.0.0.1:8787", [], 30)]);
   assert.equal(nativeCalls, 1, "concurrent work shares one Engine launch");
   assert.ok(Date.now() - before < 500, "a silent Native Host cannot exceed the launch deadline");
+
+  context.chrome.runtime.id = "abcdefghijklmnopabcdefghijklmnop";
+  context.chrome.runtime.sendNativeMessage = (_host, _message, callback) => {
+    context.chrome.runtime.lastError = { message: "Access to the specified native messaging host is forbidden." };
+    callback();
+    delete context.chrome.runtime.lastError;
+  };
+  let recoveryPolls = 0;
+  context.recoverHttpEngineAfterNativeError = async () => { recoveryPolls++; return null; };
+  for (const operation of [
+    () => context.startLocalEngine(),
+    () => context.restartLocalEngine(),
+    () => context.checkCaptionEngineHealth(),
+    () => context.checkProviderHealth({ provider: "native" }),
+    () => context.installLocalWhisper(),
+    () => context.installEngineAutostart()
+  ]) {
+    const denied = await operation();
+    assert.equal(denied.code, "NATIVE_HOST_FORBIDDEN", "an installed but unauthorized host needs binding repair, not installation advice");
+    assert.ok(denied.error.includes(context.chrome.runtime.id), "repair advice identifies the current extension");
+    assert.doesNotMatch(denied.error, /未安装|退出并重启 Chrome|先安装 Native Host/);
+  }
+  vm.runInContext("captionEngineAutoStartCooldownUntil = 0", context);
+  const launchErrors = [];
+  assert.equal(await autoStart("http://127.0.0.1:8787", launchErrors), null);
+  assert.ok(launchErrors.join().includes(context.chrome.runtime.id));
+  assert.equal(recoveryPolls, 0, "access denial cannot launch Engine and must not wait for HTTP recovery");
+
+  context.chrome.runtime.sendNativeMessage = (_host, _message, callback) => {
+    context.chrome.runtime.lastError = { message: "Specified native messaging host not found." };
+    callback();
+    delete context.chrome.runtime.lastError;
+  };
+  assert.equal((await context.installEngineAutostart()).code, "NATIVE_HOST_NOT_INSTALLED", "missing hosts retain their installation advice");
   console.log("Engine lifecycle checks passed: passive health, one wake/retry, timeout/HTTP/remote and cancellation guards.");
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -980,6 +980,9 @@ async function retryFullModeFromWidget() {
 
 function shortEngineError(error) {
   const message = String(error || "");
+  if (/native messaging host is forbidden/i.test(message)) {
+    return "Chrome 拒绝访问，请打开安装说明，按当前扩展 ID 修复绑定";
+  }
   if (/timeout|超时/i.test(message)) {
     return "健康检查超时，请确认终端里的 Engine 没有卡住";
   }

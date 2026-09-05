@@ -50,7 +50,11 @@ if [[ "$DRY_RUN" != "1" ]]; then
 fi
 mkdir -p "$TARGET_DIR"
 
-python3 - "$TARGET_FILE" "$HOST_PATH" "$EXTENSION_ID" <<'PY'
+PYTHON_BIN="$RUNTIME_ROOT/.venv/bin/python"
+if [[ "$DRY_RUN" == "1" && ! -x "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="python3"
+fi
+"$PYTHON_BIN" - "$TARGET_FILE" "$HOST_PATH" "$EXTENSION_ID" <<'PY'
 import json
 import sys
 from pathlib import Path

@@ -35,8 +35,8 @@ REGISTRY_ROOT = (
     r"HKCU\Software\Google\Chrome\NativeMessagingHosts"
     rf"\{NATIVE_HOST_NAME}"
 )
-WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.6-Windows-x64.zip"
-WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.6-Windows-x64-SHA256SUMS.txt"
+WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.7-Windows-x64.zip"
+WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.7-Windows-x64-SHA256SUMS.txt"
 WINDOWS_TEMPLATES = {
     "launcher": ROOT_DIR / "packaging" / "windows" / "Install LocalTube Dub Engine.cmd.in",
     "installer": ROOT_DIR / "packaging" / "windows" / "install-engine.ps1.in",
@@ -197,7 +197,7 @@ def verify_native_health_identity() -> None:
     runtime_root = ROOT_DIR / "Windows Runtime 路径"
     identity = {
         "service": "localtube-dub",
-        "engineVersion": "0.2.6",
+        "engineVersion": "0.2.7",
         "protocolVersion": 2,
         "platform": "windows",
         "architecture": "x64",
@@ -258,9 +258,15 @@ def verify_packaging_sources() -> None:
     require(
         "powershell.exe" in launcher.lower()
         and "-ExecutionPolicy Bypass" in launcher
-        and "install-engine.ps1" in launcher,
+        and "install-engine.ps1" in launcher
+        and "%*" in launcher,
         "double-click launcher does not invoke the pinned installer",
     )
+    require('[string]$ExtensionId = "__EXTENSION_ID__"' in installer
+            and "-cnotmatch '\\A[a-p]{32}\\z'" in installer,
+            "installer must validate an explicit unpacked extension ID")
+    require("$Release.chromeExtensionId -ne $PackagedExtensionId" in installer,
+            "unpacked extension ID must not change the packaged metadata integrity check")
     for placeholder in ("__EXTENSION_ID__", "__VERSION__"):
         require(placeholder in installer, f"installer is missing {placeholder}")
         require(placeholder in builder, f"builder does not render {placeholder}")
@@ -507,7 +513,7 @@ def wait_for_exact_health(
                 health = json.loads(response.read())
             expected = {
                 "service": "localtube-dub",
-                "engineVersion": "0.2.6",
+                "engineVersion": "0.2.7",
                 "protocolVersion": 2,
                 "platform": "windows",
                 "architecture": "x64",
@@ -545,7 +551,7 @@ def invoke_manager(
             "-Action",
             action,
             "-ExpectedVersion",
-            "0.2.6",
+            "0.2.7",
             "-ExpectedRuntimeRoot",
             str(runtime_root),
             "-StateRootOverride",
@@ -717,6 +723,7 @@ def verify_install_smoke(package: Path) -> None:
         def run_installer(
             extra_env: dict[str, str] | None = None,
             expect_success: bool = True,
+            extension_id: str | None = None,
         ) -> subprocess.CompletedProcess[str]:
             install_env = {**env, **(extra_env or {})}
             completed = run_captured(
@@ -728,6 +735,7 @@ def verify_install_smoke(package: Path) -> None:
                     "-File",
                     str(installers[0]),
                     "-Repair",
+                    *(["-ExtensionId", extension_id] if extension_id is not None else []),
                 ],
                 install_env,
                 180,
@@ -757,7 +765,7 @@ def verify_install_smoke(package: Path) -> None:
                         "-Action",
                         "Stop",
                         "-ExpectedVersion",
-                        "0.2.6",
+                        "0.2.7",
                         "-ExpectedRuntimeRoot",
                         str(runtime_root),
                         "-StateRootOverride",
@@ -817,6 +825,11 @@ def verify_install_smoke(package: Path) -> None:
             )
 
         try:
+            print("Windows smoke: reject invalid unpacked extension ID before installation", flush=True)
+            for invalid_id in ("A" * 32, "a" * 31, "a" * 33, "a" * 31 + "q", "a" * 32 + "\n", "*"):
+                run_installer(expect_success=False, extension_id=invalid_id)
+                require(not runtime_root.exists() and not native_manifest_path.exists(),
+                        "invalid extension ID modified the installation")
             print("Windows smoke: initial install", flush=True)
             create_legacy_task_fixture(env)
             require(task_fixture_exists(env), "legacy login-start fixture was not registered")
@@ -832,7 +845,7 @@ def verify_install_smoke(package: Path) -> None:
                 runtime_root,
                 state_path,
             )
-            require(health["engineVersion"] == "0.2.6", "wrong Engine version accepted")
+            require(health["engineVersion"] == "0.2.7", "wrong Engine version accepted")
 
             stale_state = dict(initial_state)
             stale_state["pid"] = os.getpid()
@@ -904,8 +917,14 @@ def verify_install_smoke(package: Path) -> None:
             _, native_state = wait_for_exact_health(port, runtime_root, state_path)
 
             before_repair = native_state["instanceId"]
-            print("Windows smoke: repair install", flush=True)
-            run_installer()
+            print("Windows smoke: repair install for an unpacked extension", flush=True)
+            unpacked_id = "b" * 32
+            run_installer(extension_id=unpacked_id)
+            require(json.loads(native_manifest_path.read_bytes())["allowed_origins"]
+                    == [f"chrome-extension://{unpacked_id}/"],
+                    "repair did not bind the explicitly requested unpacked extension")
+            require(json.loads((runtime_root / "release.json").read_bytes())["chromeExtensionId"]
+                    == STORE_EXTENSION_ID, "unpacked binding modified packaged metadata")
             require(not task_fixture_exists(env) and not state_path.exists(), "repair enabled login startup or left Engine running")
             require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
                     "repaired Native Host did not restart Engine")

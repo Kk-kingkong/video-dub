@@ -1,12 +1,16 @@
 [CmdletBinding()]
 param(
-    [switch]$Repair
+    [switch]$Repair,
+    [string]$ExtensionId = "__EXTENSION_ID__"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExtensionId = "__EXTENSION_ID__"
+if ($ExtensionId -cnotmatch '\A[a-p]{32}\z') {
+    throw "Invalid Chrome extension ID: IDs must contain exactly 32 lowercase letters from a to p."
+}
+$PackagedExtensionId = "__EXTENSION_ID__"
 $Version = "__VERSION__"
 $NativeHostName = if ($env:LOCAL_DUB_NATIVE_HOST_NAME) {
     $env:LOCAL_DUB_NATIVE_HOST_NAME
@@ -75,7 +79,7 @@ function Invoke-RuntimeVerification([string]$Root, [string]$ExpectedVersion) {
     }
     $Release = Get-Content -LiteralPath $ReleasePath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($Release.version -ne $ExpectedVersion -or
-        $Release.chromeExtensionId -ne $ExtensionId -or
+        $Release.chromeExtensionId -ne $PackagedExtensionId -or
         $Release.platform -ne "windows" -or
         $Release.architecture -ne "x64" -or
         $Release.protocolVersion -ne 2 -or
