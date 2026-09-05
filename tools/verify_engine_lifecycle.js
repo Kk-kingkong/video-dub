@@ -1,0 +1,70 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+
+const extension = path.resolve(__dirname, "../extension");
+const context = vm.createContext({
+  AbortController, URL, setTimeout, clearTimeout,
+  chrome: {
+    storage: { sync: { get: async (defaults) => defaults } },
+    runtime: { getManifest: () => ({ version: "test" }), onInstalled: { addListener() {} }, onMessage: { addListener() {} } }
+  },
+  importScripts(...names) {
+    for (const name of names) vm.runInContext(fs.readFileSync(path.join(extension, name), "utf8"), context);
+  }
+});
+vm.runInContext(fs.readFileSync(path.join(extension, "background.js"), "utf8"), context);
+const autoStart = context.autoStartCaptionHttpEngine;
+const nativeMessage = context.sendNativeMessage;
+
+async function main() {
+  let starts = 0;
+  context.fetchForExtension = async () => { throw new TypeError("Failed to fetch"); };
+  context.sendNativeMessage = async () => ({ ok: true, ytDlp: true });
+  context.autoStartCaptionHttpEngine = async () => { starts++; return { ok: true }; };
+  const passive = await context.checkCaptionEngineHealth();
+  assert.equal(starts, 0, "passive health must never wake a sleeping Engine");
+  assert.equal(passive.payload.standby, true);
+  await context.checkCaptionEngineHealth({}, { startIfNeeded: true });
+  assert.equal(starts, 1, "a user operation can wake the Engine");
+
+  starts = 0;
+  let requests = 0;
+  context.fetchForExtension = async () => {
+    requests++;
+    if (requests === 1) throw new TypeError("Failed to fetch");
+    return { ok: true, status: 200, text: '{"ok":true}' };
+  };
+  assert.equal((await context.fetchJson("http://127.0.0.1:8787/api/tts", { startEngineIfNeeded: true })).ok, true);
+  assert.equal(starts, 1);
+  assert.equal(requests, 2, "real work retries exactly once after waking");
+  for (const [url, message] of [
+    ["http://127.0.0.1:8787/api/tts", "本地 TTS 生成超时"],
+    ["https://api.example.com/api/tts", "Failed to fetch"]
+  ]) {
+    context.fetchForExtension = async () => { throw new Error(message); };
+    await assert.rejects(context.fetchJson(url, { startEngineIfNeeded: true }), new RegExp(message));
+  }
+  assert.equal(starts, 1, "timeouts and remote APIs must not start a local Engine");
+  context.fetchForExtension = async () => ({ ok: false, status: 429, text: '{"error":"limited"}' });
+  assert.equal((await context.fetchJson("http://127.0.0.1:8787/api/tts", { startEngineIfNeeded: true })).status, 429);
+  assert.equal(starts, 1, "HTTP errors must not replay a potentially accepted operation");
+
+  const controller = new AbortController();
+  context.fetchForExtension = async () => { throw new Error("Failed to fetch"); };
+  context.autoStartCaptionHttpEngine = async () => { controller.abort(); return { ok: true }; };
+  await assert.rejects(context.fetchJson("http://127.0.0.1:8787/api/dub", {
+    startEngineIfNeeded: true, signal: controller.signal, abortMessage: "已取消"
+  }), /已取消/);
+
+  context.sendNativeMessage = nativeMessage;
+  let nativeCalls = 0;
+  context.chrome.runtime.sendNativeMessage = () => { nativeCalls++; };
+  const before = Date.now();
+  await Promise.all([autoStart("http://127.0.0.1:8787", [], 30), autoStart("http://127.0.0.1:8787", [], 30)]);
+  assert.equal(nativeCalls, 1, "concurrent work shares one Engine launch");
+  assert.ok(Date.now() - before < 500, "a silent Native Host cannot exceed the launch deadline");
+  console.log("Engine lifecycle checks passed: passive health, one wake/retry, timeout/HTTP/remote and cancellation guards.");
+}
+main().catch((error) => { console.error(error); process.exitCode = 1; });

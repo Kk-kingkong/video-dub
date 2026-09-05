@@ -6,7 +6,7 @@ An open-source Chrome extension that translates YouTube captions into Chinese an
 
 LocalTube Dub prefers an existing Chinese YouTube caption track. When Chinese captions are unavailable, it can use Chrome's free on-device Translator or a translation Provider chosen by the user. Videos without captions can use the optional local Whisper Engine.
 
-> **Status:** `0.2.5` release candidate. The Chrome Web Store update is pending; optional desktop Engine packages remain unsigned and unnotarized development builds.
+> **Status:** `0.2.6` testing release, not yet published to the Chrome Web Store; optional desktop Engine packages remain unsigned and unnotarized development builds.
 
 ## Highlights
 
@@ -53,7 +53,10 @@ Read the public [privacy policy](https://kk-kingkong.github.io/video-dub/privacy
 ```bash
 node tools/verify_extension_flows.js
 node tools/verify_provider_registry.js
+node tools/verify_translation_integrity.js
+node tools/verify_engine_lifecycle.js
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_local_engine.py
+PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_engine_lifecycle.py
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_native_messaging.py
 python3 tools/verify_open_source_compliance.py
 python3 tools/verify_windows_package.py --source

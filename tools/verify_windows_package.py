@@ -35,8 +35,8 @@ REGISTRY_ROOT = (
     r"HKCU\Software\Google\Chrome\NativeMessagingHosts"
     rf"\{NATIVE_HOST_NAME}"
 )
-WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.5-Windows-x64.zip"
-WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.5-Windows-x64-SHA256SUMS.txt"
+WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.6-Windows-x64.zip"
+WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.6-Windows-x64-SHA256SUMS.txt"
 WINDOWS_TEMPLATES = {
     "launcher": ROOT_DIR / "packaging" / "windows" / "Install LocalTube Dub Engine.cmd.in",
     "installer": ROOT_DIR / "packaging" / "windows" / "install-engine.ps1.in",
@@ -197,7 +197,7 @@ def verify_native_health_identity() -> None:
     runtime_root = ROOT_DIR / "Windows Runtime 路径"
     identity = {
         "service": "localtube-dub",
-        "engineVersion": "0.2.5",
+        "engineVersion": "0.2.6",
         "protocolVersion": 2,
         "platform": "windows",
         "architecture": "x64",
@@ -284,7 +284,8 @@ def verify_packaging_sources() -> None:
         and "com.localtube.dub.engine" in installer,
         "installer does not register the HKCU Native Host",
     )
-    require("Register-ScheduledTask" in installer, "installer does not create per-user startup")
+    require("Register-ScheduledTask" not in installer and "Unregister-ScheduledTask" in installer,
+            "installer must remove legacy login startup and rely on Native Messaging")
     require(
         "manage-engine.ps1" in installer
         and "-Action Start" in installer
@@ -393,8 +394,8 @@ def verify_source() -> None:
         "Windows install smoke must execute the real installer and uninstaller",
     )
     for expected in (
-        "read_task_fixture",
-        "Start-ScheduledTask",
+        "create_legacy_task_fixture",
+        "task_fixture_exists",
         "winreg",
         "LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE",
         "native_host_launcher.exe",
@@ -506,7 +507,7 @@ def wait_for_exact_health(
                 health = json.loads(response.read())
             expected = {
                 "service": "localtube-dub",
-                "engineVersion": "0.2.5",
+                "engineVersion": "0.2.6",
                 "protocolVersion": 2,
                 "platform": "windows",
                 "architecture": "x64",
@@ -544,7 +545,7 @@ def invoke_manager(
             "-Action",
             action,
             "-ExpectedVersion",
-            "0.2.5",
+            "0.2.6",
             "-ExpectedRuntimeRoot",
             str(runtime_root),
             "-StateRootOverride",
@@ -559,26 +560,15 @@ def invoke_manager(
     )
 
 
-def read_task_fixture(task_name: str, env: dict[str, str]) -> dict[str, Any]:
-    script = (
-        "$Task=Get-ScheduledTask -TaskName $env:LOCAL_DUB_TASK_NAME "
-        "-ErrorAction Stop;"
-        "$Action=$Task.Actions[0];"
-        "[ordered]@{"
-        "execute=$Action.Execute;"
-        "arguments=$Action.Arguments;"
-        "workingDirectory=$Action.WorkingDirectory;"
-        "userId=$Task.Principal.UserId;"
-        "runLevel=[string]$Task.Principal.RunLevel"
-        "}|ConvertTo-Json -Compress"
-    )
-    completed = run_checked(
-        [powershell_executable(), "-NoProfile", "-Command", script],
+def create_legacy_task_fixture(env: dict[str, str]) -> None:
+    run_checked(
+        [powershell_executable(), "-NoProfile", "-Command",
+         "$Action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -Command exit';"
+         "$Trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME;"
+         "Register-ScheduledTask -TaskName $env:LOCAL_DUB_TASK_NAME -Action $Action "
+         "-Trigger $Trigger -Force | Out-Null"],
         env,
     )
-    payload = json.loads(completed.stdout.strip())
-    require(isinstance(payload, dict), f"scheduled task {task_name} is invalid")
-    return payload
 
 
 def task_fixture_exists(env: dict[str, str]) -> bool:
@@ -767,7 +757,7 @@ def verify_install_smoke(package: Path) -> None:
                         "-Action",
                         "Stop",
                         "-ExpectedVersion",
-                        "0.2.5",
+                        "0.2.6",
                         "-ExpectedRuntimeRoot",
                         str(runtime_root),
                         "-StateRootOverride",
@@ -828,7 +818,13 @@ def verify_install_smoke(package: Path) -> None:
 
         try:
             print("Windows smoke: initial install", flush=True)
+            create_legacy_task_fixture(env)
+            require(task_fixture_exists(env), "legacy login-start fixture was not registered")
             run_installer()
+            require(not task_fixture_exists(env), "upgrade left the legacy login-start task")
+            require(not state_path.exists(), "installer left Engine running without demand")
+            require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
+                    "installed Native Host did not start Engine on demand")
             print("Windows smoke: initial health", flush=True)
             require((runtime_root / "release.json").is_file(), "real install did not activate runtime")
             health, initial_state = wait_for_exact_health(
@@ -836,7 +832,7 @@ def verify_install_smoke(package: Path) -> None:
                 runtime_root,
                 state_path,
             )
-            require(health["engineVersion"] == "0.2.5", "wrong Engine version accepted")
+            require(health["engineVersion"] == "0.2.6", "wrong Engine version accepted")
 
             stale_state = dict(initial_state)
             stale_state["pid"] = os.getpid()
@@ -889,57 +885,7 @@ def verify_install_smoke(package: Path) -> None:
                 "installed Native Messaging manifest has the wrong launcher path",
             )
 
-            task = read_task_fixture(task_name, env)
-            require(
-                str(task.get("execute") or "").lower().endswith("powershell.exe"),
-                "scheduled task does not execute PowerShell",
-            )
-            task_arguments = str(task.get("arguments") or "").replace("/", "\\").casefold()
-            expected_task_paths = (
-                (runtime_root / "manage-engine.ps1").resolve(),
-                runtime_root.resolve(),
-                state_root.resolve(),
-            )
-            require(
-                all(
-                    str(path).replace("/", "\\").casefold() in task_arguments
-                    for path in expected_task_paths
-                ),
-                f"scheduled task did not preserve paths with spaces/Chinese: {task}",
-            )
-            require(
-                str(task.get("runLevel") or "").lower() == "limited",
-                "scheduled task is not a limited per-user task",
-            )
-            require(
-                bool(task.get("userId"))
-                and str(task.get("userId") or "").lower() != "system",
-                "scheduled task is not bound to the current user",
-            )
-
-            print("Windows smoke: scheduled-task startup", flush=True)
-            invoke_manager(
-                runtime_root / "manage-engine.ps1",
-                "Stop",
-                runtime_root,
-                state_root,
-                port,
-                env,
-            )
-            run_checked(
-                [
-                    powershell_executable(),
-                    "-NoProfile",
-                    "-Command",
-                    "Start-ScheduledTask -TaskName $env:LOCAL_DUB_TASK_NAME",
-                ],
-                env,
-            )
-            _, task_state = wait_for_exact_health(port, runtime_root, state_path)
-            require(
-                task_state["instanceId"] != initial_state["instanceId"],
-                "Scheduled Task did not create a fresh Engine instance",
-            )
+            require(not task_fixture_exists(env), "on-demand startup created a login-start task")
 
             print("Windows smoke: compiled Native Messaging startup", flush=True)
             invoke_manager(
@@ -960,6 +906,9 @@ def verify_install_smoke(package: Path) -> None:
             before_repair = native_state["instanceId"]
             print("Windows smoke: repair install", flush=True)
             run_installer()
+            require(not task_fixture_exists(env) and not state_path.exists(), "repair enabled login startup or left Engine running")
+            require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
+                    "repaired Native Host did not restart Engine")
             _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
             require(
                 repaired_state["instanceId"] != before_repair,
@@ -971,12 +920,15 @@ def verify_install_smoke(package: Path) -> None:
                 {"LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE": "1"},
                 expect_success=False,
             )
+            require(not task_fixture_exists(env) and not state_path.exists(), "rollback enabled login startup or left Engine running")
+            require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
+                    "restored Native Host did not restart Engine")
             _, rollback_state = wait_for_exact_health(port, runtime_root, state_path)
             require(
                 rollback_state["instanceId"] != repaired_state["instanceId"],
                 "post-activation rollback did not restore and restart the prior runtime",
             )
-            require(task_fixture_exists(env), "rollback did not restore the Scheduled Task")
+            require(not task_fixture_exists(env), "rollback restored legacy login startup")
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey):
                 pass
 

@@ -721,6 +721,12 @@ async function refreshEngineStatus() {
       );
       return;
     }
+    if (payload.standby) {
+      setEngineStatus(payload.ytDlp ? "ok" : "warn", "Engine 已就绪，按需启动", payload.ytDlp
+        ? "开始翻译或配音时会自动启动，空闲 5 分钟后退出。"
+        : "请打开安装说明补齐 yt-dlp 依赖后再开始翻译。");
+      return;
+    }
     if (payload.ytDlp) {
       if (currentSettings.allowAudioTranscription && currentSettings.transcriptionProvider === "native" && !payload.whisper) {
         setEngineStatus(

@@ -824,7 +824,7 @@
     const maxRateMultiplier = clampNumber(options.maxRateMultiplier, 1, 2, 1.45);
     const maxRate = Math.max(minRate, rate * maxRateMultiplier);
 
-    if (now >= hardEnd + endGrace || duration <= 0.05) {
+    if (options.audioEnded || now >= hardEnd + endGrace || duration <= 0.05) {
       return {
         action: "stop",
         playbackRate: minRate,
@@ -913,7 +913,8 @@
         ...options,
         videoPaused: video.paused,
         videoSeeking: video.seeking,
-        audioPaused: audio.paused
+        audioPaused: audio.paused,
+        audioEnded: audio.ended
       }
     );
     if (sync.seekTo !== null) {
@@ -1074,12 +1075,16 @@
       videoId: String(request.videoId || ""),
       targetLanguage: String(request.targetLanguage || ""),
       provider: String(request.provider || ""),
-      model: String(request.model || "")
+      model: request.model == null ? undefined : String(request.model),
+      requestedSourceLanguage: request.requestedSourceLanguage,
+      endpoint: request.endpoint
     };
     const youtubeCaptions = {
       ...selected,
       provider: "youtube-captions",
-      model: ""
+      model: "",
+      requestedSourceLanguage: "",
+      endpoint: ""
     };
     return selected.provider === youtubeCaptions.provider
       ? [youtubeCaptions]

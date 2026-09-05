@@ -145,18 +145,16 @@ restartButton?.addEventListener("click", async () => {
 
 installAutostartButton?.addEventListener("click", async () => {
   installAutostartButton.disabled = true;
-  restartStatus.textContent = "正在安装 Engine 开机自启动...";
+  restartStatus.textContent = "正在修复 Engine 按需启动...";
   try {
     const response = await chrome.runtime.sendMessage({ type: "localtube.installEngineAutostart" });
     if (!response?.ok) {
-      restartStatus.textContent = response?.error || "安装失败，请复制开机自启命令手动执行。";
+      restartStatus.textContent = response?.error || "修复失败，请复制按需启动修复命令手动执行。";
       return;
     }
-    restartStatus.textContent = response.payload?.healthy
-      ? "开机自启动已安装，Engine 正常运行。"
-      : "开机自启动已安装，Engine 正在启动。";
+    restartStatus.textContent = "按需启动已修复，开始翻译时会自动启动 Engine。";
   } catch (error) {
-    restartStatus.textContent = "安装失败，请复制开机自启命令手动执行。";
+    restartStatus.textContent = "修复失败，请复制按需启动修复命令手动执行。";
   } finally {
     installAutostartButton.disabled = false;
   }

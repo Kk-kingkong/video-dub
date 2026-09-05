@@ -28,7 +28,7 @@ rollback_runtime() {
     if [[ "$DRY_RUN" != "1" && -x "$RUNTIME_ROOT/companion/install_native_host_macos.sh" ]]; then
       LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
         "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID" \
-        || echo "旧 Engine 已恢复，但自动启动健康检查仍需手动处理。"
+        || echo "旧 Engine 已恢复，但按需启动注册仍需手动处理。"
     fi
   else
     rm -rf "$BACKUP_ROOT"
@@ -52,7 +52,7 @@ pause_on_error() {
 trap pause_on_error EXIT
 
 echo "LocalTube Dub Engine $VERSION"
-echo "将为 Chrome 扩展 $EXTENSION_ID 安装本地字幕、配音和开机自启服务。"
+echo "将为 Chrome 扩展 $EXTENSION_ID 安装本地字幕、配音和按需启动服务。"
 echo
 
 if /usr/bin/xattr -p com.apple.quarantine "$ROOT_DIR" >/dev/null 2>&1 \
@@ -81,7 +81,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
     "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID"
   if [[ "${LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE:-0}" == "1" ]]; then
-    echo "Injected installer failure after Native Host and LaunchAgent verification."
+    echo "Injected installer failure after Native Host registration."
     false
   fi
   ACTIVATION_STARTED=0
@@ -94,7 +94,7 @@ fi
 LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID"
 
 if [[ "${LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE:-0}" == "1" ]]; then
-  echo "Injected installer failure after Native Host and LaunchAgent verification."
+  echo "Injected installer failure after Native Host registration."
   false
 fi
 ACTIVATION_STARTED=0

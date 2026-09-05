@@ -36,8 +36,11 @@ jobs:
         run: |
           node tools/verify_extension_flows.js
           node tools/verify_provider_registry.js
+          node tools/verify_translation_integrity.js
+          node tools/verify_engine_lifecycle.js
           PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_kokoro_engine.py
           PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_local_engine.py
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_engine_lifecycle.py
           PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_native_messaging.py
           python3 tools/verify_release_packages.py --self-test
           python3 tools/verify_open_source_compliance.py
@@ -55,9 +58,9 @@ jobs:
         with:
           name: localtube-dub-macos-${{ matrix.arch }}
           path: |
-            dist/LocalTube-Dub-extension-v0.2.5.zip
-            dist/LocalTube-Dub-Engine-v0.2.5-macOS-${{ matrix.arch }}.zip
-            dist/LocalTube-Dub-v0.2.5-SHA256SUMS.txt
+            dist/LocalTube-Dub-extension-v0.2.6.zip
+            dist/LocalTube-Dub-Engine-v0.2.6-macOS-${{ matrix.arch }}.zip
+            dist/LocalTube-Dub-v0.2.6-SHA256SUMS.txt
           if-no-files-found: error
 
   windows-engine:
@@ -78,8 +81,11 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           node tools/verify_extension_flows.js
           node tools/verify_provider_registry.js
+          node tools/verify_translation_integrity.js
+          node tools/verify_engine_lifecycle.js
           py tools/verify_kokoro_engine.py
           py tools/verify_local_engine.py
+          py tools/verify_engine_lifecycle.py
           py tools/verify_release_packages.py --self-test
           py tools/verify_windows_package.py --source
           py tools/verify_open_source_compliance.py
@@ -93,11 +99,11 @@ jobs:
       - name: Install, repair, health-check, and uninstall
         shell: pwsh
         timeout-minutes: 15
-        run: py tools/verify_windows_package.py --install-smoke dist/LocalTube-Dub-Engine-v0.2.5-Windows-x64.zip
+        run: py tools/verify_windows_package.py --install-smoke dist/LocalTube-Dub-Engine-v0.2.6-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: localtube-dub-windows-x64
           path: |
-            dist/LocalTube-Dub-Engine-v0.2.5-Windows-x64.zip
-            dist/LocalTube-Dub-v0.2.5-Windows-x64-SHA256SUMS.txt
+            dist/LocalTube-Dub-Engine-v0.2.6-Windows-x64.zip
+            dist/LocalTube-Dub-v0.2.6-Windows-x64-SHA256SUMS.txt
           if-no-files-found: error

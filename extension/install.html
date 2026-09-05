@@ -47,17 +47,17 @@
 
       <section>
         <h2>启动本地 Engine</h2>
-        <p data-audience="customer">完成安装后，Engine 会在当前用户登录系统时自动运行。下面的按钮用于立即启动、重启或修复开机启动；正常使用通常不需要重复安装。</p>
+        <p data-audience="customer">完成安装后，开始翻译或配音时会按需启动 Engine，空闲 5 分钟后自动退出。检查状态不会唤醒 Engine；下面的按钮可手动启动、重启或修复。</p>
         <p data-audience="customer">如果刚安装后仍显示未连接，请完全退出并重新打开 Chrome，再点“一键启动 Engine”。</p>
         <p data-audience="developer">Engine 会监听 127.0.0.1:8787。插件会优先使用页面已有目标语言字幕；页面读取失败或只有原文字幕时，再用 Engine 调用 yt-dlp 提取字幕文本。同步配音会先调用本地 TTS 生成音频片段并按视频进度播放，失败时再退回浏览器朗读。</p>
-        <p data-audience="developer">首次 Native Host 安装会同时注册 macOS 登录自启动。以后重启电脑，系统会自动启动并守护 Engine；“修复开机自启”可以重新生成配置。如果终端看到 Address already in use，新版启动脚本和“一键重启 Engine”会自动清理确认属于 LocalTube Dub 的旧进程。如果刚安装 Native Host 后仍提示不可用，请完全退出并重启 Chrome。</p>
+        <p data-audience="developer">首次 Native Host 安装会清理旧版登录自启动。翻译、配音或导出操作通过 Native Host 按需启动 Engine；“修复按需启动”会更新运行环境并清理旧配置。如果终端看到 Address already in use，新版启动脚本和“一键重启 Engine”会自动清理确认属于 LocalTube Dub 的旧进程。如果刚安装 Native Host 后仍提示不可用，请完全退出并重启 Chrome。</p>
         <button class="copy-button" id="startEngineButton" type="button">一键启动 Engine</button>
         <button class="copy-button" id="restartEngineButton" type="button">一键重启 Engine</button>
-        <button class="copy-button" id="installAutostartButton" type="button">修复开机自启</button>
+        <button class="copy-button" id="installAutostartButton" type="button">修复按需启动</button>
         <p id="restartStatus" class="inline-status">等待操作</p>
         <button class="copy-button" data-audience="developer" data-copy="#startCommand" type="button">复制启动命令</button>
         <pre data-audience="developer"><code id="startCommand">生成中...</code></pre>
-        <button class="copy-button" data-audience="developer" data-copy="#autostartCommand" type="button">复制开机自启命令</button>
+        <button class="copy-button" data-audience="developer" data-copy="#autostartCommand" type="button">复制按需启动修复命令</button>
         <pre data-audience="developer"><code id="autostartCommand">生成中...</code></pre>
       </section>
 
@@ -73,7 +73,7 @@
 
       <section data-audience="developer">
         <h2>Native Messaging 安装</h2>
-        <p>macOS 私测安装包会自动写入与正式扩展 ID 匹配的 Native Host，并安装登录自启动；客户不需要复制命令。下面的命令只用于从源码加载的开发版，它会记录项目虚拟环境的 Python、注册 launcher，并同时安装 Engine 登录自启动。</p>
+        <p>macOS 私测安装包会自动写入与正式扩展 ID 匹配的 Native Host，并移除旧版登录自启动；客户不需要复制命令。下面的命令只用于从源码加载的开发版，它会记录项目虚拟环境的 Python、注册 launcher，并配置 Engine 按需启动。</p>
         <button class="copy-button" data-copy="#macCommand" type="button">复制 Native 安装命令</button>
         <pre><code id="macCommand">生成中...</code></pre>
       </section>

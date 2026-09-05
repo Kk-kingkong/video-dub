@@ -1,7 +1,26 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-08-31
-Current reviewed version: 0.2.5
+Last reviewed: 2026-09-05
+Current reviewed version: 0.2.6 (GitHub testing release)
+
+## 0.2.6 Playback and Integrity Audit
+
+- Prevent completed live audio from being restarted by the sync loop and ignore stale playback events, promise completions, and request cleanup after stop/seek/replacement.
+- Preserve AI response cardinality so existing split-batch recovery can repair oversized translation arrays. Reject oversized timeline caches instead of keeping a truncated partial video.
+- Added real-function regression coverage in `verify_extension_flows.js` and `verify_translation_integrity.js`; the latter is included in both CI platforms.
+- In-app Chromium media harness: original code requested playback twice for one clip (`playCalls: 2`, audio clock restarted); updated code requested it once (`playCalls: 1`, audio clock finished at 3.4 seconds). Media self-test reported `passed: true` for late start, rate changes, and explicit seeking.
+- This verifies synthetic media and the deterministic code paths. The user's specific YouTube URL, timestamp and voice mode have not yet been provided, so the reported video's listening check remains outstanding.
+- See [Chinese audit and implemented improvements](2026-09-05-code-review.zh-CN.md). GitHub release packaging is authorized; installing into the user's Chrome profile and Chrome Web Store submission are separate steps.
+
+### Follow-up improvements
+
+- Video events immediately suspend live Audio and browser speech; delayed playback cannot start during buffering or replace a newer utterance.
+- Cache schema v2 preserves video/model case and includes source language and endpoint fingerprints. Old subtitle entries expire without deleting credentials; mixed or changed translation identities are not cached.
+- Whole-track reuse includes video identity and effective duration; completed audio metadata survives Engine restarts within the existing one-hour TTL.
+- Engine starts through Native Messaging on demand and exits after five idle minutes. Passive health/model checks do not wake or keep it alive; requests, downloads and background workers are protected. Installers remove legacy login startup.
+- Caption probing and health run concurrently with one 23-second caption wait deadline. Lightweight no-caption copy points to a usable recovery path.
+- JavaScript and Python lifecycle regressions are included in both CI platforms. Real-process loopback tests use temporary ports and directories; installed user runtime is unchanged.
+- Legacy LaunchAgent requirements and evidence below describe historical releases; the on-demand behavior above supersedes their login-startup policy.
 
 ## 0.2.5 Verification Evidence
 

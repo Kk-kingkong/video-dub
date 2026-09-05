@@ -229,14 +229,25 @@
   }
 
   function timelineCacheKey(request = {}) {
-    return [request.videoId, request.targetLanguage, request.provider, request.model]
-      .map((value) => encodeURIComponent(String(value || "").trim().toLowerCase()))
+    const provider = String(request.provider || "").trim().toLowerCase();
+    const youtubeCaptions = provider === "youtube-captions" || provider === "youtube-source";
+    return [
+      request.videoId,
+      String(request.targetLanguage || "").trim().toLowerCase(),
+      provider,
+      youtubeCaptions ? "" : request.model,
+      youtubeCaptions ? "" : String(request.requestedSourceLanguage || "auto").trim().toLowerCase(),
+      youtubeCaptions ? "" : request.endpointHash
+    ]
+      .map((value) => encodeURIComponent(String(value || "").trim()))
       .join("|");
   }
 
   function normalizeTimelineCues(cues, maxCues = 5000) {
-    return (Array.isArray(cues) ? cues : [])
-      .slice(0, Math.max(1, Number(maxCues) || 5000))
+    if (!Array.isArray(cues) || cues.length > Math.max(1, Number(maxCues) || 5000)) {
+      return [];
+    }
+    return cues
       .map((cue, index) => {
         const text = String(cue?.text || "").slice(0, 4000).trim();
         const translatedText = String(cue?.translatedText || "").slice(0, 4000).trim();
@@ -261,7 +272,8 @@
     const ttlMs = Math.max(60000, Number(options.ttlMs || 7 * 24 * 60 * 60 * 1000));
     const maxEntries = Math.max(1, Number(options.maxEntries || 12));
     const maxBytes = Math.max(1024, Number(options.maxBytes || 4 * 1024 * 1024));
-    const entries = (Array.isArray(cache?.entries) ? cache.entries : [])
+    // Version 1 could contain wrong translations or truncated timelines; these are safe to regenerate.
+    const entries = (cache?.version === 2 && Array.isArray(cache.entries) ? cache.entries : [])
       .filter((entry) => {
         const updatedAt = Number(entry?.updatedAt || 0);
         return entry?.key && Array.isArray(entry?.cues) && entry.cues.length && updatedAt > 0 && now - updatedAt <= ttlMs;
@@ -275,10 +287,10 @@
       }
       return unescape(encodeURIComponent(serialized)).length;
     };
-    while (entries.length && byteLength({ version: 1, entries }) > maxBytes) {
+    while (entries.length && byteLength({ version: 2, entries }) > maxBytes) {
       entries.pop();
     }
-    return { version: 1, entries };
+    return { version: 2, entries };
   }
 
   function upsertTimelineCache(cache, request = {}, timeline = {}, options = {}) {
@@ -288,7 +300,7 @@
       return pruneTimelineCache(cache, options);
     }
     const now = Number(options.now || Date.now());
-    const existing = Array.isArray(cache?.entries) ? cache.entries.filter((entry) => entry?.key !== key) : [];
+    const existing = pruneTimelineCache(cache, options).entries.filter((entry) => entry.key !== key);
     existing.unshift({
       key,
       videoId: String(request.videoId),
@@ -300,7 +312,7 @@
       updatedAt: now,
       cues
     });
-    return pruneTimelineCache({ version: 1, entries: existing }, { ...options, now });
+    return pruneTimelineCache({ version: 2, entries: existing }, { ...options, now });
   }
 
   function findTimelineCache(cache, request = {}, options = {}) {

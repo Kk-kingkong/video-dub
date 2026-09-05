@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import json
 import os
 import struct
@@ -175,8 +176,10 @@ def main() -> None:
     if not launcher.is_file():
         raise SystemExit(f"Native launcher not found: {launcher}")
     native_source = (ROOT / "companion" / "native_host.py").read_text(encoding="utf-8")
-    if "build_kokoro_model_payload" in native_source:
-        raise SystemExit("Native model commands still call the process-local model service")
+    for call in ast.walk(ast.parse(native_source)):
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "build_kokoro_model_payload":
+            if not call.args or not isinstance(call.args[0], ast.Constant) or call.args[0].value != "status":
+                raise SystemExit("Native model mutations must use the persistent HTTP owner")
     if "127.0.0.1:8787" in native_source or "-tiTCP:8787" in native_source:
         raise SystemExit("Native host still hardcodes the Engine port")
     for required_text in ("LOCAL_DUB_ENGINE_BASE_URL", "KOKORO_MODEL_ENDPOINTS", "ownerTransport"):

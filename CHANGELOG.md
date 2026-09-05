@@ -1,5 +1,19 @@
 # LocalTube Dub Changelog
 
+## 0.2.6 - 2026-09-05
+
+- Fixed completed live speech clips being restarted by the media synchronization loop before end-event cleanup.
+- Guarded delayed playback callbacks and pending-request cleanup so stopped or replaced sessions cannot change the active speech state.
+- Preserve oversized AI translation responses so the existing split-batch recovery can detect mismatched cue counts instead of silently assigning repeated or shifted translations.
+- Reject subtitle timelines above the cache cue limit instead of storing truncated timelines as complete videos.
+- Added behavioral regressions for playback completion, stale playback events, translation-count recovery, and cache completeness.
+- Pause live speech immediately on video pause/buffering events, including background tabs.
+- Partition translation caches by case-sensitive video/model IDs, selected source language and endpoint fingerprint; expire legacy subtitle entries without changing credentials.
+- Include video identity and actual duration in whole-track reuse keys.
+- Start Engine on demand and exit after five idle minutes, protect active work, migrate legacy login startup, and preserve completed exports across restarts.
+- Probe page captions alongside Engine health within one startup deadline; clarify recovery when lightweight mode has no captions.
+- Updated development metadata to `0.2.6`; prepared for the GitHub testing release. Chrome Web Store submission remains separate.
+
 ## 0.2.5 - 2026-08-31
 
 - Fixed lightweight mode repeatedly receiving empty YouTube `timedtext` responses and falling through to the desktop Engine.

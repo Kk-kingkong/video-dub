@@ -228,7 +228,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "localtube.captionEngineHealth") {
-    checkCaptionEngineHealth(message.settings)
+    checkCaptionEngineHealth(message.settings, { startIfNeeded: message.startIfNeeded === true })
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;
@@ -517,13 +517,45 @@ function sanitizeSettings(settings) {
   };
 }
 
+async function makeBackgroundTimelineCacheRequest(payload, settings) {
+  const provider = String(payload.provider || settings.provider || "");
+  const youtubeCaptions = provider === "youtube-captions" || provider === "youtube-source";
+  const endpoint = provider === "custom"
+    ? payload.endpoint ?? settings.customEndpoint
+    : ["native", "local-http"].includes(provider) ? payload.endpoint ?? settings.endpoint : "";
+  let endpointHash = "";
+  if (endpoint) {
+    const url = new URL(endpoint);
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/key|token|secret|password|credential|auth|signature|^sig$/i.test(key)) {
+        url.searchParams.delete(key);
+      }
+    }
+    url.searchParams.sort();
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url.href));
+    endpointHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return {
+    videoId: String(payload.videoId || ""),
+    targetLanguage: String(payload.targetLanguage || settings.targetLanguage || ""),
+    provider,
+    model: youtubeCaptions ? "" : String(payload.model ?? resolveProviderModel({ ...settings, provider })),
+    requestedSourceLanguage: youtubeCaptions ? "" : String(payload.requestedSourceLanguage ?? settings.sourceLanguage ?? "auto"),
+    endpointHash
+  };
+}
+
 async function getCachedTranslationTimeline(payload = {}, settings = {}) {
   const storedSettings = sanitizeSettings({ ...(await getStoredSettings()), ...settings });
   if (!storedSettings.cacheTranslations) {
     return { ok: true, payload: { hit: false, disabled: true } };
   }
+  const request = await makeBackgroundTimelineCacheRequest(payload, storedSettings);
   const stored = await chrome.storage.local.get(TIMELINE_CACHE_STORAGE_KEY);
-  const result = LocalTubeDubBackgroundHelpers.findTimelineCache(stored[TIMELINE_CACHE_STORAGE_KEY], payload);
+  const result = LocalTubeDubBackgroundHelpers.findTimelineCache(stored[TIMELINE_CACHE_STORAGE_KEY], request);
   await chrome.storage.local.set({ [TIMELINE_CACHE_STORAGE_KEY]: result.cache });
   return {
     ok: true,
@@ -540,12 +572,7 @@ async function saveCachedTranslationTimeline(payload = {}, settings = {}) {
   if (!storedSettings.cacheTranslations) {
     return { ok: true, payload: { saved: false, disabled: true } };
   }
-  const request = {
-    videoId: String(payload.videoId || ""),
-    targetLanguage: String(payload.targetLanguage || storedSettings.targetLanguage || ""),
-    provider: String(payload.provider || storedSettings.provider || ""),
-    model: String(payload.model || storedSettings.model || "")
-  };
+  const request = await makeBackgroundTimelineCacheRequest(payload, storedSettings);
   const stored = await chrome.storage.local.get(TIMELINE_CACHE_STORAGE_KEY);
   const cache = LocalTubeDubBackgroundHelpers.upsertTimelineCache(
     stored[TIMELINE_CACHE_STORAGE_KEY],
@@ -693,7 +720,7 @@ async function checkProviderHealth(settings = {}) {
   return dubWithProvider(demoPayload, nextSettings, { healthCheck: true });
 }
 
-async function checkCaptionEngineHealth(settings = {}) {
+async function checkCaptionEngineHealth(settings = {}, options = {}) {
   const nextSettings = sanitizeSettings({ ...(await getStoredSettings()), ...settings });
   const endpoint = (nextSettings.endpoint || DEFAULT_SETTINGS.endpoint).replace(/\/+$/, "");
   const errors = [];
@@ -713,28 +740,21 @@ async function checkCaptionEngineHealth(settings = {}) {
   }
 
   try {
-    const nativePayload = await sendNativeMessage({ type: "health" });
+    const nativePayload = await sendNativeMessage({ type: "health" }, 2500);
     if (nativePayload?.ok) {
-      const recovered = await autoStartCaptionHttpEngine(endpoint, errors);
+      if (!options.startIfNeeded) {
+        return nativeEngineSuccessPayload(nativePayload, { httpOffline: true, standby: true, endpoint });
+      }
+      const recovered = await autoStartCaptionHttpEngine(endpoint, errors, 6500);
       if (recovered?.ok) {
         return recovered;
       }
-      return nativeEngineSuccessPayload(nativePayload, {
-        httpOffline: true,
-        endpoint
-      });
+      errors.push("HTTP Engine 按需启动失败");
+    } else {
+      errors.push(`Native Engine：${nativePayload?.error || "健康检查失败"}`);
     }
-    errors.push(`Native Engine：${nativePayload?.error || "健康检查失败"}`);
   } catch (error) {
     errors.push(`Native Engine：${error.message || String(error)}`);
-    const recovered = await recoverHttpEngineAfterNativeError(endpoint, 9000, {
-      autoStarted: true,
-      recoveredAfterNativeExit: true,
-      endpoint
-    });
-    if (recovered?.ok) {
-      return recovered;
-    }
   }
 
   return {
@@ -765,6 +785,7 @@ async function dubWithProvider(payload = {}, settings = {}, options = {}) {
 
   if (provider.kind === "local-http") {
     return fetchJson(`${nextSettings.endpoint}/api/dub`, {
+      startEngineIfNeeded: !options.healthCheck,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -997,6 +1018,7 @@ async function synthesizeSpeechWithEngine(payload = {}, settings = {}) {
   const localEndpoint = (nextSettings.endpoint || DEFAULT_SETTINGS.endpoint).replace(/\/+$/, "");
   try {
     const response = await fetchJson(`${localEndpoint}/api/tts`, {
+      startEngineIfNeeded: true,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(requestPayload),
@@ -1343,7 +1365,7 @@ async function installEngineAutostart() {
       return {
         ok: false,
         code: "AUTOSTART_INSTALL_FAILED",
-        error: payload?.error || "Engine 开机自启动安装失败"
+        error: payload?.error || "Engine 按需启动修复失败"
       };
     }
     return { ok: true, payload };
@@ -1351,7 +1373,7 @@ async function installEngineAutostart() {
     return {
       ok: false,
       code: "NATIVE_HOST_NOT_INSTALLED",
-      error: `一键安装开机自启动需要先安装 Native Host。${error.message || String(error)}`
+      error: `修复按需启动需要先安装 Native Host。${error.message || String(error)}`
     };
   }
 }
@@ -1406,12 +1428,13 @@ async function autoStartCaptionHttpEngine(endpoint, errors = [], timeoutMs = 100
 
   if (!captionEngineAutoStartInFlight) {
     captionEngineAutoStartInFlight = (async () => {
+      const deadline = Date.now() + timeoutMs;
       try {
-        const nativePayload = await sendNativeMessage({ type: "start-http" });
+        const nativePayload = await sendNativeMessage({ type: "start-http" }, timeoutMs);
         if (!nativePayload?.ok) {
           errors.push(`Native 自动启动失败：${nativePayload?.error || "没有返回启动结果"}`);
         }
-        const health = await waitForHttpEngine(endpoint, timeoutMs);
+        const health = await waitForHttpEngine(endpoint, Math.max(0, deadline - Date.now()));
         if (health?.ok) {
           return httpEngineSuccessPayload(health, {
             autoStarted: true,
@@ -1423,7 +1446,7 @@ async function autoStartCaptionHttpEngine(endpoint, errors = [], timeoutMs = 100
         return null;
       } catch (error) {
         errors.push(`Native 自动启动异常：${error.message || String(error)}`);
-        const recovered = await recoverHttpEngineAfterNativeError(endpoint, timeoutMs, {
+        const recovered = await recoverHttpEngineAfterNativeError(endpoint, Math.max(0, deadline - Date.now()), {
           autoStarted: true,
           recoveredAfterNativeExit: true,
           endpoint
@@ -1447,13 +1470,13 @@ async function waitForHttpEngine(endpoint, timeoutMs) {
   while (Date.now() < deadline) {
     const health = await fetchJson(`${endpoint}/api/health`, {
       method: "GET",
-      timeoutMs: 1000,
+      timeoutMs: Math.max(1, Math.min(1000, deadline - Date.now())),
       timeoutMessage: "Engine 健康检查超时"
     }).catch(() => null);
     if (health?.ok) {
       return health;
     }
-    await delay(300);
+    await delay(Math.max(0, Math.min(300, deadline - Date.now())));
   }
   return null;
 }
@@ -1626,6 +1649,7 @@ async function startFullTranscript(payload = {}, settings = {}) {
   }
   const endpoint = String(storedSettings.endpoint || DEFAULT_SETTINGS.endpoint).replace(/\/+$/, "");
   const response = await fetchJson(`${endpoint}/api/full-transcript/start`, {
+    startEngineIfNeeded: true,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -1685,6 +1709,7 @@ async function startDubTrack(payload = {}, settings = {}) {
   }
   const endpoint = String(storedSettings.endpoint || DEFAULT_SETTINGS.endpoint).replace(/\/+$/, "");
   const response = await fetchJson(`${endpoint}/api/dub-track/start`, {
+    startEngineIfNeeded: true,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -1732,6 +1757,7 @@ async function getDubTrackStatus(jobId, settings = {}) {
   const storedSettings = sanitizeSettings({ ...(await getStoredSettings()), ...settings });
   const endpoint = String(storedSettings.endpoint || DEFAULT_SETTINGS.endpoint).replace(/\/+$/, "");
   const response = await fetchJson(`${endpoint}/api/dub-track/status?id=${encodeURIComponent(String(jobId || ""))}`, {
+    startEngineIfNeeded: true,
     method: "GET",
     timeoutMs: 10000,
     timeoutMessage: "配音音轨进度查询超时"
@@ -1785,6 +1811,7 @@ async function transcribeVideoWindowRequest(payload = {}, settings = {}, signal)
 
   try {
     const response = await fetchJson(`${endpoint}/api/transcribe-video`, {
+      startEngineIfNeeded: true,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(requestPayload),
@@ -2015,6 +2042,7 @@ async function transcribeRecordingWithNativeEngine(recording, options) {
 
   try {
     const response = await fetchJson(`${endpoint}/api/transcribe`, {
+      startEngineIfNeeded: true,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(requestPayload),
@@ -2677,7 +2705,7 @@ function parseTranslationArray(text, expectedLength) {
     throw new Error("AI 返回的结果不是 JSON 数组");
   }
 
-  return parsed.map((item) => normalizeTranslationItem(item)).slice(0, expectedLength);
+  return parsed.map((item) => normalizeTranslationItem(item));
 }
 
 function normalizeTranslationItem(item) {
@@ -2894,9 +2922,13 @@ function cleanText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
-function sendNativeMessage(message) {
+function sendNativeMessage(message, timeoutMs = 0) {
   return new Promise((resolve, reject) => {
+    const timer = timeoutMs > 0
+      ? setTimeout(() => reject(new Error("Native Engine 请求超时")), timeoutMs)
+      : null;
     chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, message, (response) => {
+      if (timer) clearTimeout(timer);
       const error = chrome.runtime.lastError;
       if (error) {
         reject(new Error(error.message));
@@ -2908,7 +2940,7 @@ function sendNativeMessage(message) {
 }
 
 async function fetchJson(url, request = {}) {
-  const response = await fetchForExtension({
+  const fetchRequest = {
     url,
     method: request.method || "GET",
     headers: request.headers || {},
@@ -2917,7 +2949,23 @@ async function fetchJson(url, request = {}) {
     timeoutMs: request.timeoutMs,
     abortMessage: request.abortMessage,
     timeoutMessage: request.timeoutMessage
-  });
+  };
+  let response;
+  try {
+    response = await fetchForExtension(fetchRequest);
+  } catch (error) {
+    throwIfAborted(request.signal, request.abortMessage || "操作已取消");
+    const endpoint = new URL(url);
+    if (!request.startEngineIfNeeded || endpoint.protocol !== "http:" ||
+        !["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname) ||
+        !LocalTubeDubBackgroundHelpers.shouldAutoStartCaptionEngine({ error: error.message || String(error) })) {
+      throw error;
+    }
+    const recovered = await autoStartCaptionHttpEngine(endpoint.origin, [], 6500);
+    throwIfAborted(request.signal, request.abortMessage || "操作已取消");
+    if (!recovered?.ok) throw error;
+    response = await fetchForExtension(fetchRequest);
+  }
 
   let payload = null;
   try {

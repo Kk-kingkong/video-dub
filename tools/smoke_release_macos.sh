@@ -140,7 +140,6 @@ fi
 
 "$RUNTIME_DIR/.venv/bin/python" - "$MANIFEST_PATH" "$PLIST_PATH" "$RUNTIME_DIR" "$EXTENSION_ID" "$VERSION" "$PACKAGE_ARCH" <<'PY'
 import json
-import plistlib
 import sys
 from pathlib import Path
 
@@ -157,10 +156,8 @@ if manifest.get("allowed_origins") != [f"chrome-extension://{extension_id}/"]:
     raise SystemExit("Native Host allowed_origins mismatch")
 if Path(manifest.get("path", "")).resolve() != engine_root / "companion" / "native_host_launcher_macos.sh":
     raise SystemExit("Native Host launcher path mismatch")
-with plist_path.open("rb") as source:
-    plist = plistlib.load(source)
-if plist.get("Label") != "com.localtube.dub.engine.http" or not plist.get("RunAtLoad"):
-    raise SystemExit("LaunchAgent payload mismatch")
+if plist_path.exists():
+    raise SystemExit("On-demand installation must not create a LaunchAgent")
 release = json.loads((engine_root / "release.json").read_text(encoding="utf-8"))
 if release.get("version") != version or int(release.get("protocolVersion") or 0) < 2:
     raise SystemExit("Engine release protocol metadata mismatch")

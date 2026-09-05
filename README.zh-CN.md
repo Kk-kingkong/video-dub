@@ -6,7 +6,7 @@
 
 LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕时，再使用 Chrome 免费本地翻译或用户自己选择的翻译服务。没有字幕的视频可以使用可选的本地 Whisper Engine 转写。
 
-> **当前版本：** `0.2.5` 发布候选版。Chrome 商店更新仍待提交；可选的桌面 Engine 安装包目前仍是未签名、未公证的开发版本。
+> **当前版本：** `0.2.6` 测试版，尚未发布到 Chrome 商店；可选的桌面 Engine 安装包目前仍是未签名、未公证的开发版本。
 
 ## 主要功能
 
@@ -53,7 +53,10 @@ Kokoro 是可选功能。用户选择它以后，需要主动点击模型安装�
 ```bash
 node tools/verify_extension_flows.js
 node tools/verify_provider_registry.js
+node tools/verify_translation_integrity.js
+node tools/verify_engine_lifecycle.js
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_local_engine.py
+PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_engine_lifecycle.py
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_native_messaging.py
 python3 tools/verify_open_source_compliance.py
 python3 tools/verify_windows_package.py --source

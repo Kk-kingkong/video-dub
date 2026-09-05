@@ -22,10 +22,10 @@ from assemble_engine_runtime import assemble_runtime, load_runtime_manifest  # n
 
 
 EXTENSION_ID = "ikoenamldegccnhmjjnlkffocdkbbbmo"
-PACKAGE_VERSION = "0.2.5"
-PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.5-Windows-x64.zip"
-CHECKSUM_NAME = "LocalTube-Dub-v0.2.5-Windows-x64-SHA256SUMS.txt"
-ENGINE_FOLDER = "LocalTube-Dub-Engine-v0.2.5-Windows-x64"
+PACKAGE_VERSION = "0.2.6"
+PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.6-Windows-x64.zip"
+CHECKSUM_NAME = "LocalTube-Dub-v0.2.6-Windows-x64-SHA256SUMS.txt"
+ENGINE_FOLDER = "LocalTube-Dub-Engine-v0.2.6-Windows-x64"
 
 
 class WindowsBuildError(RuntimeError):

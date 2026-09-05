@@ -27,7 +27,7 @@ Build the Windows x64 Engine on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.5-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.6-Windows-x64.zip
 ```
 
 For a customer-facing build, inject a platform-neutral Engine download index and the support page at build time. The download URL must let users choose macOS Apple Silicon, macOS Intel, or Windows x64; it must not point every platform to one architecture-specific ZIP. Both values are optional for an offline private beta, but any configured URL must use HTTPS:
@@ -48,7 +48,7 @@ The macOS command creates three files under `dist/`:
 
 The Windows builder creates `LocalTube-Dub-Engine-vVERSION-Windows-x64.zip` and `LocalTube-Dub-vVERSION-Windows-x64-SHA256SUMS.txt`. Its real install smoke verifies the published digest before extraction. Publish both beside the macOS artifacts. Each Engine archive contains a fixed private runtime and excludes the optional Kokoro model.
 
-The build automatically verifies manifest references, secrets, unsafe ZIP paths, extension-ID binding, release metadata, executable permissions, isolated Native Host/LaunchAgent generation, and uninstall dry-run.
+The build automatically verifies manifest references, secrets, unsafe ZIP paths, extension-ID binding, release metadata, executable permissions, isolated Native Host registration and legacy login-startup removal, and uninstall dry-run.
 
 The source install page remains in development mode. During release assembly, `release-info.json` is replaced with the exact channel, version, extension ID, the complete macOS ARM/Intel and Windows x64 Engine package catalog, and HTTPS download/support links. The package catalog is platform-neutral, so an extension ZIP produced on one build runner never points another platform to the wrong Engine. Customer packages hide source checkout paths, Terminal commands, and developer-only diagnostics; an offline beta with no hosted URL tells the tester to obtain the matching Engine ZIP from the same release.
 

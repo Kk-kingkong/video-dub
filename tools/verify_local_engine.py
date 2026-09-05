@@ -1178,6 +1178,64 @@ def test_dub_track_validation(server):
     assert invalid_format["code"] == "INVALID_DUB_TRACK_FORMAT"
 
 
+def test_dub_track_reuse_matches_duration_and_video(server):
+    from unittest.mock import patch
+
+    payload = {"cues": [{"start": 0, "end": 2, "text": "hello"}], "durationSeconds": 10, "videoId": "first"}
+    server.DUB_TRACK_JOBS.clear()
+    with patch.object(server, "tts_engine_ready", return_value=True), \
+         patch.object(server, "find_ffmpeg_command", return_value="ffmpeg"), \
+         patch.object(server.threading.Thread, "start"):
+        first = server.start_dub_track_job(payload)
+        first_id = first["job"]["id"]
+        server.DUB_TRACK_JOBS[first_id]["status"] = "completed"
+        assert server.start_dub_track_job(payload)["job"]["id"] == first_id
+        longer = server.start_dub_track_job({**payload, "durationSeconds": 20})
+        assert longer["job"]["id"] != first_id, "20-second export reused the 10-second track"
+        server.DUB_TRACK_JOBS[longer["job"]["id"]]["status"] = "completed"
+        other_video = server.start_dub_track_job({**payload, "videoId": "second"})
+        assert other_video["job"]["id"] != first_id, "voice-only export reused another video's track"
+        server.DUB_TRACK_JOBS.clear()
+        server.DUB_TRACK_CANCEL_EVENTS.clear()
+
+
+def test_completed_dub_track_survives_engine_sleep(server):
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as temporary, patch.object(server, "DUB_TRACK_OUTPUT_DIR", Path(temporary)):
+        audio = Path(temporary) / "saved-track.wav"
+        audio.write_bytes(b"saved audio")
+        server.DUB_TRACK_JOBS["saved-track"] = {
+            "id": "saved-track", "key": "cache-key", "status": "rendering", "outputFormat": "wav",
+            "filename": "LocalTube-Dub_test.wav", "filePath": str(audio), "cues": [{"text": "private text"}],
+        }
+        server.update_dub_track_job("saved-track", status="completed")
+        assert audio.with_suffix(".json").is_file(), "completed export metadata was not persisted"
+        assert "private text" not in audio.with_suffix(".json").read_text()
+        server.DUB_TRACK_JOBS.clear()
+        server.restore_completed_dub_tracks()
+        job, restored_audio = server.get_dub_track_file("saved-track")
+        assert job and job["key"] == "cache-key" and restored_audio == audio
+        assert restored_audio.read_bytes() == b"saved audio"
+        server.DUB_TRACK_JOBS.clear()
+        metadata = audio.with_suffix(".json")
+        saved = json.loads(metadata.read_text())
+        metadata.write_text(json.dumps({**saved, "id": "../../outside"}))
+        server.restore_completed_dub_tracks()
+        assert not server.DUB_TRACK_JOBS, "disk metadata escaped its export identity"
+        metadata.write_text(" " * 16385 + json.dumps(saved))
+        server.restore_completed_dub_tracks()
+        assert not server.DUB_TRACK_JOBS, "oversized disk metadata was loaded"
+        metadata.write_text(json.dumps({**saved, "updatedAt": 1}))
+        server.restore_completed_dub_tracks()
+        assert not server.DUB_TRACK_JOBS, "expired export was restored"
+        server.DUB_TRACK_JOBS["saved-track"] = {**saved, "filePath": str(audio)}
+        with patch.object(Path, "write_text", side_effect=OSError("simulated full disk")):
+            server.update_dub_track_job("saved-track", status="completed")
+        assert server.DUB_TRACK_JOBS["saved-track"]["status"] == "completed" and audio.is_file()
+        server.DUB_TRACK_JOBS.clear()
+
+
 def test_caption_parsers(server):
     xml_cues = server.parse_caption_text(
         '<transcript><text start="1.2" dur="2">Hello &amp;#39;caption&amp;#39;</text></transcript>'
@@ -1972,6 +2030,8 @@ def main() -> None:
     test_m4a_dub_track_job_worker(server)
     test_mixed_dub_track_job_worker(server)
     test_dub_track_validation(server)
+    test_dub_track_reuse_matches_duration_and_video(server)
+    test_completed_dub_track_survives_engine_sleep(server)
     test_caption_parsers(server)
     test_build_captions_payload(server)
     test_caption_cache_and_ytdlp_command(server)

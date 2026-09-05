@@ -75,6 +75,7 @@ const {
 const CAPTION_FAST_TIMEOUT_MS = 6000;
 const CAPTION_TOTAL_TIMEOUT_MS = 23000;
 const CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS = 2000;
+const LIGHTWEIGHT_CAPTIONS_UNAVAILABLE_MESSAGE = "轻量模式需要视频提供公开的 YouTube 字幕。请启动或恢复 Engine 后点击“重试完整模式”，再翻译无字幕视频；也可以换一个有字幕的视频。";
 const ENGINE_HEALTH_OPERATION_TIMEOUT_MS = 12000;
 const CAPTION_FAILURE_BACKOFF_MS = {
   YOUTUBE_RATE_LIMITED: 5 * 60 * 1000,
@@ -120,7 +121,6 @@ const EMPTY_KOKORO_MODEL_STATUS = Object.freeze({
 const {
   addQuery,
   buildSemanticVoiceSegments,
-  captionEngineWaitTimeout,
   computeAudioMixState,
   computeFullTrackSync,
   computeLiveVoiceSync,
@@ -205,6 +205,7 @@ const state = {
   dubTrackPreviewAudio: null,
   dubTrackPreviewActive: false,
   dubTrackPreviewPlayPromise: null,
+  dubTrackPreviewPreparePromise: null,
   dubTrackPreviewOperationId: 0,
   videoBuffering: false,
   pausedForTranscriptionBuffer: false,
@@ -224,6 +225,7 @@ const state = {
   pageSnapshotCache: null,
   captionFailureBackoff: new Map(),
   timelineCacheProvider: "",
+  timelineCacheIdentity: "",
   engineHealthTimer: 0,
   kokoroModelStatusTimer: 0,
   kokoroModelPollingStopped: false,
@@ -667,6 +669,12 @@ async function refreshEngineStatus(options = {}) {
   if (state.busy && operationId === null) {
     return state.engineHealth;
   }
+  if (operationId === null && state.dubTrackPreviewActive && state.video && !state.video.paused) {
+    if (!state.dubTrackPreviewPreparePromise) {
+      await ensureReadyDubTrack().catch(() => {});
+    }
+    return state.engineHealth;
+  }
   const requestGeneration = beginEngineHealthRequest();
   const timeoutMs = Math.max(0, Number(options.timeoutMs || 0) || 0);
   const node = state.root?.querySelector("[data-engine-status]");
@@ -679,7 +687,8 @@ async function refreshEngineStatus(options = {}) {
 
   const healthMessage = {
     type: "localtube.captionEngineHealth",
-    settings: state.settings
+    settings: state.settings,
+    startIfNeeded: options.startIfNeeded === true
   };
   const response = await (timeoutMs
     ? sendRuntimeMessageWithTimeout(healthMessage, timeoutMs, "Engine 健康检查超时")
@@ -717,6 +726,11 @@ async function refreshEngineStatus(options = {}) {
     if (payload.upgradeRequired) {
       node.classList.add("is-error");
       textNode.textContent = `Engine 版本过旧（${payload.engineVersion || "未知"} / 协议 ${payload.protocolVersion || 0}），请安装与扩展 ${EXTENSION_VERSION} 匹配的 Engine`;
+      return state.engineHealth;
+    }
+    if (payload.standby) {
+      node.classList.add("is-ok");
+      textNode.textContent = "Engine 已就绪，将在开始翻译时自动启动";
       return state.engineHealth;
     }
     if (state.settings.ttsEngine === "edge" && !payload.edgeTts) {
@@ -827,6 +841,7 @@ async function prepareRuntimeProfileForOperation(operationId, options = {}) {
   resetRuntimeProfileForOperation();
   const health = await refreshEngineStatus({
     operationId,
+    startIfNeeded: true,
     timeoutMs: ENGINE_HEALTH_OPERATION_TIMEOUT_MS
   });
   assertOperationActive(operationId);
@@ -926,7 +941,8 @@ async function retryFullModeFromWidget() {
   try {
     const response = await sendRuntimeMessage({
       type: "localtube.captionEngineHealth",
-      settings: state.settings
+      settings: state.settings,
+      startIfNeeded: true
     }).catch((error) => ({ ok: false, error: friendlyErrorMessage(error) }));
     if (!isCurrentEngineHealthRequest(requestGeneration)) {
       return;
@@ -1338,6 +1354,24 @@ async function startDubbing(options = {}) {
   try {
     state.settings = await loadSettings();
     updateControlsFromSettings({ refreshEngine: false });
+    assertOperationActive(operationId);
+    state.video = getPrimaryVideoElement();
+    if (!state.video) {
+      throw new Error("当前页面没有找到视频播放器");
+    }
+    bindVideoEvents(state.video);
+    shouldResumeWhenReady = resumeOnSuccess || !state.video.paused;
+    if (shouldResumeWhenReady) {
+      state.video.pause();
+      pausedVideoForPreparation = true;
+    }
+    attachCaptionOverlay();
+    const videoId = getCurrentVideoId();
+    state.timelineCacheIdentity = JSON.stringify([timelineCacheRequest(videoId, state.settings.provider), state.settings.model]);
+    const captionDeadline = Date.now() + CAPTION_TOTAL_TIMEOUT_MS;
+    const pageResultPromise = withTimeoutResult(
+      resolveVideoCaptionsFromPage(videoId), CAPTION_TOTAL_TIMEOUT_MS, "页面字幕读取超时"
+    );
     await prepareRuntimeProfileForOperation(operationId, {
       forceLightweight: Boolean(options?.forceLightweight)
     });
@@ -1357,20 +1391,6 @@ async function startDubbing(options = {}) {
     ) {
       throw new Error("Kokoro 当前仅支持中文和英文，请切换目标语言或配音引擎。");
     }
-    state.video = getPrimaryVideoElement();
-    if (!state.video) {
-      throw new Error("当前页面没有找到视频播放器");
-    }
-
-    bindVideoEvents(state.video);
-    shouldResumeWhenReady = resumeOnSuccess || !state.video.paused;
-    if (shouldResumeWhenReady) {
-      state.video.pause();
-      pausedVideoForPreparation = true;
-    }
-
-    attachCaptionOverlay();
-    const videoId = getCurrentVideoId();
     state.timelineCacheProvider = resolveEffectiveProvider();
     const useStartupTimelineCaches = shouldUseStartupTimelineCaches(state.runtimeProfile);
     const cachedTimeline = useStartupTimelineCaches
@@ -1422,13 +1442,17 @@ async function startDubbing(options = {}) {
         }
 
         if (!originalCues.length) {
-          const captionResult = await resolveVideoCaptions(operationId);
+          const captionResult = await resolveVideoCaptions(operationId, {
+            videoId, pageResultPromise, deadline: captionDeadline
+          });
           assertOperationActive(operationId);
 
           originalCues = normalizeRollingCaptionCues(captionResult.cues || []);
           if (!originalCues.length && captionResult.status === "no_captions") {
             if (!state.runtimeProfile.allowTranscription) {
-              throw new Error("已确认这个视频没有可读取的 YouTube 字幕。需要翻译无字幕视频时，请在扩展弹窗开启“无字幕时自动转写”。");
+              throw new Error(usesBrowserSpeechProfile()
+                ? LIGHTWEIGHT_CAPTIONS_UNAVAILABLE_MESSAGE
+                : "已确认这个视频没有可读取的 YouTube 字幕。需要翻译无字幕视频时，请在扩展弹窗开启“无字幕时自动转写”。");
             }
             usedAudioTranscription = true;
             originalCues = await transcribeCurrentAudioWindow(operationId);
@@ -2014,13 +2038,23 @@ function timelineCacheRequest(videoId = getCurrentVideoId(), providerOverride = 
   return {
     videoId: String(videoId || ""),
     targetLanguage: String(state.settings.targetLanguage || ""),
+    requestedSourceLanguage: state.settings.sourceLanguage || "auto",
+    endpoint: provider === "custom" ? state.settings.customEndpoint : ["native", "local-http"].includes(provider) ? state.settings.endpoint : "",
     provider,
     model: provider.startsWith("youtube-") ? "" : String(state.settings.effectiveModel || state.settings.model || "")
   };
 }
 
+function isTimelineCacheIdentityCurrent() {
+  const identity = JSON.stringify([timelineCacheRequest(getCurrentVideoId(), state.settings.provider), state.settings.model]);
+  if (state.timelineCacheIdentity !== identity) {
+    state.timelineCacheIdentity = "";
+  }
+  return Boolean(state.timelineCacheIdentity);
+}
+
 async function loadCachedTimeline(videoId, operationId, providerOverride = "") {
-  if (!state.settings.cacheTranslations || !videoId) {
+  if (!state.settings.cacheTranslations || !videoId || !isTimelineCacheIdentityCurrent()) {
     return null;
   }
   const request = timelineCacheRequest(videoId, providerOverride || resolveEffectiveProvider());
@@ -2032,6 +2066,9 @@ async function loadCachedTimeline(videoId, operationId, providerOverride = "") {
       settings: state.settings
     }).catch(() => null);
     assertOperationActive(operationId);
+    if (!isTimelineCacheIdentityCurrent()) {
+      return null;
+    }
     if (response?.ok && response.payload?.hit) {
       return response.payload.entry;
     }
@@ -2050,7 +2087,7 @@ function restoreSourceCaptionCache(timeline) {
 }
 
 async function saveSourceCaptionCache(videoId, operationId, cues, sourceLanguage) {
-  if (!state.settings.cacheTranslations || !videoId || state.operationId !== operationId) {
+  if (!state.settings.cacheTranslations || !videoId || state.operationId !== operationId || !isTimelineCacheIdentityCurrent()) {
     return false;
   }
   const cacheCues = normalizeRollingCaptionCues(cues)
@@ -2076,7 +2113,7 @@ async function saveSourceCaptionCache(videoId, operationId, cues, sourceLanguage
 }
 
 async function saveTimelineCacheIfComplete(operationId) {
-  if (!state.settings.cacheTranslations || state.partialTranscription || state.operationId !== operationId) {
+  if (!state.settings.cacheTranslations || state.partialTranscription || state.operationId !== operationId || !isTimelineCacheIdentityCurrent()) {
     return false;
   }
   const videoId = getCurrentVideoId();
@@ -2223,6 +2260,7 @@ function stopDubbing(options = {}) {
   state.pausedForTranscriptionBuffer = false;
   state.skipTranslation = false;
   state.timelineCacheProvider = "";
+  state.timelineCacheIdentity = "";
   state.priorityTranslationOperationId = 0;
   const activeTranscriptionRequestId = state.activeTranscriptionRequestId;
   state.activeTranscriptionRequestId = "";
@@ -2304,25 +2342,30 @@ function bindVideoEvents(video) {
 function handleVideoSeeked() {
   state.videoBuffering = false;
   if (state.dubTrackPreviewActive) {
-    syncDubTrackPreview(state.video?.currentTime || 0, true);
+    resumeDubTrackPreview();
   }
 }
 
 function handleVideoWaiting() {
   state.videoBuffering = true;
-  if (state.dubTrackPreviewActive) {
-    state.dubTrackPreviewAudio?.pause();
-  }
+  handleVideoPause();
 }
 
 function handleVideoPlaying() {
   state.videoBuffering = false;
   if (state.dubTrackPreviewActive) {
-    syncDubTrackPreview(state.video?.currentTime || 0, true);
+    resumeDubTrackPreview();
+  } else {
+    const currentTime = state.video?.currentTime || 0;
+    syncActiveBrowserSpeech(currentTime);
+    syncActiveVoiceAudio(currentTime);
+    maybeSpeakVoiceSegment(findVoiceSegmentForPlayback(currentTime));
   }
 }
 
 function handleVideoPause() {
+  syncActiveBrowserSpeech(state.video?.currentTime || 0);
+  syncActiveVoiceAudio(state.video?.currentTime || 0);
   if (state.dubTrackPreviewActive) {
     state.dubTrackPreviewAudio?.pause();
   }
@@ -2407,9 +2450,9 @@ function handleVideoSeeking() {
     invalidateVoicePlayback();
     stopActiveBrowserSpeech();
     stopActiveVoiceAudio();
-    syncDubTrackPreview(state.video?.currentTime || 0, true);
+    resumeDubTrackPreview();
     setWidgetPhase("running");
-    setStatus("完整音轨已同步到新进度", "");
+    setStatus("完整音轨正在同步到新进度...", "working");
     return;
   }
 
@@ -2802,7 +2845,11 @@ function handleDubTrackAction() {
     return;
   }
   if (state.dubTrackDownloadUrl) {
-    downloadReadyDubTrack();
+    downloadReadyDubTrack().catch((error) => {
+      if (error?.name !== "OperationStaleError") {
+        setStatus(`音轨下载失败：${friendlyErrorMessage(error)}`, "error");
+      }
+    });
     return;
   }
   startDubTrackRendering().catch((error) => {
@@ -2972,8 +3019,10 @@ function toggleDubTrackPreview() {
     stopDubTrackPreview({ resumeLive: true });
     return;
   }
-  startDubTrackPreview().catch((error) => {
-    if (!state.dubTrackPreviewActive) {
+  const preparation = startDubTrackPreview();
+  const previewOperationId = state.dubTrackPreviewOperationId;
+  preparation.catch((error) => {
+    if (error?.name === "OperationStaleError" || !state.dubTrackPreviewActive || state.dubTrackPreviewOperationId !== previewOperationId) {
       return;
     }
     stopDubTrackPreview({ silent: true, resumeLive: true });
@@ -2996,12 +3045,21 @@ async function startDubTrackPreview() {
   cancelQueuedVoiceAudio();
   state.voicePendingCueKey = "";
   const previewOperationId = ++state.dubTrackPreviewOperationId;
-  const audio = new Audio(dubTrackPreviewUrl(state.dubTrackDownloadUrl));
+  state.dubTrackPreviewActive = true;
+  updateExportControl();
+  setStatus("正在准备完整音轨播放...", "working");
+  const preparation = ensureReadyDubTrack();
+  state.dubTrackPreviewPreparePromise = preparation;
+  const downloadUrl = await preparation;
+  if (!state.dubTrackPreviewActive || state.dubTrackPreviewOperationId !== previewOperationId) {
+    return;
+  }
+  state.dubTrackPreviewPreparePromise = null;
+  const audio = new Audio(dubTrackPreviewUrl(downloadUrl));
   audio.preload = "auto";
   audio.muted = true;
   audio.dataset.localtubeFullTrack = "1";
   state.dubTrackPreviewAudio = audio;
-  state.dubTrackPreviewActive = true;
   setOriginalMutedForDubbing(false);
   syncDubTrackPreview(video.currentTime, true);
   updateExportControl();
@@ -3059,6 +3117,7 @@ function stopDubTrackPreview(options = {}) {
   state.dubTrackPreviewActive = false;
   state.dubTrackPreviewAudio = null;
   state.dubTrackPreviewPlayPromise = null;
+  state.dubTrackPreviewPreparePromise = null;
   if (audio) {
     audio.pause();
     audio.removeAttribute("src");
@@ -3091,8 +3150,15 @@ function dubTrackPreviewUrl(value) {
 function syncDubTrackPreview(currentTime, forceSeek = false) {
   const audio = state.dubTrackPreviewAudio;
   const video = state.video;
-  if (!state.dubTrackPreviewActive || !audio || !video) {
+  if (!state.dubTrackPreviewActive || !video) {
     return false;
+  }
+  if (!audio) {
+    return true;
+  }
+  if (state.dubTrackPreviewPreparePromise || video.paused || video.seeking) {
+    audio.pause();
+    return true;
   }
 
   const sync = syncFullTrackMediaElements(video, audio, {
@@ -3127,6 +3193,37 @@ function syncDubTrackPreview(currentTime, forceSeek = false) {
   return true;
 }
 
+async function resumeDubTrackPreview() {
+  const audio = state.dubTrackPreviewAudio;
+  if (!state.dubTrackPreviewActive || !audio) {
+    return;
+  }
+  audio.pause();
+  if (state.video?.paused || state.dubTrackPreviewPreparePromise) {
+    return;
+  }
+  const previewOperationId = state.dubTrackPreviewOperationId;
+  const preparation = ensureReadyDubTrack();
+  state.dubTrackPreviewPreparePromise = preparation;
+  try {
+    await preparation;
+    if (state.dubTrackPreviewActive && state.dubTrackPreviewAudio === audio && state.dubTrackPreviewOperationId === previewOperationId) {
+      state.dubTrackPreviewPreparePromise = null;
+      syncDubTrackPreview(state.video?.currentTime || 0, true);
+      setStatus("完整音轨已同步到当前进度", "");
+    }
+  } catch (error) {
+    if (error?.name !== "OperationStaleError" && state.dubTrackPreviewActive && state.dubTrackPreviewOperationId === previewOperationId) {
+      stopDubTrackPreview({ silent: true, resumeLive: true });
+      setStatus(`完整音轨恢复失败：${friendlyErrorMessage(error)}`, "error");
+    }
+  } finally {
+    if (state.dubTrackPreviewPreparePromise === preparation) {
+      state.dubTrackPreviewPreparePromise = null;
+    }
+  }
+}
+
 function requestDubTrackPreviewPlayback(audio, previewOperationId) {
   if (
     state.dubTrackPreviewPlayPromise &&
@@ -3154,14 +3251,39 @@ function isExpectedDubTrackPlaybackAbort(error) {
   return error?.name === "AbortError";
 }
 
-function downloadReadyDubTrack() {
+async function ensureReadyDubTrack() {
+  const downloadUrl = state.dubTrackDownloadUrl;
+  if (!isSafeDubTrackDownloadUrl(downloadUrl)) {
+    throw new Error("完整音轨尚未准备好，请重新生成。");
+  }
+  const operationId = state.operationId;
+  const jobId = new URL(downloadUrl).searchParams.get("id");
+  const response = await sendRuntimeMessageWithTimeout({
+    type: "localtube.dubTrackStatus", settings: state.settings, jobId
+  }, 25000, "完整音轨准备超时，请重试。");
+  assertOperationActive(operationId);
+  if (state.dubTrackDownloadUrl !== downloadUrl) {
+    const error = new Error("音轨已更换");
+    error.name = "OperationStaleError";
+    throw error;
+  }
+  const job = response?.payload?.job;
+  if (!response?.ok || job?.id !== jobId || job?.status !== "completed" || !isSafeDubTrackDownloadUrl(job.downloadUrl)) {
+    throw new Error(response?.error || "完整音轨已失效，请重新生成。");
+  }
+  state.dubTrackDownloadUrl = job.downloadUrl;
+  return job.downloadUrl;
+}
+
+async function downloadReadyDubTrack() {
   if (!isSafeDubTrackDownloadUrl(state.dubTrackDownloadUrl)) {
     resetDubTrackState();
     setStatus("音轨下载地址已失效，请重新生成。", "error");
     return;
   }
+  const downloadUrl = await ensureReadyDubTrack();
   const anchor = document.createElement("a");
-  anchor.href = state.dubTrackDownloadUrl;
+  anchor.href = downloadUrl;
   anchor.rel = "noopener";
   anchor.hidden = true;
   document.documentElement.append(anchor);
@@ -3635,6 +3757,10 @@ function usesBrowserSpeechProfile() {
 
 function maybeSpeakVoiceSegment(segment) {
   if (
+    !state.running ||
+    !state.video ||
+    state.video.seeking ||
+    state.videoBuffering ||
     state.dubTrackPreviewActive ||
     !state.settings.voiceEnabled ||
     !segment ||
@@ -3704,7 +3830,7 @@ function maybeSpeakVoiceSegment(segment) {
       }
     }
   }).finally(() => {
-    if (state.voicePendingCueKey === segment.key) {
+    if (isVoicePlaybackAttemptCurrent(segment, playbackGeneration) && state.voicePendingCueKey === segment.key) {
       state.voicePendingCueKey = "";
     }
   });
@@ -3776,7 +3902,7 @@ async function playVoiceSegment(segment, playbackGeneration) {
   if (!audioPayload?.dataUrl) {
     throw new Error("本地 TTS 没有返回音频");
   }
-  if (state.dubTrackPreviewActive || !state.running || !state.video || state.video.paused || !isVoiceSegmentCurrent(segment)) {
+  if (state.dubTrackPreviewActive || !state.running || !state.settings.voiceEnabled || !state.video || state.video.paused || state.video.seeking || state.videoBuffering || !isVoiceSegmentCurrent(segment)) {
     return;
   }
   if (shouldSkipLateVoiceSegment(segment, { audioReady: true })) {
@@ -3806,8 +3932,11 @@ async function playVoiceSegment(segment, playbackGeneration) {
     state.dubTrackPreviewActive ||
     !isVoicePlaybackAttemptCurrent(segment, playbackGeneration) ||
     !state.running ||
+    !state.settings.voiceEnabled ||
     !state.video ||
     state.video.paused ||
+    state.video.seeking ||
+    state.videoBuffering ||
     !isVoiceSegmentCurrent(segment)
   ) {
     return;
@@ -3827,12 +3956,17 @@ async function playVoiceSegment(segment, playbackGeneration) {
   state.activeVoiceCueKey = segment.key;
   state.activeVoiceSegment = segment;
   audio.addEventListener("play", () => {
+    if (state.activeVoiceAudio !== audio || !isVoicePlaybackAttemptCurrent(segment, playbackGeneration)) {
+      audio.pause();
+      return;
+    }
     state.spokenCueIndex = segment.startCueIndex;
     state.spokenVoiceSegmentKey = segment.key;
     state.spokenVoiceSegmentKeys.add(segment.key);
     rememberSpokenVoiceText(segment);
     state.speechActive = true;
     setOriginalMutedForDubbing(Boolean(state.settings.muteOriginal));
+    syncActiveVoiceAudio(state.video.currentTime);
   });
   audio.addEventListener("ended", () => {
     if (state.activeVoiceAudio === audio) {
@@ -3853,6 +3987,10 @@ async function playVoiceSegment(segment, playbackGeneration) {
     }
   });
   await audio.play();
+  if (state.activeVoiceAudio !== audio || !isVoicePlaybackAttemptCurrent(segment, playbackGeneration)) {
+    audio.pause();
+    return;
+  }
   resetVoiceAudioSyncPlan(audio);
   syncActiveVoiceAudio(state.video.currentTime);
 }
@@ -3936,6 +4074,7 @@ function beginVoicePlaybackAttempt() {
 function invalidateVoicePlayback() {
   cancelPendingBrowserSpeechStart();
   state.voicePlaybackGeneration += 1;
+  state.voicePendingCueKey = "";
 }
 
 function cancelPendingBrowserSpeechStart() {
@@ -4075,7 +4214,8 @@ function alignVoiceAudioToSegment(audio, segment) {
     videoPaused: state.video.paused,
     videoSeeking: state.video.seeking,
     buffering: state.videoBuffering,
-    audioPaused: audio.paused
+    audioPaused: audio.paused,
+    audioEnded: audio.ended
   });
   if (sync.seekTo !== null) {
     audio.currentTime = sync.seekTo;
@@ -4111,7 +4251,7 @@ function syncActiveVoiceAudio(currentTime) {
   if (!state.activeVoiceAudio || !state.activeVoiceSegment || !state.video) {
     return;
   }
-  if (state.video.paused) {
+  if (!state.running || !state.settings.voiceEnabled || state.dubTrackPreviewActive || state.video.paused || state.video.seeking || state.videoBuffering) {
     state.activeVoiceAudio.pause();
     setOriginalMutedForDubbing(false);
     return;
@@ -4137,20 +4277,21 @@ function syncActiveBrowserSpeech(currentTime) {
   if (!segment || !window.speechSynthesis || !state.video) {
     return;
   }
-  if (state.video.paused || state.videoBuffering) {
-    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+  if (!state.running || !state.settings.voiceEnabled || state.dubTrackPreviewActive || state.video.paused || state.video.seeking || state.videoBuffering) {
+    if ((window.speechSynthesis.speaking || window.speechSynthesis.pending) && !window.speechSynthesis.paused) {
       window.speechSynthesis.pause();
     }
+    setOriginalMutedForDubbing(false);
+    return;
+  }
+  if (currentTime >= voiceSegmentPlaybackEnd(segment) + VOICE_TIMEBOX_END_GRACE_SECONDS) {
+    stopActiveBrowserSpeech();
     setOriginalMutedForDubbing(false);
     return;
   }
   if (window.speechSynthesis.paused) {
     window.speechSynthesis.resume();
     setOriginalMutedForDubbing(Boolean(state.settings.muteOriginal));
-  }
-  if (currentTime >= voiceSegmentPlaybackEnd(segment) + VOICE_TIMEBOX_END_GRACE_SECONDS) {
-    stopActiveBrowserSpeech();
-    setOriginalMutedForDubbing(false);
   }
 }
 
@@ -4537,7 +4678,7 @@ function voiceCacheKey(segment) {
 }
 
 function speakSegmentWithBrowserTts(segment, playbackGeneration = beginVoicePlaybackAttempt()) {
-  if (state.dubTrackPreviewActive || !window.speechSynthesis || !segment?.text || !state.running || state.video?.paused) {
+  if (state.dubTrackPreviewActive || !window.speechSynthesis || !segment?.text || !state.running || !state.settings.voiceEnabled || !state.video || state.video.paused || state.video.seeking || state.videoBuffering) {
     return;
   }
   if (!isVoicePlaybackAttemptCurrent(segment, playbackGeneration)) {
@@ -4559,8 +4700,7 @@ function speakSegmentWithBrowserTts(segment, playbackGeneration = beginVoicePlay
     utterance.voice = voice;
   }
   utterance.onstart = () => {
-    if (!isVoicePlaybackAttemptCurrent(segment, playbackGeneration)) {
-      window.speechSynthesis.cancel();
+    if (!isVoicePlaybackAttemptCurrent(segment, playbackGeneration) || state.activeBrowserVoiceSegment !== segment) {
       return;
     }
     state.spokenCueIndex = segment.startCueIndex;
@@ -4569,6 +4709,7 @@ function speakSegmentWithBrowserTts(segment, playbackGeneration = beginVoicePlay
     rememberSpokenVoiceText(segment);
     state.speechActive = true;
     setOriginalMutedForDubbing(Boolean(state.settings.muteOriginal));
+    syncActiveBrowserSpeech(state.video.currentTime);
   };
   utterance.onend = () => {
     if (!isVoicePlaybackAttemptCurrent(segment, playbackGeneration) || state.activeBrowserVoiceSegment?.key !== segment.key) {
@@ -4598,16 +4739,25 @@ function speakSegmentWithBrowserTts(segment, playbackGeneration = beginVoicePlay
     setOriginalMutedForDubbing(false);
   };
   const speak = () => {
+    if (!isVoicePlaybackAttemptCurrent(segment, playbackGeneration)) {
+      return;
+    }
     state.browserVoiceStartTimer = 0;
     if (
       isVoicePlaybackAttemptCurrent(segment, playbackGeneration) &&
       state.activeBrowserVoiceSegment?.key === segment.key &&
       state.activeVoiceCueKey === segment.key &&
       state.running &&
+      state.settings.voiceEnabled &&
       !state.dubTrackPreviewActive &&
       !state.video?.paused &&
+      !state.video?.seeking &&
+      !state.videoBuffering &&
       isVoiceSegmentCurrent(segment)
     ) {
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
       window.speechSynthesis.speak(utterance);
     } else if (state.activeVoiceCueKey === segment.key) {
       state.activeVoiceCueKey = "";
@@ -4674,8 +4824,8 @@ function attachCaptionOverlay() {
   }
 }
 
-async function resolveVideoCaptions(operationId) {
-  const videoId = getCurrentVideoId();
+async function resolveVideoCaptions(operationId, options = {}) {
+  const videoId = options.videoId || getCurrentVideoId();
   if (!videoId) {
     return {
       status: "unknown",
@@ -4685,19 +4835,17 @@ async function resolveVideoCaptions(operationId) {
     };
   }
 
+  const deadline = options.deadline || Date.now() + CAPTION_TOTAL_TIMEOUT_MS;
+  const remainingMs = () => Math.max(0, deadline - Date.now());
   setStatus("正在读取 YouTube 字幕...", "working");
-  const pageResultPromise = resolveVideoCaptionsFromPage(videoId).catch((error) => ({
-    status: "unknown",
-    cues: [],
-    track: null,
-    error: `页面字幕读取失败：${error.message || String(error)}`
-  }));
+  const pageResultPromise = withTimeoutResult(
+    options.pageResultPromise || resolveVideoCaptionsFromPage(videoId),
+    remainingMs(),
+    "页面字幕读取超时"
+  );
   if (!state.runtimeProfile.useCaptionEngine) {
-    const pageResult = await withTimeoutResult(
-      pageResultPromise,
-      CAPTION_TOTAL_TIMEOUT_MS,
-      "页面字幕读取超时"
-    );
+    const pageResult = await pageResultPromise;
+    assertOperationActive(operationId);
     return pageResult?.status === "captions"
       ? pageResult
       : {
@@ -4705,12 +4853,12 @@ async function resolveVideoCaptions(operationId) {
           cues: [],
           track: null,
           code: pageResult?.code || "LIGHTWEIGHT_CAPTIONS_UNAVAILABLE",
-          error: "免安装轻量模式需要当前视频提供公开的 YouTube 字幕。"
+          error: LIGHTWEIGHT_CAPTIONS_UNAVAILABLE_MESSAGE
         };
   }
   const backoff = getCaptionFailureBackoff(videoId);
 
-  const pageFastResult = await withTimeoutResult(pageResultPromise, CAPTION_FAST_TIMEOUT_MS, "页面字幕快速读取超时");
+  const pageFastResult = await withTimeoutResult(pageResultPromise, Math.min(CAPTION_FAST_TIMEOUT_MS, remainingMs()), "页面字幕快速读取超时");
   assertOperationActive(operationId);
 
   if (pageFastResult?.status === "captions" && pageFastResult?.cues?.length) {
@@ -4718,26 +4866,46 @@ async function resolveVideoCaptions(operationId) {
   }
 
   let engineResult = null;
+  let pageResult = pageFastResult;
   if (backoff) {
     engineResult = captionBackoffResult(backoff);
   } else {
     setStatus("正在通过本地 Engine 读取字幕...", "working");
-    const engineResultPromise = fetchEngineCaptions(videoId).catch((error) => ({
+    const engineResultPromise = withTimeoutResult(fetchEngineCaptions(videoId).catch((error) => ({
       status: "unknown",
       cues: [],
       track: null,
       code: classifyCaptionErrorCode(error?.code || error?.message || error),
       retryAfterSeconds: Number(error?.retryAfterSeconds || 0) || 0,
       error: friendlyErrorMessage(error)
-    }));
-    const engineTimeoutMs = captionEngineWaitTimeout(
-      pageFastResult,
-      CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS,
-      CAPTION_TOTAL_TIMEOUT_MS
-    );
-    engineResult = await withTimeoutResult(engineResultPromise, engineTimeoutMs, "本地字幕 Engine 读取超时", {
+    })), remainingMs(), "本地字幕 Engine 读取超时", {
       timeoutCode: "ENGINE_TIMEOUT"
     });
+    const first = await Promise.race([
+      engineResultPromise.then((result) => ({ engine: result })),
+      pageResultPromise.then((result) => result?.status === "captions" && result.cues?.length
+        ? { page: result }
+        : new Promise(() => {}))
+    ]);
+    if (first.page) {
+      pageResult = first.page;
+      if (isTargetLanguageTrack(pageResult.track, state.settings.targetLanguage)) {
+        assertOperationActive(operationId);
+        return pageResult;
+      }
+      engineResult = await withTimeoutResult(
+        engineResultPromise,
+        Math.min(CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS, remainingMs()),
+        "目标语言字幕等待结束",
+        { timeoutCode: "CAPTION_TARGET_WAIT_EXPIRED" }
+      );
+      if (engineResult.code === "CAPTION_TARGET_WAIT_EXPIRED") {
+        assertOperationActive(operationId);
+        return pageResult;
+      }
+    } else {
+      engineResult = first.engine;
+    }
     assertOperationActive(operationId);
     rememberCaptionFailure(videoId, engineResult);
   }
@@ -4749,9 +4917,12 @@ async function resolveVideoCaptions(operationId) {
     return engineResult;
   }
 
-  const pageResult = pageFastResult?.error === "页面字幕快速读取超时"
-    ? await withTimeoutResult(pageResultPromise, 1000, "页面字幕读取超时")
-    : pageFastResult;
+  pageResult = pageResult?.status === "captions"
+    ? pageResult
+    : await withTimeoutResult(pageResultPromise,
+      engineResult?.cues?.length ? Math.min(CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS, remainingMs()) : remainingMs(),
+      "页面字幕读取超时");
+  assertOperationActive(operationId);
   const captionEngineFallback = lightweightFallbackDecision({
     code: engineResult?.code,
     error: engineResult?.error,
@@ -4765,7 +4936,7 @@ async function resolveVideoCaptions(operationId) {
           cues: [],
           track: null,
           code: pageResult?.code || "LIGHTWEIGHT_CAPTIONS_UNAVAILABLE",
-          error: "免安装轻量模式需要当前视频提供公开的 YouTube 字幕。"
+          error: LIGHTWEIGHT_CAPTIONS_UNAVAILABLE_MESSAGE
         };
   }
   const bestCaptionResult = pickBestResolvedCaptionResult([engineResult, pageResult], state.settings.targetLanguage);
@@ -5809,6 +5980,7 @@ function normalizeChromeTranslatorError(error) {
 }
 
 async function translateCues(cues, detectedSourceLanguage) {
+  isTimelineCacheIdentityCurrent();
   if (resolveEffectiveProvider() === "chrome-translator") {
     return translateCuesWithChromeTranslator(cues, detectedSourceLanguage);
   }
@@ -5869,6 +6041,7 @@ async function translateCues(cues, detectedSourceLanguage) {
 }
 
 async function fallbackToChromeTranslator(cues, detectedSourceLanguage, response = {}) {
+  state.timelineCacheIdentity = "";
   const providerLabel = providerName(resolveEffectiveProvider());
   const providerMessage = response.error || `${providerLabel} 暂时不可用。`;
   setStatus(`${providerMessage} 正在自动改用 Chrome 本地免费翻译...`, "working");

@@ -32,6 +32,7 @@ import urllib.parse
 import urllib.request
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,10 @@ ENGINE_ROOT = Path(__file__).resolve().parents[1]
 ENGINE_INSTANCE_ID = os.environ.get("LOCAL_DUB_ENGINE_INSTANCE_ID", "").strip()
 ENGINE_RUNTIME_ROOT = os.environ.get("LOCAL_DUB_ENGINE_RUNTIME_ROOT", "").strip()
 ENGINE_VERSION_OVERRIDE = os.environ.get("LOCAL_DUB_ENGINE_VERSION", "").strip()
+ENGINE_IDLE_SECONDS = max(0.1, float(os.environ.get("LOCAL_DUB_ENGINE_IDLE_SECONDS", "300")))
+ENGINE_ACTIVITY_LOCK = threading.Lock()
+ENGINE_ACTIVE_WORK = 0
+ENGINE_LAST_ACTIVITY = time.monotonic()
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
 WHISPER_MODEL = os.environ.get("LOCAL_DUB_WHISPER_MODEL", "base")
@@ -250,6 +255,30 @@ def normalized_architecture() -> str:
     return raw or "unknown"
 
 
+@contextmanager
+def engine_activity():
+    global ENGINE_ACTIVE_WORK, ENGINE_LAST_ACTIVITY
+    with ENGINE_ACTIVITY_LOCK:
+        ENGINE_ACTIVE_WORK += 1
+    try:
+        yield
+    finally:
+        with ENGINE_ACTIVITY_LOCK:
+            ENGINE_ACTIVE_WORK -= 1
+            ENGINE_LAST_ACTIVITY = time.monotonic()
+
+
+def engine_has_work() -> bool:
+    with ENGINE_ACTIVITY_LOCK:
+        worker = KOKORO_MODEL_SERVICE._worker
+        return bool(ENGINE_ACTIVE_WORK or FULL_TRANSCRIPT_CANCEL_EVENTS or DUB_TRACK_CANCEL_EVENTS
+                    or (worker is not None and worker.is_alive()))
+
+
+def engine_is_idle() -> bool:
+    return not engine_has_work() and time.monotonic() - ENGINE_LAST_ACTIVITY >= ENGINE_IDLE_SECONDS
+
+
 class KokoroModelService:
     """Expose one fixed-model installation job without blocking Engine requests."""
 
@@ -296,6 +325,7 @@ class KokoroModelService:
         self.manager.uninstall()
         return self.status(transport)
 
+    @engine_activity()
     def _run_install(self, generation: int) -> None:
         try:
             self.manager.install()
@@ -364,8 +394,39 @@ def build_kokoro_model_payload(operation: str, payload: Any, transport: str) -> 
     return handler(transport)
 
 
+class LocalDubServer(ThreadingHTTPServer):
+    def process_request(self, request, client_address) -> None:
+        global ENGINE_ACTIVE_WORK
+        with ENGINE_ACTIVITY_LOCK:
+            ENGINE_ACTIVE_WORK += 1
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            with ENGINE_ACTIVITY_LOCK:
+                ENGINE_ACTIVE_WORK -= 1
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        global ENGINE_ACTIVE_WORK
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with ENGINE_ACTIVITY_LOCK:
+                ENGINE_ACTIVE_WORK -= 1
+
+
 class LocalDubHandler(BaseHTTPRequestHandler):
     server_version = "LocalTubeDub/0.1"
+
+    def handle(self) -> None:
+        global ENGINE_LAST_ACTIVITY
+        try:
+            super().handle()
+        finally:
+            path = urllib.parse.urlsplit(getattr(self, "path", "")).path
+            if path and path not in ("/api/health", "/api/voices", "/api/tts-model/kokoro/status"):
+                with ENGINE_ACTIVITY_LOCK:
+                    ENGINE_LAST_ACTIVITY = time.monotonic()
 
     def do_OPTIONS(self) -> None:
         self.send_json({"ok": True})
@@ -1163,6 +1224,7 @@ def update_full_transcript_job(job_id: str, **updates: Any) -> None:
         job["updatedAt"] = time.time()
 
 
+@engine_activity()
 def run_full_transcript_job(job_id: str, cancel_event: threading.Event) -> None:
     with FULL_TRANSCRIPT_LOCK:
         job = dict(FULL_TRANSCRIPT_JOBS.get(job_id) or {})
@@ -1223,8 +1285,11 @@ def start_dub_track_job(payload: dict[str, Any]) -> dict[str, Any]:
             "code": "DUB_TRACK_TEXT_TOO_LARGE",
             "error": "配音字幕文本总量过大，无法安全生成音轨。",
         }
-    duration_seconds = max(float(payload.get("durationSeconds") or 0), max(cue["end"] for cue in cues))
-    if duration_seconds <= 0 or duration_seconds > FULL_TRANSCRIPT_MAX_SECONDS:
+    try:
+        duration_seconds = max(float(payload.get("durationSeconds") or 0), max(cue["end"] for cue in cues))
+    except (TypeError, ValueError):
+        duration_seconds = 0
+    if not 0 < duration_seconds <= FULL_TRANSCRIPT_MAX_SECONDS:
         return {
             "ok": False,
             "code": "INVALID_DUB_TRACK_DURATION",
@@ -1274,6 +1339,8 @@ def start_dub_track_job(payload: dict[str, Any]) -> dict[str, Any]:
         original_volume=original_volume,
         video_url=video_url,
         output_format=output_format,
+        duration_seconds=duration_seconds,
+        video_id=str(payload.get("videoId") or "").strip(),
     )
     cleanup_dub_track_jobs()
     with FULL_TRANSCRIPT_LOCK:
@@ -1393,6 +1460,8 @@ def dub_track_job_key(
     original_volume: float = 0.0,
     video_url: str = "",
     output_format: str = "wav",
+    duration_seconds: float = 0,
+    video_id: str = "",
 ) -> str:
     payload = json.dumps(
         {
@@ -1403,7 +1472,9 @@ def dub_track_job_key(
             "rate": round(rate, 3),
             "mixOriginal": bool(mix_original),
             "originalVolume": round(float(original_volume), 3) if mix_original else 0,
-            "videoUrl": str(video_url or "") if mix_original else "",
+            "videoUrl": str(video_url or ""),
+            "videoId": video_id,
+            "durationSeconds": duration_seconds,
             "outputFormat": "m4a" if output_format == "m4a" else "wav",
         },
         ensure_ascii=False,
@@ -1459,7 +1530,7 @@ def cleanup_dub_track_jobs() -> None:
                 path.unlink(missing_ok=True)
     if DUB_TRACK_OUTPUT_DIR.is_dir():
         for path in DUB_TRACK_OUTPUT_DIR.iterdir():
-            if path.is_file() and path.suffix in (".wav", ".m4a", ".partial"):
+            if path.is_file() and path.suffix in (".wav", ".m4a", ".partial", ".json"):
                 try:
                     if path.stat().st_mtime < cutoff:
                         path.unlink(missing_ok=True)
@@ -1474,8 +1545,43 @@ def update_dub_track_job(job_id: str, **updates: Any) -> None:
             return
         job.update(updates)
         job["updatedAt"] = time.time()
+        if updates.get("status") == "completed":
+            metadata = Path(job["filePath"]).with_suffix(".json")
+            partial = metadata.with_suffix(".json.partial")
+            saved = {**public_dub_track_job(job), "key": job["key"]}
+            try:
+                partial.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+                partial.replace(metadata)
+            except OSError as error:
+                print(f"Completed dub track metadata could not be saved: {error}", file=sys.stderr)
 
 
+def restore_completed_dub_tracks() -> None:
+    cleanup_dub_track_jobs()
+    for metadata in DUB_TRACK_OUTPUT_DIR.glob("*.json"):
+        try:
+            if metadata.stat().st_size > 16384:
+                continue
+            job = json.loads(metadata.read_text(encoding="utf-8"))
+            if not isinstance(job, dict) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", metadata.stem):
+                continue
+            output_format = job.get("outputFormat") or "wav"
+            path = metadata.with_suffix(f".{output_format}")
+            if (job.get("id") != metadata.stem or job.get("status") != "completed"
+                    or output_format not in ("wav", "m4a") or not path.is_file()
+                    or path.resolve().parent != DUB_TRACK_OUTPUT_DIR.resolve()
+                    or not isinstance(job.get("key"), str)
+                    or float(job.get("updatedAt") or 0) < time.time() - DUB_TRACK_JOB_TTL_SECONDS):
+                continue
+            job["filePath"] = str(path)
+            job["filename"] = sanitize_export_filename(str(job.get("filename") or path.name))
+            with DUB_TRACK_LOCK:
+                DUB_TRACK_JOBS[job["id"]] = job
+        except (OSError, ValueError, TypeError):
+            continue
+
+
+@engine_activity()
 def run_dub_track_job(job_id: str, cancel_event: threading.Event) -> None:
     with DUB_TRACK_LOCK:
         job = dict(DUB_TRACK_JOBS.get(job_id) or {})
@@ -4074,12 +4180,31 @@ def restart_current_process() -> None:
 
 def main() -> None:
     ThreadingHTTPServer.allow_reuse_address = True
-    server = ThreadingHTTPServer((HOST, PORT), LocalDubHandler)
+    server = LocalDubServer((HOST, PORT), LocalDubHandler)
+    restore_completed_dub_tracks()
     print(f"LocalTube Dub server listening on http://{HOST}:{PORT}")
     print(f"Ollama endpoint: {OLLAMA_URL}")
     print(f"Ollama model: {OLLAMA_MODEL}")
     print(f"Whisper model: {WHISPER_MODEL}")
-    server.serve_forever()
+    stopped = threading.Event()
+
+    def stop_when_idle() -> None:
+        while not stopped.wait(min(1.0, ENGINE_IDLE_SECONDS / 2)):
+            if engine_is_idle():
+                print("LocalTube Dub Engine exiting after idle timeout")
+                server.shutdown()
+                return
+
+    threading.Thread(target=stop_when_idle, name="localtube-idle-exit", daemon=True).start()
+    try:
+        server.serve_forever(poll_interval=0.1)
+    finally:
+        stopped.set()
+        # A request can arrive between the idle check and shutdown; drain it and
+        # its queued workers before daemon threads lose their owning process.
+        while engine_has_work():
+            time.sleep(0.05)
+        server.server_close()
 
 
 if __name__ == "__main__":

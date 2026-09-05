@@ -670,7 +670,7 @@ function testCaptionEngineAutoStartDecision() {
 
 function testTimelineCache() {
   const now = 2_000_000;
-  const request = { videoId: "Video A", targetLanguage: "zh-CN", provider: "chrome-translator", model: "default" };
+  const request = { videoId: "Video A", targetLanguage: "zh-CN", provider: "chrome-translator", model: "default", requestedSourceLanguage: "en", endpoint: "" };
   const first = backgroundHelpers.upsertTimelineCache(
     null,
     request,
@@ -702,12 +702,12 @@ function testTimelineCache() {
 
   const lookupRequests = helpers.makeTimelineCacheLookupRequests(request);
   assert.deepEqual(lookupRequests, [
-    { ...request, provider: "youtube-captions", model: "" },
+    { ...request, provider: "youtube-captions", model: "", requestedSourceLanguage: "" },
     request
   ]);
   assert.deepEqual(
     helpers.makeTimelineCacheLookupRequests({ ...request, provider: "youtube-captions", model: "ignored" }),
-    [{ ...request, provider: "youtube-captions", model: "" }]
+    [{ ...request, provider: "youtube-captions", model: "", requestedSourceLanguage: "" }]
   );
   const youtubeCache = backgroundHelpers.upsertTimelineCache(
     null,
@@ -1649,6 +1649,248 @@ function testLiveVoiceMediaElements() {
   const seeking = helpers.syncLiveVoiceMediaElements(video, audio, segment, {});
   assert.equal(seeking.action, "pause");
   assert.equal(audio.paused, true);
+
+  video.seeking = false;
+  audio.currentTime = audio.duration;
+  audio.ended = true;
+  const ended = helpers.syncLiveVoiceMediaElements(video, audio, segment, {});
+  assert.equal(ended.action, "stop", "a completed clip must not restart while its subtitle timebox is still active");
+  assert.equal(ended.seekTo, null);
+
+  audio.currentTime = 1;
+  audio.ended = false;
+  assert.equal(helpers.syncLiveVoiceMediaElements(video, audio, segment, {}).action, "play", "an unfinished paused clip must still resume");
+}
+
+async function testVoicePlaybackAttemptOwnership() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const segment = { key: "same-cue", start: 10, end: 14, startCueIndex: 0, text: "translated words" };
+  const state = {
+    runtimeProfile: { useEngineTts: true }, settings: { voiceEnabled: true, ttsEngine: "edge" },
+    running: true, video: { currentTime: 10, playbackRate: 1, paused: false, seeking: false },
+    voicePlaybackGeneration: 1, spokenVoiceSegmentKeys: new Set(), voicePendingCueKey: ""
+  };
+  const audios = [];
+  let audioRequest = Promise.resolve({ dataUrl: "test-audio" });
+  let releasePlayback;
+  let holdPlayback = true;
+  const context = {
+    state, ...helpers,
+    Audio: class {
+      constructor() {
+        Object.assign(this, { dataset: {}, listeners: {}, currentTime: 0, duration: 3, paused: true, ended: false, playCalls: 0 });
+        audios.push(this);
+      }
+      addEventListener(type, listener) { this.listeners[type] = listener; }
+      pause() { this.paused = true; }
+      play() {
+        this.playCalls += 1;
+        this.paused = false;
+        return holdPlayback ? new Promise((resolve) => { releasePlayback = resolve; }) : Promise.resolve();
+      }
+    },
+    getVoiceSegmentAudio: () => audioRequest,
+    hasVoiceSegmentAudioReady: () => true, shouldSkipLateVoiceSegment: () => false,
+    wasVoiceTextRecentlySpoken: () => false, usesBrowserSpeechProfile: () => false,
+    isVoiceSegmentCurrent: () => true, handleEngineVoiceFailure: () => false,
+    stopActiveBrowserSpeech() {}, cancelPendingBrowserSpeechStart() {},
+    waitForAudioMetadata: async () => {}, waitUntilSegmentStart: async () => {},
+    rememberSpokenVoiceText() {}, setOriginalMutedForDubbing() {}, scheduleVoicePrefetchWindow() {},
+    VOICE_LATE_SKIP_SECONDS: 0.1, VOICE_TIMEBOX_END_GRACE_SECONDS: 0.04,
+    VOICE_TIMEBOX_SEEK_GRACE_SECONDS: 0.42, VOICE_TIMEBOX_SEEK_THRESHOLD_SECONDS: 0.55
+  };
+  for (const signature of [
+    "async function playVoiceSegment(segment, playbackGeneration)",
+    "function maybeSpeakVoiceSegment(segment)",
+    "function beginVoicePlaybackAttempt()",
+    "function invalidateVoicePlayback()",
+    "function isVoicePlaybackAttemptCurrent(segment, playbackGeneration)",
+    "function stopActiveVoiceAudio()",
+    "function resetVoiceAudioSyncPlan(audio)",
+    "function alignVoiceAudioToSegment(audio, segment)",
+    "function syncActiveVoiceAudio(currentTime)",
+    "function voiceSegmentPlaybackEnd(segment)",
+    "function voiceTimeboxMaxRate(segment, preparedFitRate = 1)",
+    "function voiceSyncTiming()"
+  ]) {
+    const name = signature.match(/function (\w+)/)[1];
+    context[name] = vm.runInNewContext(`(${signature} {${extractFunctionBody(content, name)}})`, context);
+  }
+
+  const oldPlayback = context.playVoiceSegment(segment, 1);
+  await new Promise(setImmediate);
+  const oldAudio = audios[0];
+  state.voicePlaybackGeneration += 1;
+  context.stopActiveVoiceAudio();
+  oldAudio.listeners.play();
+  const staleEventChangedState = state.speechActive || state.spokenVoiceSegmentKeys.has(segment.key);
+
+  holdPlayback = false;
+  const replacement = new context.Audio();
+  state.activeVoiceAudio = replacement;
+  state.activeVoiceSegment = segment;
+  releasePlayback();
+  await oldPlayback;
+  const staleCompletionPlayedReplacement = replacement.playCalls > 0;
+
+  context.stopActiveVoiceAudio();
+  state.spokenVoiceSegmentKeys.clear();
+  let resolveOldRequest;
+  let resolveNewRequest;
+  audioRequest = new Promise((resolve) => { resolveOldRequest = resolve; });
+  context.maybeSpeakVoiceSegment(segment);
+  state.voicePlaybackGeneration += 1;
+  state.voicePendingCueKey = "";
+  audioRequest = new Promise((resolve) => { resolveNewRequest = resolve; });
+  context.maybeSpeakVoiceSegment(segment);
+  resolveOldRequest({ dataUrl: "old-audio" });
+  await new Promise(setImmediate);
+  const currentRequestStillPending = state.voicePendingCueKey === segment.key;
+  resolveNewRequest({ dataUrl: "new-audio" });
+  await new Promise(setImmediate);
+
+  context.stopActiveVoiceAudio();
+  state.spokenVoiceSegmentKeys.clear();
+  let resolveCancelledRequest;
+  audioRequest = new Promise((resolve) => { resolveCancelledRequest = resolve; });
+  context.maybeSpeakVoiceSegment(segment);
+  state.settings.voiceEnabled = false;
+  context.invalidateVoicePlayback();
+  resolveCancelledRequest({ dataUrl: "cancelled-audio" });
+  await new Promise(setImmediate);
+  const cancelledRequestClearedPending = state.voicePendingCueKey === "";
+  state.settings.voiceEnabled = true;
+  const generationBeforeRetry = state.voicePlaybackGeneration;
+  context.maybeSpeakVoiceSegment(segment);
+  const sameCueCanRetry = state.voicePlaybackGeneration > generationBeforeRetry;
+  await new Promise(setImmediate);
+
+  assert.deepEqual(
+    { staleEventChangedState, staleCompletionPlayedReplacement, currentRequestStillPending, cancelledRequestClearedPending, sameCueCanRetry },
+    { staleEventChangedState: false, staleCompletionPlayedReplacement: false, currentRequestStillPending: true, cancelledRequestClearedPending: true, sameCueCanRetry: true },
+    "obsolete playback events, completions and cleanup must not change the current attempt"
+  );
+
+  context.stopActiveVoiceAudio();
+  state.spokenVoiceSegmentKeys.clear();
+  let resolveBufferedRequest;
+  audioRequest = new Promise((resolve) => { resolveBufferedRequest = resolve; });
+  context.maybeSpeakVoiceSegment(segment);
+  state.videoBuffering = true;
+  resolveBufferedRequest({ dataUrl: "buffered-audio" });
+  await new Promise(setImmediate);
+  assert.equal(state.activeVoiceAudio, null, "a delayed TTS response must not start audio during buffering");
+}
+
+function testBrowserSpeechPlaybackOwnership() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const utterances = [];
+  let cancelCalls = 0;
+  const speechSynthesis = {
+    speaking: false, paused: false,
+    speak(utterance) { utterances.push(utterance); },
+    cancel() { cancelCalls += 1; },
+    pause() { this.paused = true; }, resume() { this.paused = false; }
+  };
+  const state = {
+    settings: { voiceEnabled: true }, running: true, videoBuffering: false,
+    video: { currentTime: 1, paused: false, seeking: false, playbackRate: 1 },
+    voicePlaybackGeneration: 0, spokenVoiceSegmentKeys: new Set()
+  };
+  const context = {
+    state, window: { speechSynthesis }, SpeechSynthesisUtterance: class { constructor(text) { this.text = text; } },
+    setTimeout, clearTimeout, pickBrowserVoice: () => null, usesBrowserSpeechProfile: () => true,
+    computeBrowserVoiceRate: () => 1, voiceSyncTiming: () => ({ startEarly: 0 }),
+    isVoiceSegmentCurrent: () => true, setOriginalMutedForDubbing() {}, rememberSpokenVoiceText() {},
+    VOICE_TIMEBOX_END_GRACE_SECONDS: 0.04
+  };
+  for (const signature of [
+    "function speakSegmentWithBrowserTts(segment, playbackGeneration = beginVoicePlaybackAttempt())",
+    "function beginVoicePlaybackAttempt()", "function invalidateVoicePlayback()",
+    "function cancelPendingBrowserSpeechStart()", "function stopActiveVoiceAudio()",
+    "function stopActiveBrowserSpeech(options = {})", "function syncActiveBrowserSpeech(currentTime)",
+    "function voiceSegmentPlaybackEnd(segment)", "function isVoicePlaybackAttemptCurrent(segment, playbackGeneration)"
+  ]) {
+    const name = signature.match(/function (\w+)/)[1];
+    context[name] = vm.runInNewContext(`(${signature} {${extractFunctionBody(content, name)}})`, context);
+  }
+  const segment = { key: "same", start: 0, end: 5, text: "voice" };
+  speechSynthesis.paused = true;
+  context.speakSegmentWithBrowserTts(segment);
+  assert.equal(speechSynthesis.paused, false, "a fresh utterance must clear a pause left over after cancelling an older one");
+  context.invalidateVoicePlayback();
+  context.speakSegmentWithBrowserTts(segment);
+  const cancellationsBeforeStaleStart = cancelCalls;
+  utterances[0].onstart();
+  assert.equal(cancelCalls, cancellationsBeforeStaleStart, "an obsolete onstart must not cancel the replacement utterance");
+  state.videoBuffering = true;
+  speechSynthesis.speaking = true;
+  utterances[1].onstart();
+  assert.equal(speechSynthesis.paused, true, "speech that starts after waiting must immediately pause without RAF");
+}
+
+function testVideoEventsSyncVoiceWithoutAnimationFrames() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const audio = {
+    paused: false, currentTime: 1, ended: false,
+    pause() { this.paused = true; },
+    play() { this.paused = false; return Promise.resolve(); }
+  };
+  const speechSynthesis = {
+    speaking: true, pending: false, paused: false,
+    pause() { this.paused = true; }, resume() { this.paused = false; }
+  };
+  const segment = { key: "voice", start: 0, end: 5 };
+  const state = {
+    running: true, settings: { voiceEnabled: true }, videoBuffering: false,
+    video: { currentTime: 1, paused: false, seeking: false },
+    activeVoiceAudio: audio, activeVoiceSegment: segment, activeBrowserVoiceSegment: segment
+  };
+  const context = {
+    state, window: { speechSynthesis }, VOICE_TIMEBOX_END_GRACE_SECONDS: 0.04,
+    voiceSegmentPlaybackEnd: (item) => item.end, setOriginalMutedForDubbing() {},
+    alignVoiceAudioToSegment: () => ({ action: audio.ended ? "stop" : "play" }),
+    stopActiveVoiceAudio: () => { audio.pause(); state.activeVoiceAudio = null; },
+    stopActiveBrowserSpeech: () => { speechSynthesis.paused = true; state.activeBrowserVoiceSegment = null; },
+    stopVoiceIfOutsideActiveSegment() {}, maybeSpeakVoiceSegment() {}, findVoiceSegmentForPlayback: () => null
+  };
+  for (const signature of [
+    "function handleVideoPause()", "function handleVideoWaiting()", "function handleVideoPlaying()",
+    "function syncActiveVoiceAudio(currentTime)", "function syncActiveBrowserSpeech(currentTime)"
+  ]) {
+    const name = signature.match(/function (\w+)/)[1];
+    context[name] = vm.runInNewContext(`(${signature} {${extractFunctionBody(content, name)}})`, context);
+  }
+  state.video.paused = true;
+  context.handleVideoPause();
+  assert.equal(audio.paused, true, "pause must immediately stop clip audio even when RAF is suspended");
+  assert.equal(speechSynthesis.paused, true, "pause must immediately stop browser speech");
+  assert.equal(audio.currentTime, 1, "pause preserves the clip position instead of replaying it");
+  state.video.paused = false;
+  context.handleVideoPlaying();
+  assert.equal(audio.paused, false);
+  assert.equal(speechSynthesis.paused, false);
+  context.handleVideoWaiting();
+  assert.equal(audio.paused, true, "buffering immediately pauses live voice");
+  assert.equal(speechSynthesis.paused, true);
+  for (const [owner, key] of [[state, "running"], [state.settings, "voiceEnabled"]]) {
+    owner[key] = false;
+    context.handleVideoPlaying();
+    assert.equal(audio.paused, true, `${key}=false must prevent voice resume`);
+    assert.equal(speechSynthesis.paused, true);
+    owner[key] = true;
+  }
+  state.video.seeking = true;
+  context.handleVideoPlaying();
+  assert.equal(audio.paused, true, "playing during a seek must not resume old audio");
+  assert.equal(speechSynthesis.paused, true);
+  state.video.seeking = false;
+  state.video.currentTime = 6;
+  context.syncActiveBrowserSpeech(6);
+  assert.equal(state.activeBrowserVoiceSegment, null, "expired speech must be cleared before any resume");
+  audio.ended = true;
+  context.handleVideoPlaying();
+  assert.equal(audio.paused, true, "ended clips remain stopped when playback resumes");
 }
 
 function testInstallReleaseInfo() {
@@ -1862,6 +2104,7 @@ async function testStartOperationHealthHarness() {
         refreshCount += 1;
         assert.equal(refreshOptions.operationId, 11);
         assert.ok(refreshOptions.timeoutMs > 0);
+        assert.equal(refreshOptions.startIfNeeded, true, "an explicit start must wake a sleeping Engine");
         state.engineHealth = refreshedHealth;
         return refreshedHealth;
       },
@@ -1911,6 +2154,35 @@ async function testStartOperationHealthHarness() {
   assert.equal(ttsRestart.state.runtimeProfile.mode, "lightweight");
 }
 
+async function testStartReadsPageWhileEngineWakes() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  let pageReads = 0;
+  let rejectHealth;
+  const settings = { voiceEnabled: false };
+  const state = { operationId: 0, settings };
+  const context = {
+    state, cancelCaptionAutoRetry() {}, readSettingsFromWidget: () => settings,
+    beginChromeTranslationWarmupFromUserGesture() {}, setWidgetPhase() {}, setStatus() {},
+    loadSettings: async () => settings, updateControlsFromSettings() {}, updateWidgetState() {},
+    getPrimaryVideoElement: () => ({ paused: true }), bindVideoEvents() {}, attachCaptionOverlay() {},
+    getCurrentVideoId: () => "current-video", assertOperationActive() {},
+    timelineCacheRequest: () => ({}),
+    resolveVideoCaptionsFromPage: async (videoId) => { assert.equal(videoId, "current-video"); pageReads += 1; return { status: "no_captions", cues: [] }; },
+    withTimeoutResult: (promise) => promise,
+    prepareRuntimeProfileForOperation: () => new Promise((resolve, reject) => { rejectHealth = reject; }),
+    CAPTION_TOTAL_TIMEOUT_MS: 23000
+  };
+  const start = vm.runInNewContext(
+    `(async function startDubbing(options = {}) {${extractFunctionBody(content, "startDubbing")}})`, context
+  );
+  const pending = start();
+  await new Promise(setImmediate);
+  const readsDuringHealth = pageReads;
+  rejectHealth(Object.assign(new Error("cancelled"), { name: "OperationStaleError" }));
+  await pending;
+  assert.equal(readsDuringHealth, 1, "page captions must load while Engine startup/health is pending");
+}
+
 function testNormalizedEngineHealthCapabilities() {
   const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
   function normalize(ttsEngine, response) {
@@ -1958,7 +2230,7 @@ async function testCaptionEngineFailureFallbackHarness() {
   );
   let pageReadCount = 0;
   const resolveCaptions = vm.runInNewContext(
-    `(async function resolveVideoCaptions(operationId) {${extractFunctionBody(content, "resolveVideoCaptions")}})`,
+    `(async function resolveVideoCaptions(operationId, options = {}) {${extractFunctionBody(content, "resolveVideoCaptions")}})`,
     {
       state: {
         runtimeProfile: { useCaptionEngine: true },
@@ -1993,15 +2265,266 @@ async function testCaptionEngineFailureFallbackHarness() {
       classifyCaptionErrorCode: () => "CAPTION_ENGINE_UNAVAILABLE",
       CAPTION_FAST_TIMEOUT_MS: 1,
       CAPTION_TOTAL_TIMEOUT_MS: 20,
-      CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS: 2
+      CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS: 2,
+      LIGHTWEIGHT_CAPTIONS_UNAVAILABLE_MESSAGE: "请恢复 Engine 后重试完整模式，或换一个有字幕的视频。"
     }
   );
   let activationCount = 0;
   const result = await resolveCaptions(4);
-  assert.equal(activationCount, 1, "a proven in-operation caption Engine failure must activate fallback");
+  assert.equal(activationCount, 0, "a short target-caption wait does not prove Engine failure");
   assert.equal(pageReadCount, 1, "the active page caption read must be started only once");
   assert.equal(result.source, "page-main-world");
   assert.equal(result.cues[0].id, "page", "the already-started page caption result must complete the same operation");
+}
+
+async function testCaptionReadDeadlineAndPageRace() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  async function run({ pageAt = Infinity, engineAt = Infinity, pageLanguage = "en", engineLanguage = "", engineCode = "", mode = "full", elapsedBeforeResolve = 0 } = {}) {
+    let now = elapsedBeforeResolve;
+    let nextTimer = 0;
+    let pageReadCount = 0;
+    const timers = new Map();
+    const schedule = (callback, ms) => {
+      const id = ++nextTimer;
+      timers.set(id, { at: now + ms, callback });
+      return id;
+    };
+    const after = (ms, value) => new Promise((resolve) => {
+      if (Number.isFinite(ms)) schedule(() => resolve(value), ms);
+    });
+    const caption = (language, source) => ({
+      status: "captions", cues: [{ start: 0, end: 1, text: source }],
+      track: { languageCode: language }, source
+    });
+    const state = { runtimeProfile: { useCaptionEngine: mode === "full" }, settings: { targetLanguage: "zh-CN", ttsEngine: "edge" } };
+    const context = {
+      state, Date: { now: () => now }, setTimeout: schedule, clearTimeout: (id) => timers.delete(id),
+      getCurrentVideoId: () => "current-video", setStatus() {}, assertOperationActive() {},
+      resolveVideoCaptionsFromPage: (videoId) => {
+        assert.equal(videoId, "current-video");
+        pageReadCount += 1;
+        return after(pageAt, caption(pageLanguage, "page-main-world"));
+      },
+      fetchEngineCaptions: () => after(engineAt, engineLanguage
+        ? caption(engineLanguage, "caption-engine")
+        : { status: "unknown", cues: [], code: engineCode, error: engineCode }),
+      getCaptionFailureBackoff: () => null, rememberCaptionFailure() {},
+      lightweightFallbackDecision: helpers.lightweightFallbackDecision,
+      captionEngineWaitTimeout: helpers.captionEngineWaitTimeout,
+      activateLightweightMode: () => { state.runtimeProfile.useCaptionEngine = false; return true; },
+      isTargetLanguageTrack: (track, language) => track?.languageCode === language,
+      friendlyErrorMessage: (error) => error.message || String(error), console: { warn() {} },
+      CAPTION_FAST_TIMEOUT_MS: 6000, CAPTION_TOTAL_TIMEOUT_MS: 23000,
+      CAPTION_ENGINE_PAGE_FALLBACK_TIMEOUT_MS: 2000,
+      LIGHTWEIGHT_CAPTIONS_UNAVAILABLE_MESSAGE: "请恢复 Engine 后重试完整模式，或换一个有字幕的视频。"
+    };
+    for (const signature of [
+      "async function resolveVideoCaptions(operationId, options = {})",
+      "function withTimeoutResult(promise, timeoutMs, timeoutMessage, options = {})",
+      "function pickBestResolvedCaptionResult(results, targetLanguage)",
+      "function resolvedCaptionResultScore(result, targetLanguage)",
+      "function classifyCaptionErrorCode(value)", "function buildCaptionReadFailureMessage(pageResult, engineResult)"
+    ]) {
+      const name = signature.match(/function (\w+)/)[1];
+      context[name] = vm.runInNewContext(`(${signature} {${extractFunctionBody(content, name)}})`, context);
+    }
+    let result;
+    let error;
+    context.resolveVideoCaptions(1, { deadline: 23000 }).then((value) => { result = value; }, (failure) => { error = failure; });
+    for (let turn = 0; turn < 30 && !result && !error; turn += 1) {
+      await new Promise(setImmediate);
+      if (result || error) break;
+      const timer = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
+      assert.ok(timer, "caption resolution must keep a bounded deadline while external reads are pending");
+      timers.delete(timer[0]);
+      now = timer[1].at;
+      timer[1].callback();
+    }
+    if (error) throw error;
+    assert.ok(result);
+    assert.equal(pageReadCount, 1);
+    return { result, elapsed: now, lightweight: !state.runtimeProfile.useCaptionEngine };
+  }
+  const deadline = await run();
+  assert.ok(deadline.elapsed <= 23000, `caption reads must share one 23s budget, got ${deadline.elapsed}ms`);
+  const slowHealth = await run({ elapsedBeforeResolve: 12000 });
+  assert.ok(slowHealth.elapsed <= 23000, "Engine health time must consume the same caption deadline");
+  const latePage = await run({ pageAt: 7000 });
+  assert.equal(latePage.result.source, "page-main-world");
+  assert.ok(latePage.elapsed <= 9000, "page success after the fast read must escape a slow Engine after a short target-caption grace period");
+  assert.equal(latePage.lightweight, false, "a short target-caption grace period does not prove Engine failure");
+  const targetEngine = await run({ pageAt: 7000, engineAt: 2000, engineLanguage: "zh-CN" });
+  assert.equal(targetEngine.result.source, "caption-engine", "target captions retain priority when Engine responds within the grace period");
+  const targetPage = await run({ pageAt: 7000, pageLanguage: "zh-CN" });
+  assert.equal(targetPage.elapsed, 7000, "target page captions need no extra Engine wait");
+  const fallback = await run({ pageAt: 12000, engineAt: 1000, engineCode: "CAPTION_ENGINE_UNAVAILABLE" });
+  assert.equal(fallback.result.source, "page-main-world");
+  assert.equal(fallback.lightweight, true);
+}
+
+async function testCompletedDubTrackWakesBeforeDownload() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const url = "http://127.0.0.1:8787/api/dub-track/download?id=completed-job";
+  const state = { operationId: 3, dubTrackDownloadUrl: url, settings: {} };
+  let releaseStatus;
+  let clicks = 0;
+  const context = {
+    state, URL, setStatus() {}, resetDubTrackState() {},
+    assertOperationActive: (id) => assert.equal(id, state.operationId),
+    sendRuntimeMessageWithTimeout: (message, timeoutMs) => {
+      assert.equal(message.type, "localtube.dubTrackStatus");
+      assert.equal(message.jobId, "completed-job");
+      assert.ok(timeoutMs > 0);
+      return new Promise((resolve) => { releaseStatus = resolve; });
+    },
+    document: {
+      documentElement: { append() {} },
+      createElement: () => ({ click() { clicks += 1; }, remove() {} })
+    }
+  };
+  for (const signature of [
+    "function isSafeDubTrackDownloadUrl(value)", "async function ensureReadyDubTrack()", "async function downloadReadyDubTrack()"
+  ]) {
+    const name = signature.match(/function (\w+)/)[1];
+    if (!content.includes(`function ${name}(`)) continue;
+    context[name] = vm.runInNewContext(`(${signature} {${extractFunctionBody(content, name)}})`, context);
+  }
+  const downloading = context.downloadReadyDubTrack();
+  await new Promise(setImmediate);
+  assert.equal(clicks, 0, "a sleeping Engine must be woken and its completed job checked before navigating to download");
+  assert.equal(typeof releaseStatus, "function");
+  releaseStatus({ ok: true, payload: { job: { id: "completed-job", status: "completed", downloadUrl: url } } });
+  await downloading;
+  assert.equal(clicks, 1);
+  const missing = context.downloadReadyDubTrack();
+  releaseStatus({ ok: false, error: "job expired" });
+  await assert.rejects(missing, /job expired/);
+  assert.equal(clicks, 1, "expired tracks must not send users to a broken download");
+  const stale = context.downloadReadyDubTrack();
+  state.dubTrackDownloadUrl = "";
+  releaseStatus({ ok: true, payload: { job: { id: "completed-job", status: "completed", downloadUrl: url } } });
+  await assert.rejects(stale, { name: "OperationStaleError" });
+  assert.equal(clicks, 1, "a completed status from an old track must not download after reset");
+}
+
+async function testPreviewPreparationOwnership() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const state = { running: true, dubTrackPreviewOperationId: 0, dubTrackPreviewActive: false };
+  let rejectOldPreparation;
+  let stopCalls = 0;
+  const context = {
+    state, setStatus() {}, friendlyErrorMessage: (error) => error.message,
+    startDubTrackPreview: () => {
+      state.dubTrackPreviewOperationId += 1;
+      state.dubTrackPreviewActive = true;
+      return new Promise((resolve, reject) => { rejectOldPreparation = reject; });
+    },
+    stopDubTrackPreview: () => { stopCalls += 1; state.dubTrackPreviewActive = false; }
+  };
+  const toggle = vm.runInNewContext(
+    `(function toggleDubTrackPreview() {${extractFunctionBody(content, "toggleDubTrackPreview")}})`, context
+  );
+  toggle();
+  state.dubTrackPreviewOperationId += 2;
+  rejectOldPreparation(new Error("old Engine startup failed"));
+  await new Promise(setImmediate);
+  assert.equal(stopCalls, 0, "an old Engine wake failure must not stop a replacement full-track preview");
+}
+
+async function testPreviewResumeWaitsForEngine() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  let ranges = 0;
+  let resolveReady;
+  let readinessChecks = 0;
+  let audioTime = 10;
+  const audio = {
+    paused: true, ended: false, duration: 1000, readyState: 4,
+    get currentTime() { return audioTime; },
+    set currentTime(value) { ranges += 1; audioTime = value; },
+    pause() { this.paused = true; }
+  };
+  const state = {
+    running: true, settings: {}, dubTrackPreviewActive: true, dubTrackPreviewOperationId: 1,
+    dubTrackPreviewAudio: audio, video: { currentTime: 60, playbackRate: 1, paused: false, seeking: false }
+  };
+  const context = {
+    state, syncFullTrackMediaElements: helpers.syncFullTrackMediaElements,
+    ensureReadyDubTrack: () => {
+      readinessChecks += 1;
+      return new Promise((resolve) => { resolveReady = resolve; });
+    },
+    requestDubTrackPreviewPlayback: () => { audio.paused = false; return Promise.resolve(); },
+    stopDubTrackPreview() {}, setStatus() {}, friendlyErrorMessage: (error) => error.message
+  };
+  for (const signature of [
+    "function handleVideoPlaying()", "function handleVideoSeeked()",
+    "async function resumeDubTrackPreview()", "function syncDubTrackPreview(currentTime, forceSeek = false)"
+  ]) {
+    const name = signature.match(/function (\w+)/)[1];
+    if (!content.includes(`function ${name}(`)) continue;
+    context[name] = vm.runInNewContext(`(${signature} {${extractFunctionBody(content, name)}})`, context);
+  }
+  context.handleVideoPlaying();
+  assert.equal(ranges, 0, "resuming a paused full track must wait for Engine before requesting a Range");
+  context.handleVideoSeeked();
+  context.syncDubTrackPreview(60, true);
+  assert.equal(ranges, 0, "RAF and seeked must not bypass pending readiness");
+  assert.equal(readinessChecks, 1, "playing and seeked must share the same pending Engine check");
+  resolveReady();
+  await new Promise(setImmediate);
+  assert.equal(audio.currentTime, 60);
+  assert.equal(audio.paused, false);
+  const previousRanges = ranges;
+  context.handleVideoPlaying();
+  state.dubTrackPreviewOperationId += 1;
+  state.dubTrackPreviewAudio = { ...audio };
+  resolveReady();
+  await new Promise(setImmediate);
+  assert.equal(ranges, previousRanges, "an obsolete readiness response must not seek replacement media");
+  state.dubTrackPreviewAudio = audio;
+  state.video.paused = true;
+  context.syncDubTrackPreview(80, true);
+  assert.equal(ranges, previousRanges, "paused playback may let Engine sleep without speculative Range requests");
+}
+
+async function testPlayingPreviewKeepsEngineAwake() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  let statusChecks = 0;
+  let healthChecks = 0;
+  const state = {
+    settings: {}, engineHealth: {}, dubTrackPreviewActive: true, video: { paused: false },
+    operationId: 1, dubTrackDownloadUrl: "http://127.0.0.1:8787/api/dub-track/download?id=job"
+  };
+  const context = {
+    state, URL, beginEngineHealthRequest: () => 1, isCurrentEngineHealthRequest: () => true,
+    isLightweightProfile: () => false, normalizeEngineHealth: () => ({}), applyEnginePlatformPolicy() {},
+    assertOperationActive: (operationId) => assert.equal(operationId, 1),
+    sendRuntimeMessage: async (message) => {
+      assert.equal(message.type, "localtube.captionEngineHealth");
+      assert.equal(message.startIfNeeded, false);
+      healthChecks += 1;
+      return { ok: true, payload: {} };
+    },
+    sendRuntimeMessageWithTimeout: async (message) => {
+      assert.equal(message.type, "localtube.dubTrackStatus");
+      statusChecks += 1;
+      return { ok: true, payload: { job: { id: "job", status: "completed", downloadUrl: state.dubTrackDownloadUrl } } };
+    }
+  };
+  for (const signature of [
+    "async function refreshEngineStatus(options = {})", "async function ensureReadyDubTrack()",
+    "function isSafeDubTrackDownloadUrl(value)"
+  ]) {
+    const name = signature.match(/function (\w+)/)[1];
+    context[name] = vm.runInNewContext(`(${signature} {${extractFunctionBody(content, name)}})`, context);
+  }
+  await context.refreshEngineStatus();
+  assert.equal(statusChecks, 1, "the existing poll must keep an actively playing full track available for future Range requests");
+  assert.equal(healthChecks, 0);
+  state.video.paused = true;
+  await context.refreshEngineStatus();
+  assert.equal(statusChecks, 1, "paused tracks must let Engine become idle");
+  assert.equal(healthChecks, 1);
 }
 
 async function testEngineActionErrorSanitization() {
@@ -2413,7 +2936,7 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
   assert.equal(manifest.content_scripts[0].world, "MAIN");
   assert.deepEqual(manifest.content_scripts[1].js, ["voice_helpers.js", "content_helpers.js", "content.js"]);
-  assert.equal(manifest.version, "0.2.5");
+  assert.equal(manifest.version, "0.2.6");
   assert.equal(manifest.permissions.includes("downloads"), false);
   assert.deepEqual(manifest.permissions, ["activeTab", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.optional_permissions, ["offscreen", "tabCapture"]);
@@ -2565,7 +3088,6 @@ function testManifestAndFlowGuards() {
   assert.match(content, /updateProviderOptionsFromResponse/);
   assert.match(content, /allowAudioTranscription/);
   assert.match(content, /为避免消耗转写额度/);
-  assert.match(content, /resolveVideoCaptions\(operationId\)/);
   assert.match(content, /正在读取 YouTube 字幕/);
   assert.match(content, /resolveVideoCaptionsFromPage\(videoId\)/);
   assert.match(content, /withTimeoutResult/);
@@ -2714,7 +3236,6 @@ function testManifestAndFlowGuards() {
   assert.match(content, /isVoicePlaybackAttemptCurrent\(segment, playbackGeneration\)/);
   assert.match(content, /syncActiveBrowserSpeech/);
   assert.match(content, /buffering: state\.videoBuffering/);
-  assert.match(content, /state\.video\.paused \|\| state\.videoBuffering/);
   assert.match(content, /computeBrowserVoiceRate/);
   assert.match(content, /const naturalEnd = Math\.max/);
   assert.doesNotMatch(content, /initialLateSeek/);
@@ -2735,7 +3256,6 @@ function testManifestAndFlowGuards() {
   assert.match(content, /maxFitRate: voiceTotalMaxRate\(segment\)/);
   assert.match(content, /localtubePreparedFitRate/);
   assert.match(content, /computeVoiceRateBudget\(segment, state\.settings\.ttsEngine, preparedFitRate\)\.liveMaxRateMultiplier/);
-  assert.match(content, /await audio\.play\(\);\s*resetVoiceAudioSyncPlan\(audio\);\s*syncActiveVoiceAudio/);
   const requestRateBody = extractFunctionBody(content, "computeVoiceRequestRate");
   assert.match(requestRateBody, /state\.settings\.voiceRate/);
   assert.doesNotMatch(requestRateBody, /estimatedSeconds|targetSeconds/);
@@ -2857,10 +3377,6 @@ function testManifestAndFlowGuards() {
   assert.match(resolveCaptionsBody, /activateLightweightMode\(engineResult\)/);
   assert.match(
     resolveCaptionsBody,
-    /withTimeoutResult\(engineResultPromise, engineTimeoutMs, "本地字幕 Engine 读取超时",\s*\{\s*timeoutCode: "ENGINE_TIMEOUT"/
-  );
-  assert.match(
-    resolveCaptionsBody,
     /pageFastResult\?\.status === "captions"[\s\S]*pageFastResult\?\.cues\?\.length[\s\S]*return pageFastResult/,
     "any readable page caption track must bypass yt-dlp, not only a target-language track"
   );
@@ -2883,10 +3399,10 @@ function testManifestAndFlowGuards() {
   const targetCacheIndex = startDubbingBody.indexOf('loadCachedTimeline(videoId, operationId, "youtube-captions")');
   const providerCacheIndex = startDubbingBody.indexOf("loadCachedTimeline(videoId, operationId, resolveEffectiveProvider())");
   const sourceCacheIndex = startDubbingBody.indexOf('loadCachedTimeline(videoId, operationId, "youtube-source")');
-  const liveCaptionIndex = startDubbingBody.indexOf("resolveVideoCaptions(operationId)");
+  const liveCaptionIndex = startDubbingBody.indexOf("resolveVideoCaptions(operationId,");
   assert.ok(targetCacheIndex >= 0 && providerCacheIndex > targetCacheIndex);
   assert.ok(sourceCacheIndex > providerCacheIndex);
-  assert.ok(liveCaptionIndex > sourceCacheIndex, "all local subtitle caches must be exhausted before a YouTube request");
+  assert.ok(liveCaptionIndex > sourceCacheIndex, "local subtitle caches must take precedence over the prefetched page result");
   assert.match(
     startDubbingBody,
     /const cachedTimeline =\s*useStartupTimelineCaches\s*\? await loadCachedTimeline\(videoId, operationId, "youtube-captions"\)\s*:\s*null/
@@ -3154,7 +3670,7 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /localtube\.clearTranslationCache/);
   assert.match(popupHtml, /id="cacheTranslations"/);
   assert.match(popupHtml, /id="clearTranslationCache"/);
-  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.5<\/span>/);
+  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.6<\/span>/);
   assert.match(popupHtml, /id="testProvider"[^>]*>验证翻译 Key<\/button>/);
   assert.match(popup, /saveAndValidateApiKey/);
   assert.match(popupHtml, /免费 \/ 自带 Key/);
@@ -3247,7 +3763,7 @@ function testManifestAndFlowGuards() {
   assert.match(installHtml, /复制一键安装依赖命令/);
   assert.match(installHtml, /一键启动 Engine/);
   assert.match(installHtml, /一键重启 Engine/);
-  assert.match(installHtml, /修复开机自启/);
+  assert.match(installHtml, /修复按需启动/);
   assert.match(installHtml, /一键安装本地转写/);
   assert.match(installHtml, /Windows 一键本地 Whisper 尚未包含在 0\.2\.5 安装包中/);
   assert.match(installHtml, /自动处理自身目录的下载隔离属性/);
@@ -3368,8 +3884,8 @@ function testManifestAndFlowGuards() {
   const liveVoiceHarness = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.js"), "utf8");
   const liveVoiceHarnessHtml = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.html"), "utf8");
   assert.match(liveVoiceHarness, /syncLiveVoiceMediaElements/);
-  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.5/);
-  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.5/);
+  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.6/);
+  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.6/);
   assert.match(liveVoiceHarness, /data-action='self-test'/);
   assert.match(liveVoiceHarness, /late\.expectedEnd <= 5\.05/);
   assert.match(liveVoiceHarness, /late\.playbackRate <= 1\.2/);
@@ -3426,10 +3942,8 @@ function testManifestAndFlowGuards() {
   assert.match(engineStart, /protocolVersion/);
   assert.match(engineStart, /engineVersion/);
   assert.match(engineStart, /EXPECTED_VERSION/);
-  assert.match(engineAutostartInstall, /com\.localtube\.dub\.engine\.http/);
-  assert.match(engineAutostartInstall, /KeepAlive/);
-  assert.match(engineAutostartInstall, /SuccessfulExit/);
-  assert.match(engineAutostartInstall, /launchctl bootstrap/);
+  assert.match(engineAutostartInstall, /uninstall_engine_autostart_macos\.sh/);
+  assert.doesNotMatch(engineAutostartInstall, /launchctl bootstrap|<key>KeepAlive<\/key>|<key>RunAtLoad<\/key>/);
   assert.match(engineAutostartInstall, /local_dub_server\.py/);
   assert.match(engineAutostartInstall, /LOCAL_DUB_AUTOSTART_DRY_RUN/);
   assert.match(engineAutostartInstall, /Application Support\/LocalTube Dub\/engine-runtime/);
@@ -3532,7 +4046,7 @@ function testManifestAndFlowGuards() {
   assert.match(changelog, /Native Host/);
   assert.match(changelog, /0\.1\.91/);
   assert.match(changelog, /single customer workflow/);
-  assert.match(developmentAudit, /Current reviewed version: 0\.2\.5/);
+  assert.match(developmentAudit, /Current reviewed version: 0\.2\.6/);
   assert.match(developmentAudit, /ikoenamldegccnhmjjnlkffocdkbbbmo/);
   assert.match(developmentAudit, /Dubbed voice-track export/);
   assert.match(developmentAudit, /Subtitle export/);
@@ -3580,11 +4094,20 @@ async function main() {
   testKokoroPrefetchWindow();
   testNaturalVoiceStartupReanchor();
   testLiveVoiceMediaElements();
+  await testVoicePlaybackAttemptOwnership();
+  testBrowserSpeechPlaybackOwnership();
+  testVideoEventsSyncVoiceWithoutAnimationFrames();
   testInstallReleaseInfo();
   testTranscriptionRequestRegistry();
   testNoCaptionStartupOrder();
   await testStartOperationHealthHarness();
+  await testStartReadsPageWhileEngineWakes();
   testNormalizedEngineHealthCapabilities();
+  await testCaptionReadDeadlineAndPageRace();
+  await testCompletedDubTrackWakesBeforeDownload();
+  await testPreviewPreparationOwnership();
+  await testPreviewResumeWaitsForEngine();
+  await testPlayingPreviewKeepsEngineAwake();
   await testCaptionEngineFailureFallbackHarness();
   await testEngineActionErrorSanitization();
   await testEngineVoiceFailureHarness();

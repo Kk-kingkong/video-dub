@@ -49,13 +49,6 @@ $OperationStarted = $false
 $HadPreviousRuntime = $false
 $PreviousVersion = ""
 
-function Quote-WindowsArgument([string]$Value) {
-    if ($Value.Contains('"')) {
-        throw "Windows paths containing a quote are not supported."
-    }
-    return '"' + $Value + '"'
-}
-
 function Get-RuntimeVersion([string]$Root) {
     $ReleasePath = Join-Path $Root "release.json"
     if (-not (Test-Path -LiteralPath $ReleasePath -PathType Leaf)) {
@@ -148,36 +141,6 @@ function Register-NativeHost([string]$Root) {
     Set-Item -Path $RegistryPath -Value $NativeManifestPath
 }
 
-function Register-PerUserStartup([string]$Root, [string]$ExpectedVersion) {
-    $ManagerPath = Join-Path $Root "manage-engine.ps1"
-    $Arguments = @(
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy", "Bypass",
-        "-File", (Quote-WindowsArgument $ManagerPath),
-        "-Action", "Start",
-        "-ExpectedVersion", (Quote-WindowsArgument $ExpectedVersion),
-        "-ExpectedRuntimeRoot", (Quote-WindowsArgument $Root),
-        "-StateRootOverride", (Quote-WindowsArgument $StateRoot),
-        "-LocalAppDataOverride", (Quote-WindowsArgument $env:LOCALAPPDATA),
-        "-Port", [string]$EnginePort
-    ) -join " "
-    $Action = New-ScheduledTaskAction `
-        -Execute "powershell.exe" `
-        -Argument $Arguments `
-        -WorkingDirectory $Root
-    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $UserId = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME }
-    $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
-    Register-ScheduledTask `
-        -TaskName $TaskName `
-        -Action $Action `
-        -Trigger $Trigger `
-        -Principal $Principal `
-        -Description "Starts the per-user LocalTube Dub loopback Engine." `
-        -Force | Out-Null
-}
-
 function Start-And-TestEngine([string]$Root, [string]$ExpectedVersion) {
     Invoke-EngineManager `
         -ManagerPath (Join-Path $Root "manage-engine.ps1") `
@@ -208,8 +171,8 @@ function Restore-PreviousRuntime {
             throw "Rollback restored runtime has no valid release metadata."
         }
         Register-NativeHost $RuntimeRoot
-        Register-PerUserStartup $RuntimeRoot $RestoredVersion
         Start-And-TestEngine $RuntimeRoot $RestoredVersion
+        Stop-Engine $RuntimeRoot $RestoredVersion
     }
     Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -243,16 +206,18 @@ try {
     Move-Item -LiteralPath $StagingRoot -Destination $RuntimeRoot
     Invoke-RuntimeVerification $RuntimeRoot $Version
     Register-NativeHost $RuntimeRoot
-    Register-PerUserStartup $RuntimeRoot $Version
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     if ($env:LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE -eq "1") {
         throw "Injected installer failure after activation."
     }
     Start-And-TestEngine $RuntimeRoot $Version
+    Stop-Engine $RuntimeRoot $Version
 
     $ActivationStarted = $false
     Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "LocalTube Dub Engine $Version installed for the current user."
     Write-Host "Runtime: $RuntimeRoot"
+    Write-Host "Engine starts on demand and exits after five idle minutes."
 } catch {
     if ($OperationStarted) {
         try {

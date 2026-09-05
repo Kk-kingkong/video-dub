@@ -6,12 +6,12 @@ The extension can be installed from the store, but the local AI engine must be i
 
 ## Customer packages
 
-Release `0.2.5` provides matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
+Development version `0.2.6` prepares matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
 
 - macOS: unzip the matching architecture package and open `Install LocalTube Dub Engine.command`.
 - Windows: unzip the x64 package and run `Install LocalTube Dub Engine.cmd`.
 
-Both installers register the current-user Native Messaging host, configure login startup, start the loopback Engine, and verify health. The current development packages are unsigned and unnotarized.
+Both installers register the current-user Native Messaging host and remove legacy login startup. Windows briefly starts the loopback Engine to verify installation, then stops it. User operations start Engine on demand; it exits after five idle minutes. Active requests, background jobs, model downloads and audio downloads prevent idle exit. Passive status checks do not wake it or extend its idle timer. The current development packages are unsigned and unnotarized.
 
 Kokoro is optional and not bundled in the Engine ZIP. Select **Kokoro high-quality local** in the extension and click **Install model**. The Engine downloads and verifies the fixed model data before local Chinese/English synthesis becomes available.
 
@@ -33,9 +33,9 @@ cd $HOME/Documents/code/localtube-dub/companion
 ./install_native_host_macos.sh YOUR_EXTENSION_ID
 ```
 
-The installer copies Engine, Native Host, and their Python environment to `~/Library/Application Support/LocalTube Dub/engine-runtime`, then points Chrome's Native Messaging manifest at the launcher in that stable location. This avoids macOS blocking background Python while it opens a development checkout under the privacy-protected `~/Documents` folder. The launcher restores a normal terminal-like PATH before running `native_host.py`. A user LaunchAgent starts Engine after login, keeps it alive, and writes logs to `~/Library/Logs/LocalTube Dub`.
+The installer copies Engine, Native Host, and their Python environment to `~/Library/Application Support/LocalTube Dub/engine-runtime`, then points Chrome's Native Messaging manifest at the launcher in that stable location. This avoids macOS blocking background Python while it opens a development checkout under the privacy-protected `~/Documents` folder. The launcher restores a normal terminal-like PATH before running `native_host.py`. Legacy LaunchAgents are removed; Engine starts through Native Messaging when needed and writes logs to `~/Library/Logs/LocalTube Dub`.
 
-The install guide can repair auto-start through Native Messaging. The equivalent manual commands are:
+The install guide can repair on-demand startup through Native Messaging. The legacy-named install script now deploys the runtime and removes login startup; the uninstall script removes any old entry:
 
 ```bash
 ./scripts/install_engine_autostart_macos.sh
@@ -58,7 +58,7 @@ The release package is built and smoke-tested on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.5-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.6-Windows-x64.zip
 ```
 
 ## Smoke tests

@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SERVER_DIR = PROJECT_ROOT / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
-from local_dub_server import ENGINE_PROTOCOL_VERSION, PORT as DEFAULT_ENGINE_PORT, build_captions_payload, build_dub_payload, build_health_payload, build_transcribe_payload, build_tts_payload, build_video_transcribe_payload, build_voices_payload  # noqa: E402
+from local_dub_server import ENGINE_PROTOCOL_VERSION, PORT as DEFAULT_ENGINE_PORT, build_captions_payload, build_dub_payload, build_health_payload, build_kokoro_model_payload, build_transcribe_payload, build_tts_payload, build_video_transcribe_payload, build_voices_payload  # noqa: E402
 
 
 MAX_CHROME_MESSAGE_BYTES = 64 * 1024 * 1024
@@ -260,7 +260,9 @@ def forward_kokoro_model_operation(operation: str) -> dict[str, Any]:
     endpoint = KOKORO_MODEL_ENDPOINTS.get(operation)
     if endpoint is None:
         return invalid_model_request()
-    engine = start_http_engine()
+    if operation == "status" and not http_engine_running():
+        return build_kokoro_model_payload("status", {}, transport="native")
+    engine = {"ok": True} if operation == "status" else start_http_engine()
     if not engine.get("ok"):
         error = str(engine.get("error") or "Persistent HTTP Engine is unavailable")
         return {
@@ -466,7 +468,7 @@ def install_engine_autostart() -> dict[str, Any]:
         script_path = PROJECT_ROOT / "scripts" / "install_engine_autostart_macos.sh"
         command = [str(script_path)]
     if not script_path.is_file():
-        return {"ok": False, "error": f"Engine 自启动安装脚本不存在：{script_path}"}
+        return {"ok": False, "error": f"Engine 按需启动安装脚本不存在：{script_path}"}
 
     env = os.environ.copy()
     if os.name != "nt":
@@ -484,7 +486,7 @@ def install_engine_autostart() -> dict[str, Any]:
         native_log(f"install-autostart failed: {exc}")
         return {
             "ok": False,
-            "error": f"Engine 自启动安装失败：{exc}",
+            "error": f"Engine 按需启动安装失败：{exc}",
             "logPath": str(AUTOSTART_INSTALL_LOG_PATH),
         }
 
@@ -498,7 +500,7 @@ def install_engine_autostart() -> dict[str, Any]:
         native_log(f"install-autostart failed: {message}")
         return {
             "ok": False,
-            "error": f"Engine 自启动安装失败：{message}",
+            "error": f"Engine 按需启动安装失败：{message}",
             "logPath": str(AUTOSTART_INSTALL_LOG_PATH),
         }
 

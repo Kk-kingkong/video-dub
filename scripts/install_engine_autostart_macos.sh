@@ -3,10 +3,6 @@ set -euo pipefail
 
 SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="${LOCAL_DUB_RUNTIME_DIR:-$HOME/Library/Application Support/LocalTube Dub/engine-runtime}"
-LABEL="com.localtube.dub.engine.http"
-DOMAIN="gui/$(id -u)"
-PLIST_PATH="${LOCAL_DUB_LAUNCH_AGENT_PATH:-$HOME/Library/LaunchAgents/$LABEL.plist}"
-LOG_DIR="${LOCAL_DUB_LOG_DIR:-$HOME/Library/Logs/LocalTube Dub}"
 PYTHON_BIN="${LOCAL_DUB_PYTHON:-}"
 DRY_RUN="${LOCAL_DUB_AUTOSTART_DRY_RUN:-0}"
 
@@ -26,7 +22,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
   done
 fi
 if [[ -z "$PYTHON_BIN" || ! -x "$PYTHON_BIN" ]] || ! python_supported "$PYTHON_BIN"; then
-  echo "LocalTube Dub Engine auto-start needs Python 3.10+. Run ./scripts/install_engine_deps_macos.sh first."
+  echo "LocalTube Dub Engine on-demand startup needs Python 3.10+. Run ./scripts/install_engine_deps_macos.sh first."
   exit 1
 fi
 
@@ -41,6 +37,7 @@ if [[ "$DRY_RUN" != "1" && "$SOURCE_ROOT" != "$RUNTIME_DIR" ]]; then
   mkdir -p "$STAGING_DIR/server" "$STAGING_DIR/scripts" "$STAGING_DIR/companion"
   ditto "$SOURCE_ROOT/.venv" "$STAGING_DIR/.venv"
   install -m 0644 "$SOURCE_ROOT/server/local_dub_server.py" "$STAGING_DIR/server/local_dub_server.py"
+  install -m 0644 "$SOURCE_ROOT/server/kokoro_tts.py" "$STAGING_DIR/server/kokoro_tts.py"
   install -m 0755 "$SOURCE_ROOT/scripts/start_engine_macos.sh" "$STAGING_DIR/scripts/start_engine_macos.sh"
   install -m 0755 "$SOURCE_ROOT/scripts/install_engine_autostart_macos.sh" "$STAGING_DIR/scripts/install_engine_autostart_macos.sh"
   install -m 0755 "$SOURCE_ROOT/scripts/uninstall_engine_autostart_macos.sh" "$STAGING_DIR/scripts/uninstall_engine_autostart_macos.sh"
@@ -73,86 +70,17 @@ PY
   rm -rf "$BACKUP_DIR"
 fi
 
-SERVICE_ROOT="$RUNTIME_DIR"
-SERVICE_PYTHON="$SERVICE_ROOT/.venv/bin/python"
-mkdir -p "$(dirname "$PLIST_PATH")" "$LOG_DIR"
-"$PYTHON_BIN" - "$PLIST_PATH" "$SERVICE_ROOT" "$SERVICE_PYTHON" "$LOG_DIR" <<'PY'
-import plistlib
-import sys
-from pathlib import Path
-
-plist_path = Path(sys.argv[1])
-root_dir = Path(sys.argv[2]).expanduser().resolve()
-python_bin = str(Path(sys.argv[3]).expanduser())
-log_dir = Path(sys.argv[4]).expanduser().resolve()
-payload = {
-    "Label": "com.localtube.dub.engine.http",
-    "ProgramArguments": [python_bin, str(root_dir / "server" / "local_dub_server.py")],
-    "WorkingDirectory": str(root_dir),
-    "RunAtLoad": True,
-    "KeepAlive": {"SuccessfulExit": False},
-    "ThrottleInterval": 5,
-    "ProcessType": "Background",
-    "EnvironmentVariables": {
-        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        "PYTHONUNBUFFERED": "1",
-    },
-    "StandardOutPath": str(log_dir / "engine.log"),
-    "StandardErrorPath": str(log_dir / "engine-error.log"),
-}
-with plist_path.open("wb") as output:
-    plistlib.dump(payload, output, sort_keys=False)
-PY
-
+# Keep this command name for existing Native Host repair clients.
 if [[ "$DRY_RUN" == "1" ]]; then
-  echo "Generated LocalTube Dub LaunchAgent: $PLIST_PATH"
+  echo "Dry run: Engine will start on demand; no LaunchAgent will be created."
   exit 0
 fi
 
-chmod +x "$SERVICE_ROOT/companion/native_host_launcher_macos.sh" "$SERVICE_ROOT/companion/native_host.py"
-printf '%s\n' "$SERVICE_PYTHON" > "$SERVICE_ROOT/companion/.localtube_python_path"
+chmod +x "$RUNTIME_DIR/companion/native_host_launcher_macos.sh" "$RUNTIME_DIR/companion/native_host.py"
+printf '%s\n' "$RUNTIME_DIR/.venv/bin/python" > "$RUNTIME_DIR/companion/.localtube_python_path"
+PYTHONPATH="$RUNTIME_DIR/companion" "$RUNTIME_DIR/.venv/bin/python" -c 'import native_host'
+"$SOURCE_ROOT/scripts/uninstall_engine_autostart_macos.sh"
 
-if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
-  launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-fi
-
-if command -v lsof >/dev/null 2>&1; then
-  PIDS="$(lsof -tiTCP:8787 -sTCP:LISTEN 2>/dev/null || true)"
-  for PID in $PIDS; do
-    COMMAND_LINE="$(ps -p "$PID" -o command= 2>/dev/null || true)"
-    if [[ "$COMMAND_LINE" != *"local_dub_server.py"* ]]; then
-      echo "Port 8787 is occupied by another program (PID $PID): $COMMAND_LINE"
-      exit 1
-    fi
-    kill "$PID" 2>/dev/null || true
-  done
-fi
-
-for _ in {1..20}; do
-  if ! lsof -tiTCP:8787 -sTCP:LISTEN >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.25
-done
-if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:8787 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "The previous LocalTube Dub Engine did not release port 8787 in time."
-  exit 1
-fi
-
-launchctl bootstrap "$DOMAIN" "$PLIST_PATH"
-launchctl kickstart -k "$DOMAIN/$LABEL"
-
-for _ in {1..40}; do
-  if curl -fsS --max-time 1 http://127.0.0.1:8787/api/health 2>/dev/null | "$SERVICE_PYTHON" -c 'import json,sys; p=json.load(sys.stdin); raise SystemExit(0 if int(p.get("protocolVersion") or 0) >= 2 else 1)' >/dev/null 2>&1; then
-    echo "LocalTube Dub Engine auto-start is installed and healthy."
-    echo "Runtime: $SERVICE_ROOT"
-    echo "LaunchAgent: $PLIST_PATH"
-    echo "Logs: $LOG_DIR"
-    exit 0
-  fi
-  sleep 0.25
-done
-
-echo "LaunchAgent was installed, but Engine health did not recover in time."
-echo "Check: $LOG_DIR/engine-error.log"
-exit 1
+echo "LocalTube Dub Engine on-demand startup is ready."
+echo "Runtime: $RUNTIME_DIR"
+echo "The extension starts Engine when needed; it exits after five idle minutes."

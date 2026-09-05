@@ -31,11 +31,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   HOST_PATH="$SCRIPT_DIR/native_host_launcher_macos.sh"
   PYTHON_HOST_PATH="$SCRIPT_DIR/native_host.py"
 elif ! "$AUTOSTART_SCRIPT"; then
-  echo "Engine login auto-start health verification failed. Native Host was not registered."
+  echo "Engine on-demand startup setup failed. Native Host was not registered."
   exit 1
 fi
 if [[ "$DRY_RUN" != "1" ]]; then
-  echo "Engine login auto-start is ready."
+  echo "Engine on-demand startup is ready."
 fi
 if [[ ! -x "$HOST_PATH" || ! -f "$PYTHON_HOST_PATH" || ! -x "$RUNTIME_ROOT/.venv/bin/python" ]]; then
   if [[ "$DRY_RUN" != "1" ]]; then
