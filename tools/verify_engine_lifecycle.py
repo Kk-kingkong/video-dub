@@ -26,7 +26,11 @@ def check_idle_exit() -> None:
         env = {**os.environ, "LOCAL_DUB_PORT": str(port), "LOCAL_DUB_ENGINE_IDLE_SECONDS": "2",
                "LOCAL_DUB_OLLAMA_HEALTH_TIMEOUT": "0.01", "LOCAL_DUB_DATA_DIR": temporary,
                "LOCAL_DUB_CACHE_DIR": temporary}
-        process = subprocess.Popen([sys.executable, str(ROOT / "server/local_dub_server.py")],
+        command = [sys.executable, "-u", "-c",
+                   "import faulthandler, runpy, sys; faulthandler.dump_traceback_later(8); "
+                   "runpy.run_path(sys.argv[1], run_name='__main__')",
+                   str(ROOT / "server/local_dub_server.py")]
+        process = subprocess.Popen(command,
                                    env=env, stdout=log, stderr=log)
         healthy = False
         deadline = time.monotonic() + 20
