@@ -11,6 +11,7 @@
 - Partition translation caches by case-sensitive video/model IDs, selected source language and endpoint fingerprint; expire legacy subtitle entries without changing credentials.
 - Include video identity and actual duration in whole-track reuse keys.
 - Start Engine on demand and exit after five idle minutes, protect active work, migrate legacy login startup, and preserve completed exports across restarts.
+- Avoid a blocking reverse-DNS lookup when binding the local Engine listener, so network name resolution cannot stall startup.
 - Probe page captions alongside Engine health within one startup deadline; clarify recovery when lightweight mode has no captions.
 - Updated development metadata to `0.2.6`; prepared for the GitHub testing release. Chrome Web Store submission remains separate.
 

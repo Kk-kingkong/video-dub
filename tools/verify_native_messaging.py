@@ -12,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from verify_local_engine import load_server_module
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LAUNCHER = ROOT / "companion" / "native_host_launcher_macos.sh"
@@ -187,7 +189,7 @@ def main() -> None:
             raise SystemExit(f"Native forwarding contract is missing {required_text}")
 
     owner = FakePersistentKokoroOwner()
-    fake_http = ThreadingHTTPServer(("127.0.0.1", 0), FakeOwnerHandler)
+    fake_http = load_server_module().LocalDubServer(("127.0.0.1", 0), FakeOwnerHandler)
     fake_http.owner = owner  # type: ignore[attr-defined]
     http_worker = threading.Thread(target=fake_http.serve_forever, daemon=True)
     http_worker.start()

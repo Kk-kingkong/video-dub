@@ -35,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from typing import Any
 
 try:
@@ -395,6 +396,11 @@ def build_kokoro_model_payload(operation: str, payload: Any, transport: str) -> 
 
 
 class LocalDubServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # The loopback listener has no need for HTTPServer's blocking reverse DNS lookup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
     def process_request(self, request, client_address) -> None:
         global ENGINE_ACTIVE_WORK
         with ENGINE_ACTIVITY_LOCK:

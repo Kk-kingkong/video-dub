@@ -104,7 +104,8 @@ def check_busy_work() -> None:
         assert finish.wait(3)
         return {"ok": True}
 
-    with server.LocalDubServer(("127.0.0.1", 0), server.LocalDubHandler) as http_server, \
+    with patch("socket.getfqdn", side_effect=AssertionError("loopback binding must not wait for reverse DNS")), \
+         server.LocalDubServer(("127.0.0.1", 0), server.LocalDubHandler) as http_server, \
          patch.object(server, "build_tts_payload", delayed_tts):
         handler = threading.Thread(target=http_server.handle_request)
         handler.start()
