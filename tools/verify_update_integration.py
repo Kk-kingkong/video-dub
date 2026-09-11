@@ -31,7 +31,7 @@ def main() -> None:
         assert server.build_health_payload("native").get("updates") == status, \
             "passive health must expose the updater state"
         assert not calls, "passive health must never check or install updates"
-        server.ENGINE_LAST_ACTIVITY = 0
+        server.ENGINE_LAST_ACTIVITY = server.time.monotonic() - server.ENGINE_IDLE_SECONDS - 1
         updates.is_check_running = lambda: True
         assert not server.engine_is_idle(), "an active verified download must keep its owner alive"
         updates.is_check_running = lambda: False
@@ -97,7 +97,7 @@ def main() -> None:
                 assert not allowed and server.ENGINE_ACCEPTING_WORK, "late HTTP work must postpone the update"
         finally:
             server.ENGINE_ACTIVE_WORK = 0
-        server.ENGINE_LAST_ACTIVITY = 0
+        server.ENGINE_LAST_ACTIVITY = server.time.monotonic() - server.ENGINE_IDLE_SECONDS - 1
         try:
             with server.update_handoff_guard() as allowed:
                 assert allowed and not server.ENGINE_ACCEPTING_WORK
