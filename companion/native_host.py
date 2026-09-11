@@ -27,6 +27,7 @@ SERVER_DIR = PROJECT_ROOT / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
 from local_dub_server import ENGINE_PROTOCOL_VERSION, PORT as DEFAULT_ENGINE_PORT, build_captions_payload, build_dub_payload, build_health_payload, build_kokoro_model_payload, build_transcribe_payload, build_tts_payload, build_video_transcribe_payload, build_voices_payload  # noqa: E402
+from local_dub_server import engine_updates  # noqa: E402
 
 
 MAX_CHROME_MESSAGE_BYTES = 64 * 1024 * 1024
@@ -163,6 +164,23 @@ def write_native_message(payload: dict[str, Any]) -> None:
 
 
 def handle_message(message: dict[str, Any]) -> dict[str, Any]:
+    if message.get("type") in ("ping", "health", "voices", "list-voices", "kokoro-model-status"):
+        return dispatch_message(message)
+    with engine_updates.native_work_lease(PROJECT_ROOT) as admitted:
+        if not admitted:
+            return {"ok": False, "code": "ENGINE_UPDATING", "error": "Engine 正在自动升级，请稍后再试。",
+                    "updates": engine_updates.get_update_status(PROJECT_ROOT)}
+        if (message.get("type") in ("dub", "translate", "transcribe", "transcribe-video", "tts", "captions", "install-whisper", "install-local-whisper")
+                and engine_updates.get_update_status(PROJECT_ROOT)["enabled"]):
+            # The HTTP owner schedules updates; this request keeps its existing Native execution path.
+            try:
+                start_http_engine()
+            except Exception as error:
+                native_log(f"update owner could not start: {error}")
+        return dispatch_message(message)
+
+
+def dispatch_message(message: dict[str, Any]) -> dict[str, Any]:
     message_type = message.get("type")
 
     if message_type in ("ping", "health"):
@@ -426,7 +444,7 @@ def start_local_whisper_install() -> dict[str, Any]:
     env = os.environ.copy()
     env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
     try:
-        subprocess.Popen(
+        process = subprocess.Popen(
             [str(script_path)],
             cwd=str(PROJECT_ROOT),
             stdin=subprocess.DEVNULL,
@@ -435,6 +453,7 @@ def start_local_whisper_install() -> dict[str, Any]:
             env=env,
             start_new_session=True,
         )
+        engine_updates.register_native_work(PROJECT_ROOT, process.pid)
     except Exception as exc:
         native_log(f"install-whisper failed: {exc}")
         return {

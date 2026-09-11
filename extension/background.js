@@ -746,7 +746,7 @@ async function checkCaptionEngineHealth(settings = {}, options = {}) {
         return nativeEngineSuccessPayload(nativePayload, { httpOffline: true, standby: true, endpoint });
       }
       const recovered = await autoStartCaptionHttpEngine(endpoint, errors, 6500);
-      if (recovered?.ok) {
+      if (recovered?.ok || recovered?.code === "ENGINE_UPDATING") {
         return recovered;
       }
       errors.push("HTTP Engine 按需启动失败");
@@ -1250,6 +1250,7 @@ async function restartLocalEngine(settings = {}) {
   }
 
   if (!nativePayload?.ok) {
+    if (nativePayload?.code === "ENGINE_UPDATING") return nativePayload;
     const recovered = await recoverHttpEngineAfterNativeError(localEndpoint, 10000, {
       restarted: true,
       recoveredAfterNativeExit: true,
@@ -1317,6 +1318,7 @@ async function startLocalEngine(settings = {}) {
   }
 
   if (!nativePayload?.ok) {
+    if (nativePayload?.code === "ENGINE_UPDATING") return nativePayload;
     const recovered = await recoverHttpEngineAfterNativeError(localEndpoint, 10000, {
       started: true,
       recoveredAfterNativeExit: true,
@@ -1353,7 +1355,7 @@ async function installLocalWhisper() {
     if (!payload?.ok) {
       return {
         ok: false,
-        code: "WHISPER_INSTALL_FAILED",
+        code: payload?.code || "WHISPER_INSTALL_FAILED",
         error: payload?.error || "本地转写安装失败"
       };
     }
@@ -1375,7 +1377,7 @@ async function installEngineAutostart() {
     if (!payload?.ok) {
       return {
         ok: false,
-        code: "AUTOSTART_INSTALL_FAILED",
+        code: payload?.code || "AUTOSTART_INSTALL_FAILED",
         error: payload?.error || "Engine 按需启动修复失败"
       };
     }
@@ -1404,6 +1406,7 @@ function httpEngineSuccessPayload(health, extra = {}) {
       ...payload,
       ...compatibility,
       ...extra,
+      updateNotice: LocalTubeDubBackgroundHelpers.engineUpdateNotice(payload),
       transport: "http"
     }
   };
@@ -1421,6 +1424,7 @@ function nativeEngineSuccessPayload(nativePayload, extra = {}) {
       ...(nativePayload || {}),
       ...compatibility,
       ...extra,
+      updateNotice: LocalTubeDubBackgroundHelpers.engineUpdateNotice(nativePayload),
       transport: "native"
     }
   };
@@ -1444,6 +1448,7 @@ async function autoStartCaptionHttpEngine(endpoint, errors = [], timeoutMs = 100
       const deadline = Date.now() + timeoutMs;
       try {
         const nativePayload = await sendNativeMessage({ type: "start-http" }, timeoutMs);
+        if (nativePayload?.code === "ENGINE_UPDATING") return nativePayload;
         if (!nativePayload?.ok) {
           errors.push(`Native 自动启动失败：${nativePayload?.error || "没有返回启动结果"}`);
         }
@@ -2985,6 +2990,7 @@ async function fetchJson(url, request = {}) {
     }
     const recovered = await autoStartCaptionHttpEngine(endpoint.origin, [], 6500);
     throwIfAborted(request.signal, request.abortMessage || "操作已取消");
+    if (recovered?.code === "ENGINE_UPDATING") return recovered;
     if (!recovered?.ok) throw error;
     response = await fetchForExtension(fetchRequest);
   }

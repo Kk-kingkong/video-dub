@@ -24,6 +24,7 @@ def check_idle_exit() -> None:
         port = listener.getsockname()[1]
     with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryFile(mode="w+") as log:
         env = {**os.environ, "LOCAL_DUB_PORT": str(port), "LOCAL_DUB_ENGINE_IDLE_SECONDS": "2",
+               "LOCAL_DUB_AUTO_UPDATE": "0",
                "LOCAL_DUB_OLLAMA_HEALTH_TIMEOUT": "0.01", "LOCAL_DUB_DATA_DIR": temporary,
                "LOCAL_DUB_CACHE_DIR": temporary}
         command = [sys.executable, "-u", "-c",
@@ -168,7 +169,8 @@ def check_macos_on_demand_registration() -> None:
         root = Path(temporary) / "package"
         for name in ("scripts/install_engine_autostart_macos.sh", "scripts/uninstall_engine_autostart_macos.sh",
                      "companion/install_native_host_macos.sh", "companion/native_host_launcher_macos.sh",
-                     "companion/native_host.py", "server/local_dub_server.py", "server/kokoro_tts.py"):
+                     "companion/native_host.py", "server/local_dub_server.py", "server/kokoro_tts.py",
+                     "server/engine_updates.py", "server/update-signing-cert.cer"):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, target)
@@ -204,7 +206,9 @@ def check_macos_on_demand_registration() -> None:
                                   env={**env, "PATH": str(python_trap) + os.pathsep + env["PATH"]},
                                   capture_output=True, text=True, timeout=15)
         assert repaired.returncode == 0, repaired.stdout + repaired.stderr
-        assert json.loads(manifest.read_text())["allowed_origins"] == ["chrome-extension://" + "b" * 32 + "/"]
+        assert json.loads(manifest.read_text())["allowed_origins"] == [
+            "chrome-extension://" + identifier * 32 + "/" for identifier in "ab"], \
+            "manual repair removed a previously approved extension"
 
         # Exercise the customer entry point, including re-registration for an unpacked ZIP.
         installer = root / "Install LocalTube Dub Engine.command"
@@ -217,11 +221,21 @@ def check_macos_on_demand_registration() -> None:
         deps.chmod(0o755)
         installed = Path(temporary) / "installed"
         env.update(LOCAL_DUB_INSTALL_DRY_RUN="1", LOCAL_DUB_RUNTIME_DIR=str(installed))
-        for arguments, expected_id in (([], "a" * 32), (["b" * 32], "b" * 32)):
+        for arguments, expected_ids in (([], "a"), (["b" * 32], "ab"), ([], "ab")):
             subprocess.run([str(installer), *arguments], env=env, check=True,
                            capture_output=True, text=True, timeout=15)
             assert json.loads(manifest.read_text())["allowed_origins"] == [
-                f"chrome-extension://{expected_id}/"], "release installer ignored the requested extension ID"
+                f"chrome-extension://{identifier * 32}/" for identifier in expected_ids], \
+                "manual migration removed existing bindings or ignored the requested extension ID"
+        owned = json.loads(manifest.read_text())
+        for untrusted in ({**owned, "allowed_origins": ["chrome-extension://*/"]},
+                          {**owned, "name": "other.host"},
+                          {**owned, "type": "other"},
+                          {**owned, "path": str(root / "foreign-launcher")}):
+            manifest.write_text(json.dumps(untrusted))
+            subprocess.run([str(installer)], env=env, check=True, capture_output=True, text=True, timeout=15)
+            assert json.loads(manifest.read_text())["allowed_origins"] == ["chrome-extension://" + "a" * 32 + "/"], \
+                "manual migration trusted invalid or foreign extension bindings"
         unchanged = manifest.read_bytes()
         marker = installed / "keep.txt"
         marker.write_text("previous runtime")
@@ -233,6 +247,76 @@ def check_macos_on_demand_registration() -> None:
                 "invalid extension ID modified the existing installation"
 
 
+def check_macos_unattended_update() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        package, installed = root / "package", root / "installed"
+        shutil.copytree(ROOT / "server", package / "server", ignore=shutil.ignore_patterns("__pycache__"))
+        (package / "companion").mkdir()
+        (package / "companion/native_host_launcher_macos.sh").write_text("#!/bin/sh\nexit 0\n")
+        (package / "scripts").mkdir()
+        deps = package / "scripts/install_engine_deps_macos.sh"
+        deps.write_text("#!/bin/sh\nexit 0\n")
+        deps.chmod(0o755)
+        (package / ".venv/bin").mkdir(parents=True)
+        (package / ".venv/bin/python").symlink_to(sys.executable)
+        release = package / "release.json"
+        release.write_text(json.dumps({"version": "0.2.8", "protocolVersion": 2}))
+        installer = package / "Install LocalTube Dub Engine.command"
+        installer.write_text((ROOT / "packaging/macos/Install LocalTube Dub Engine.command.in")
+                             .read_text().replace("__EXTENSION_ID__", "a" * 32)
+                             .replace("__VERSION__", "0.2.8"))
+        installer.chmod(0o755)
+        shutil.copytree(package, installed, symlinks=True)
+        (installed / "keep.txt").write_text("old runtime")
+        model = root / "models/keep.bin"
+        model.parent.mkdir()
+        model.write_bytes(b"downloaded model")
+        settings = root / "settings.json"
+        settings.write_bytes(b'{"voice":"saved"}')
+        manifest = root / "native.json"
+        native = {"name": "com.localtube.dub.engine", "type": "stdio",
+                  "path": str(installed / "companion/native_host_launcher_macos.sh"),
+                  "allowed_origins": ["chrome-extension://" + identifier * 32 + "/" for identifier in "ab"]}
+        manifest.write_text(json.dumps(native, indent=3) + "\n")
+        preserved = manifest.read_bytes()
+        env = {**os.environ, "LOCAL_DUB_RUNTIME_DIR": str(installed), "LOCAL_DUB_UPDATE_INSTALL": "1",
+               "LOCAL_DUB_AUTO_UPDATE": "0", "LOCAL_DUB_NATIVE_MANIFEST_PATH": str(manifest),
+               "LOCAL_DUB_DATA_DIR": str(root / "data"), "LOCAL_DUB_CACHE_DIR": str(root / "cache"),
+               "LOCAL_DUB_OLLAMA_HEALTH_TIMEOUT": "0.01"}
+
+        def install(extra_env=None):
+            return subprocess.run([str(installer)], env={**env, **(extra_env or {})},
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45)
+
+        for malformed in ({**native, "allowed_origins": ["chrome-extension://*/"]},
+                          {**native, "path": str(root / "foreign-launcher")},
+                          {**native, "type": "other"}):
+            manifest.write_text(json.dumps(malformed))
+            before = manifest.read_bytes()
+            result = install()
+            assert result.returncode != 0, "automatic install accepted an unowned Native manifest"
+            assert manifest.read_bytes() == before and (installed / "keep.txt").is_file()
+        manifest.unlink()
+        assert install().returncode != 0 and (installed / "keep.txt").is_file(), "missing registration was silently recreated"
+        manifest.write_bytes(preserved)
+
+        for failure in ("injected", "wrong-version"):
+            release.write_text(json.dumps({"version": "0.2.9" if failure == "wrong-version" else "0.2.8",
+                                           "protocolVersion": 2}))
+            result = install({"LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE": "1"} if failure == "injected" else {})
+            assert result.returncode != 0, "unhealthy automatic upgrade unexpectedly succeeded"
+            assert manifest.read_bytes() == preserved and (installed / "keep.txt").read_text() == "old runtime", \
+                "failed automatic upgrade lost prior runtime or Native bindings"
+        release.write_text(json.dumps({"version": "0.2.8", "protocolVersion": 2}))
+        result = install()
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not (installed / "keep.txt").exists(), "automatic install did not activate new runtime"
+        assert manifest.read_bytes() == preserved, "automatic install changed Native bindings"
+        assert settings.read_bytes() == b'{"voice":"saved"}' and model.read_bytes() == b"downloaded model"
+        assert not list(root.glob("installed.backup.*")) and not list(root.glob("installed.staging.*"))
+
+
 if __name__ == "__main__":
     check_idle_exit()
     check_busy_work()
@@ -240,4 +324,5 @@ if __name__ == "__main__":
     check_idle_shutdown_drains_queued_work()
     if sys.platform == "darwin":
         check_macos_on_demand_registration()
+        check_macos_unattended_update()
     print("Engine lifecycle checks passed")

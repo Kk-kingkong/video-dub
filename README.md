@@ -6,7 +6,7 @@ An open-source Chrome extension that translates YouTube captions into Chinese an
 
 LocalTube Dub prefers an existing Chinese YouTube caption track. When Chinese captions are unavailable, it can use Chrome's free on-device Translator or a translation Provider chosen by the user. Videos without captions can use the optional local Whisper Engine.
 
-> **Status:** `0.2.7` testing release, not yet published to the Chrome Web Store; optional desktop Engine packages remain unsigned and unnotarized development builds.
+> **Status:** `0.2.8` adds automatic Engine updates. Chrome Web Store publication remains separate; desktop installers still lack platform code signing and macOS notarization.
 
 ## Highlights
 
@@ -37,6 +37,14 @@ The companion Engine is optional for basic page-caption translation and recommen
 
 Kokoro is optional. Selecting it exposes an explicit model-install button; after the verified model is downloaded, Chinese and English speech generation stays on the same computer.
 
+## Updates
+
+Existing Engine users must install the matching `0.2.8` Engine package once. After that, the installed Engine checks this project's signed stable GitHub update feed when it starts for actual work, at most once every six hours. Compatible updates download in the background and install after work completes and Engine reaches its five-minute idle boundary. A failed activation restores the previous runtime; settings, downloaded models, and existing extension bindings are preserved. Passive status checks do not start Engine or trigger an update check.
+
+Chrome manages updates for extensions installed from the same Chrome Web Store item after review and publication. Unpacked/source/ZIP extensions still need manual replacement and reload; the Engine updater never replaces extension files. Offline customers and continuously active sessions update later, not immediately when a release is published.
+
+The update feed signature verifies release authenticity and package checksums. It is separate from Apple/Windows code signing; those installer warnings remain.
+
 ## Privacy
 
 - Non-secret preferences can use Chrome Sync.
@@ -45,6 +53,7 @@ Kokoro is optional. Selecting it exposes an explicit model-install button; after
 - Microsoft natural speech receives only the translated text and voice settings required for synthesis.
 - Microsoft natural speech remains blocked until the user explicitly accepts that transfer in the extension UI.
 - Kokoro, macOS system speech, and local Whisper processing remain on the user's computer.
+- Engine updates fetch fixed GitHub release metadata and packages; they do not upload video URLs, captions, audio, API keys, or cookies.
 
 Read the public [privacy policy](https://kk-kingkong.github.io/video-dub/privacy-policy.html) and [permission explanation](docs/chrome-web-store-permissions.md).
 
@@ -60,6 +69,8 @@ PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_engine_l
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_native_messaging.py
 python3 tools/verify_open_source_compliance.py
 python3 tools/verify_windows_package.py --source
+python3 tools/verify_engine_updates.py
+python3 tools/verify_update_publication.py
 ```
 
 ## Documentation

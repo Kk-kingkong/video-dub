@@ -2923,7 +2923,7 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
   assert.equal(manifest.content_scripts[0].world, "MAIN");
   assert.deepEqual(manifest.content_scripts[1].js, ["voice_helpers.js", "content_helpers.js", "content.js"]);
-  assert.equal(manifest.version, "0.2.7");
+  assert.equal(manifest.version, "0.2.8");
   assert.equal(manifest.permissions.includes("downloads"), false);
   assert.deepEqual(manifest.permissions, ["activeTab", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.optional_permissions, ["offscreen", "tabCapture"]);
@@ -3657,7 +3657,7 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /localtube\.clearTranslationCache/);
   assert.match(popupHtml, /id="cacheTranslations"/);
   assert.match(popupHtml, /id="clearTranslationCache"/);
-  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.7<\/span>/);
+  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.8<\/span>/);
   assert.match(popupHtml, /id="testProvider"[^>]*>验证翻译 Key<\/button>/);
   assert.match(popup, /saveAndValidateApiKey/);
   assert.match(popupHtml, /免费 \/ 自带 Key/);
@@ -3871,8 +3871,8 @@ function testManifestAndFlowGuards() {
   const liveVoiceHarness = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.js"), "utf8");
   const liveVoiceHarnessHtml = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.html"), "utf8");
   assert.match(liveVoiceHarness, /syncLiveVoiceMediaElements/);
-  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.7/);
-  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.7/);
+  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.8/);
+  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.8/);
   assert.match(liveVoiceHarness, /data-action='self-test'/);
   assert.match(liveVoiceHarness, /late\.expectedEnd <= 5\.05/);
   assert.match(liveVoiceHarness, /late\.playbackRate <= 1\.2/);
@@ -4033,7 +4033,7 @@ function testManifestAndFlowGuards() {
   assert.match(changelog, /Native Host/);
   assert.match(changelog, /0\.1\.91/);
   assert.match(changelog, /single customer workflow/);
-  assert.match(developmentAudit, /Current reviewed version: 0\.2\.7/);
+  assert.match(developmentAudit, /Current reviewed version: 0\.2\.8/);
   assert.match(developmentAudit, /ikoenamldegccnhmjjnlkffocdkbbbmo/);
   assert.match(developmentAudit, /Dubbed voice-track export/);
   assert.match(developmentAudit, /Subtitle export/);

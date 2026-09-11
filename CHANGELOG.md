@@ -1,5 +1,15 @@
 # LocalTube Dub Changelog
 
+## 0.2.8 - 2026-09-11
+
+- Added automatic updates for installed bundled Engines: check this project's signed stable GitHub feed on actual startup, at most once per six hours; accept only a newer compatible release for the current platform and architecture.
+- Verify the pinned release-signing key, exact archive size and SHA-256, and safe package layout before staging. Wait for completed work and the existing idle boundary before replacing the runtime.
+- Keep settings, downloaded models, and every valid existing Native Messaging extension binding. Verify the activated Engine's health and restore the previous runtime and original registration if activation fails.
+- Preserve valid existing Store/unpacked bindings during the one-time manual migration, so accepting the default installer ID does not disconnect an already authorized unpacked extension.
+- Add Engine update status and a one-time migration path for older Engine installations. Chrome Web Store still delivers extension code; unpacked extensions require manual reloads.
+- Add a stable-release publication workflow gated on successful cross-platform CI and all three matching Engine packages; prereleases are excluded from automatic rollout.
+- Disclose fixed GitHub update requests in the privacy policy. They contain no video URLs, captions, audio, API keys, or cookies. Release-feed signing does not imply macOS notarization or Windows/macOS installer code signing.
+
 ## 0.2.7 - 2026-09-05
 
 - Fixed Engine registration for extensions loaded unpacked from ZIP: macOS and Windows installers accept a validated explicit extension ID while preserving the default Store ID and package integrity checks.

@@ -10,10 +10,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="__VERSION__"
 RUNTIME_ROOT="${LOCAL_DUB_RUNTIME_DIR:-$HOME/Library/Application Support/LocalTube Dub/engine-runtime}"
 DRY_RUN="${LOCAL_DUB_INSTALL_DRY_RUN:-0}"
+UPDATE_INSTALL="${LOCAL_DUB_UPDATE_INSTALL:-0}"
+NATIVE_MANIFEST="${LOCAL_DUB_NATIVE_MANIFEST_PATH:-$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.localtube.dub.engine.json}"
+MANIFEST_BACKUP="$RUNTIME_ROOT.native-backup.$$"
 STAGING_ROOT="$RUNTIME_ROOT.staging.$$"
 BACKUP_ROOT="$RUNTIME_ROOT.backup.$$"
 ACTIVATION_STARTED=0
 HAD_PREVIOUS_RUNTIME=0
+
+if [[ "$UPDATE_INSTALL" == "1" && "$DRY_RUN" == "1" ]]; then
+  echo "Automatic update must complete real installation and health verification."
+  exit 1
+fi
 
 rollback_runtime() {
   if [[ "$ACTIVATION_STARTED" != "1" ]]; then
@@ -21,15 +29,20 @@ rollback_runtime() {
     return
   fi
   echo "正在恢复先前可用的 Engine..."
-  if [[ "$DRY_RUN" != "1" && -x "$RUNTIME_ROOT/companion/uninstall_native_host_macos.sh" ]]; then
+  if [[ "$UPDATE_INSTALL" != "1" && "$DRY_RUN" != "1" && -x "$RUNTIME_ROOT/companion/uninstall_native_host_macos.sh" ]]; then
     LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
       "$RUNTIME_ROOT/companion/uninstall_native_host_macos.sh" \
       || echo "清理失败版本的后台服务时遇到问题，将继续恢复旧 Engine。"
   fi
   rm -rf "$STAGING_ROOT" "$RUNTIME_ROOT"
   if [[ "$HAD_PREVIOUS_RUNTIME" == "1" && -d "$BACKUP_ROOT" ]]; then
-    mv "$BACKUP_ROOT" "$RUNTIME_ROOT"
-    if [[ "$DRY_RUN" != "1" && -x "$RUNTIME_ROOT/companion/install_native_host_macos.sh" ]]; then
+    if ! mv "$BACKUP_ROOT" "$RUNTIME_ROOT"; then
+      echo "旧 Engine 备份已保留：$BACKUP_ROOT"
+      return 1
+    fi
+    if [[ "$UPDATE_INSTALL" == "1" ]]; then
+      cp -p "$MANIFEST_BACKUP" "$NATIVE_MANIFEST" || return 1
+    elif [[ "$DRY_RUN" != "1" && -x "$RUNTIME_ROOT/companion/install_native_host_macos.sh" ]]; then
       LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
         "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID" \
         || echo "旧 Engine 已恢复，但按需启动注册仍需手动处理。"
@@ -44,13 +57,17 @@ pause_on_error() {
   trap - EXIT
   if [[ $status -ne 0 ]]; then
     set +e
-    rollback_runtime
+    if ! rollback_runtime; then
+      echo "自动恢复未能完成。Native Host 配置备份已保留：$MANIFEST_BACKUP"
+      exit "$status"
+    fi
     echo
     echo "安装失败。请保留上面的错误信息并联系支持。"
-    if [[ "$DRY_RUN" != "1" ]]; then
+    if [[ "$UPDATE_INSTALL" != "1" && "$DRY_RUN" != "1" ]]; then
       read -r -p "按回车键关闭窗口..." _
     fi
   fi
+  rm -f "$MANIFEST_BACKUP"
   exit "$status"
 }
 trap pause_on_error EXIT
@@ -69,6 +86,28 @@ if /usr/bin/xattr -p com.apple.quarantine "$ROOT_DIR" >/dev/null 2>&1 \
 fi
 
 LOCAL_DUB_CUSTOMER_RELEASE=1 "$ROOT_DIR/scripts/install_engine_deps_macos.sh"
+
+if [[ "$UPDATE_INSTALL" == "1" ]]; then
+  export LOCAL_DUB_AUTO_UPDATE=0
+  "$ROOT_DIR/.venv/bin/python" - "$NATIVE_MANIFEST" "$RUNTIME_ROOT" "$ROOT_DIR" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+target, runtime, source = map(Path, sys.argv[1:])
+if not runtime.is_dir() or runtime.resolve() == source.resolve():
+    raise SystemExit("Automatic update requires an existing installed runtime and an extracted package.")
+manifest = json.loads(target.read_text(encoding="utf-8"))
+origins = manifest.get("allowed_origins")
+if (manifest.get("name") != "com.localtube.dub.engine" or manifest.get("type") != "stdio"
+        or Path(manifest.get("path", "")).resolve() != (runtime / "companion/native_host_launcher_macos.sh").resolve()
+        or not isinstance(origins, list) or not origins
+        or any(not isinstance(origin, str) or not re.fullmatch(r"chrome-extension://[a-p]{32}/", origin) for origin in origins)):
+    raise SystemExit("Refusing automatic update: Native Messaging registration is not owned by this runtime.")
+PY
+  cp -p "$NATIVE_MANIFEST" "$MANIFEST_BACKUP"
+fi
 
 rm -rf "$STAGING_ROOT" "$BACKUP_ROOT"
 mkdir -p "$(dirname "$RUNTIME_ROOT")"
@@ -95,18 +134,80 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
-LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID"
+if [[ "$UPDATE_INSTALL" == "1" ]]; then
+  # The launcher path is unchanged; keep all previously approved extension IDs.
+  printf '%s\n' "$RUNTIME_ROOT/.venv/bin/python" > "$RUNTIME_ROOT/companion/.localtube_python_path"
+  chmod +x "$RUNTIME_ROOT/companion/native_host_launcher_macos.sh"
+else
+  LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID"
+fi
 
 if [[ "${LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE:-0}" == "1" ]]; then
   echo "Injected installer failure after Native Host registration."
   false
 fi
+if [[ "$UPDATE_INSTALL" == "1" ]]; then
+  "$RUNTIME_ROOT/.venv/bin/python" - "$RUNTIME_ROOT" "$VERSION" <<'PY'
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import uuid
+
+runtime, version = Path(sys.argv[1]).resolve(), sys.argv[2]
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+instance = uuid.uuid4().hex
+env = {**os.environ, "LOCAL_DUB_PORT": str(port), "LOCAL_DUB_HOST": "127.0.0.1",
+       "LOCAL_DUB_AUTO_UPDATE": "0", "LOCAL_DUB_ENGINE_INSTANCE_ID": instance}
+# Verify the actual installed metadata/path, never inherited test overrides.
+env.pop("LOCAL_DUB_ENGINE_VERSION", None)
+env.pop("LOCAL_DUB_ENGINE_RUNTIME_ROOT", None)
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with tempfile.TemporaryFile() as log:
+    process = subprocess.Popen([str(runtime / ".venv/bin/python"), str(runtime / "server/local_dub_server.py")],
+                               cwd=runtime, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+    try:
+        deadline = time.monotonic() + 25
+        while process.poll() is None and time.monotonic() < deadline:
+            try:
+                with opener.open(f"http://127.0.0.1:{port}/api/health", timeout=2) as response:
+                    health = json.load(response)
+            except OSError:
+                time.sleep(0.2)
+                continue
+            if not (health.get("ok") is True and health.get("service") == "localtube-dub"
+                    and health.get("engineVersion") == version and health.get("protocolVersion") == 2
+                    and health.get("instanceId") == instance and health.get("runtimeRoot") == str(runtime)):
+                raise RuntimeError("Updated Engine health identity does not match the installed release.")
+            break
+        else:
+            log.seek(0)
+            raise RuntimeError("Updated Engine failed its startup check: " + log.read().decode("utf-8", errors="replace")[-3000:])
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+PY
+  cmp -s "$MANIFEST_BACKUP" "$NATIVE_MANIFEST"
+fi
 ACTIVATION_STARTED=0
 rm -rf "$BACKUP_ROOT"
+rm -f "$MANIFEST_BACKUP"
 trap - EXIT
 echo
 echo "安装完成。私有运行时已复制到：$RUNTIME_ROOT"
 echo "请完全退出并重新打开 Chrome，然后在 LocalTube Dub 中点击“检查 Engine”。"
-if [[ -t 0 ]]; then
+if [[ "$UPDATE_INSTALL" != "1" && -t 0 ]]; then
   read -r -p "按回车键关闭窗口..." _ || true
 fi

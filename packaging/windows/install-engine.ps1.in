@@ -6,6 +6,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$UpdateInstall = $env:LOCAL_DUB_UPDATE_INSTALL -eq "1"
+if ($UpdateInstall) {
+    $env:LOCAL_DUB_AUTO_UPDATE = "0"
+}
 
 if ($ExtensionId -cnotmatch '\A[a-p]{32}\z') {
     throw "Invalid Chrome extension ID: IDs must contain exactly 32 lowercase letters from a to p."
@@ -52,6 +56,51 @@ $ActivationStarted = $false
 $OperationStarted = $false
 $HadPreviousRuntime = $false
 $PreviousVersion = ""
+$OriginalManifestBytes = $null
+$OriginalRegistryValue = $null
+
+function Test-OwnedRegistration([object]$Native) {
+    try {
+        if ($Native.name -cne $NativeHostName -or $Native.type -cne "stdio" -or
+            -not [System.IO.Path]::IsPathRooted([string]$Native.path) -or
+            [System.IO.Path]::GetFullPath([string]$Native.path) -ne (Join-Path $RuntimeRoot "companion\native_host_launcher.exe") -or
+            $Native.allowed_origins -isnot [array] -or $Native.allowed_origins.Count -eq 0) {
+            return $false
+        }
+        foreach ($Origin in $Native.allowed_origins) {
+            if ($Origin -isnot [string] -or $Origin -cnotmatch '\Achrome-extension://[a-p]{32}/\z') {
+                return $false
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Read-UpdateRegistration {
+    if (-not $HadPreviousRuntime -or $SourceRoot -eq $RuntimeRoot) {
+        throw "Automatic update requires an existing runtime and an extracted package."
+    }
+    $Key = Get-Item -LiteralPath $RegistryPath -ErrorAction Stop
+    $RegisteredPath = $Key.GetValue("")
+    if ($Key.GetValueKind("") -ne [Microsoft.Win32.RegistryValueKind]::String -or
+        -not [System.IO.Path]::IsPathRooted([string]$RegisteredPath)) {
+        throw "Automatic update requires a valid existing Native Messaging registration."
+    }
+    if ($env:LOCAL_DUB_NATIVE_MANIFEST_PATH -and
+        [System.IO.Path]::GetFullPath($RegisteredPath) -ne $NativeManifestPath) {
+        throw "Native Messaging registry path does not match the installed manifest."
+    }
+    $script:NativeManifestPath = [System.IO.Path]::GetFullPath($RegisteredPath)
+    $Bytes = [System.IO.File]::ReadAllBytes($NativeManifestPath)
+    $Native = [System.Text.Encoding]::UTF8.GetString($Bytes) | ConvertFrom-Json
+    if (-not (Test-OwnedRegistration $Native)) {
+        throw "Native Messaging registration is not owned by this runtime."
+    }
+    $script:OriginalManifestBytes = $Bytes
+    $script:OriginalRegistryValue = $RegisteredPath
+}
 
 function Get-RuntimeVersion([string]$Root) {
     $ReleasePath = Join-Path $Root "release.json"
@@ -117,7 +166,9 @@ function Invoke-EngineManager(
 }
 
 function Stop-Engine([string]$Root, [string]$ExpectedVersion) {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $UpdateInstall) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    }
     if (-not $ExpectedVersion) {
         $ExpectedVersion = $Version
     }
@@ -129,12 +180,27 @@ function Stop-Engine([string]$Root, [string]$ExpectedVersion) {
 }
 
 function Register-NativeHost([string]$Root) {
+    if ($UpdateInstall) {
+        [System.IO.File]::WriteAllBytes($NativeManifestPath, $OriginalManifestBytes)
+        New-Item -Path $RegistryPath -Force | Out-Null
+        Set-Item -Path $RegistryPath -Value $OriginalRegistryValue
+        return
+    }
+    $Origins = @("chrome-extension://$ExtensionId/")
+    try {
+        $PreviousNative = Get-Content -LiteralPath $NativeManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (Test-OwnedRegistration $PreviousNative) {
+            $Origins = @(@($PreviousNative.allowed_origins) + $Origins | Select-Object -Unique)
+        }
+    } catch {
+        # Invalid or unrelated registrations grant no additional extension access.
+    }
     $Manifest = [ordered]@{
         name = $NativeHostName
         description = "LocalTube Dub Engine"
         path = (Join-Path $Root "companion\native_host_launcher.exe")
         type = "stdio"
-        allowed_origins = @("chrome-extension://$ExtensionId/")
+        allowed_origins = $Origins
     }
     $ManifestDirectory = Split-Path -Parent $NativeManifestPath
     New-Item -ItemType Directory -Path $ManifestDirectory -Force | Out-Null
@@ -154,8 +220,10 @@ function Start-And-TestEngine([string]$Root, [string]$ExpectedVersion) {
 }
 
 function Remove-Registration {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    if (-not $UpdateInstall) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
     Remove-Item -LiteralPath $RegistryPath -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $NativeManifestPath -Force -ErrorAction SilentlyContinue
 }
@@ -192,6 +260,9 @@ try {
         $HadPreviousRuntime = $true
         $PreviousVersion = Get-RuntimeVersion $RuntimeRoot
     }
+    if ($UpdateInstall) {
+        Read-UpdateRegistration
+    }
     Stop-Engine $RuntimeRoot $PreviousVersion
     $OperationStarted = $true
 
@@ -210,12 +281,20 @@ try {
     Move-Item -LiteralPath $StagingRoot -Destination $RuntimeRoot
     Invoke-RuntimeVerification $RuntimeRoot $Version
     Register-NativeHost $RuntimeRoot
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    if (-not $UpdateInstall) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
     if ($env:LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE -eq "1") {
         throw "Injected installer failure after activation."
     }
     Start-And-TestEngine $RuntimeRoot $Version
     Stop-Engine $RuntimeRoot $Version
+    if ($UpdateInstall -and
+        ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($NativeManifestPath)) -cne
+         [Convert]::ToBase64String($OriginalManifestBytes) -or
+         (Get-Item -LiteralPath $RegistryPath).GetValue("") -cne $OriginalRegistryValue)) {
+        throw "Native Messaging registration changed during automatic activation."
+    }
 
     $ActivationStarted = $false
     Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue

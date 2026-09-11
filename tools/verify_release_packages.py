@@ -260,6 +260,8 @@ def verify_engine(
             f"{root}/release.json",
             f"{root}/server/local_dub_server.py",
             f"{root}/server/kokoro_tts.py",
+            f"{root}/server/engine_updates.py",
+            f"{root}/server/update-signing-cert.cer",
             f"{root}/.venv/bin/python",
             f"{root}/.venv/runtime-lock.json",
             f"{root}/scripts/assemble_engine_runtime.py",
@@ -282,6 +284,11 @@ def verify_engine(
         release = json.loads(archive.read(f"{root}/release.json"))
         if release.get("version") != expected_version or release.get("chromeExtensionId") != extension_id:
             fail("Engine release metadata does not match version and extension ID")
+        if release.get("autoUpdate") is not True:
+            fail("Engine release metadata must identify automatic update support")
+        certificate = Path(__file__).resolve().parents[1] / "server" / "update-signing-cert.cer"
+        if archive.read(f"{root}/server/update-signing-cert.cer") != certificate.read_bytes():
+            fail("Engine update trust certificate does not match the pinned release certificate")
         if int(release.get("protocolVersion") or 0) < 2:
             fail("Engine release metadata is missing the required protocol version")
         if release.get("signed") is not False or release.get("notarized") is not False:
@@ -386,7 +393,7 @@ def verify_engine(
             fail("Engine installer was not bound to the requested extension ID and version")
         if "ditto \"$ROOT_DIR\" \"$STAGING_ROOT\"" not in installer or "LOCAL_DUB_RUNTIME_DIR=\"$RUNTIME_ROOT\"" not in installer:
             fail("Engine installer does not atomically copy its bundled runtime")
-        if 'if [[ -t 0 ]]' not in installer or 'read -r -p "按回车键关闭窗口..." _ || true' not in installer:
+        if not re.search(r'if \[\[ [^\n]*-t 0 \]\]', installer) or 'read -r -p "按回车键关闭窗口..." _ || true' not in installer:
             fail("Engine installer must not report failure when a non-interactive install reaches EOF")
         quarantine_clear = installer.find('/usr/bin/xattr -drs com.apple.quarantine "$ROOT_DIR"')
         runtime_verify = installer.find('LOCAL_DUB_CUSTOMER_RELEASE=1 "$ROOT_DIR/scripts/install_engine_deps_macos.sh"')

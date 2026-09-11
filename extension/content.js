@@ -457,6 +457,7 @@ function renderWidget() {
             <button type="button" data-action="engine-guide">说明</button>
           </span>
         </div>
+        <div class="ltd-engine-hint" data-engine-update-status role="status" hidden></div>
         <div class="ltd-kokoro-model" data-kokoro-model-status hidden>
           <span class="ltd-engine-dot" aria-hidden="true"></span>
           <span data-kokoro-model-text>正在检查 Kokoro 模型...</span>
@@ -709,6 +710,11 @@ async function refreshEngineStatus(options = {}) {
     return state.engineHealth;
   }
   state.engineHealth = normalizeEngineHealth(response);
+  const updateNode = state.root?.querySelector("[data-engine-update-status]");
+  if (updateNode) {
+    updateNode.textContent = response?.payload?.updateNotice || "";
+    updateNode.hidden = !updateNode.textContent;
+  }
   if (isLightweightProfile(state.runtimeProfile)) {
     renderRuntimeProfileState();
     return state.engineHealth;
@@ -723,6 +729,11 @@ async function refreshEngineStatus(options = {}) {
   if (response?.ok) {
     const payload = response.payload || {};
     const transport = payload.transport === "native" ? "Native" : "HTTP";
+    if (payload.updates?.status === "installing") {
+      node.classList.add("is-warn");
+      textNode.textContent = "Engine 正在自动更新，请稍后再试";
+      return state.engineHealth;
+    }
     if (payload.upgradeRequired) {
       node.classList.add("is-error");
       textNode.textContent = `Engine 版本过旧（${payload.engineVersion || "未知"} / 协议 ${payload.protocolVersion || 0}），请安装与扩展 ${EXTENSION_VERSION} 匹配的 Engine`;

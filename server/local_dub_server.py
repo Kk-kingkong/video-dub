@@ -38,6 +38,12 @@ from pathlib import Path
 from socketserver import TCPServer
 from typing import Any
 
+_updates_spec = importlib.util.spec_from_file_location("localtube_engine_updates", Path(__file__).with_name("engine_updates.py"))
+if _updates_spec is None or _updates_spec.loader is None:
+    raise ImportError("Engine updater module is missing")
+engine_updates = importlib.util.module_from_spec(_updates_spec)
+_updates_spec.loader.exec_module(engine_updates)
+
 try:
     from .kokoro_tts import (
         KokoroModelManager,
@@ -76,7 +82,8 @@ ENGINE_INSTANCE_ID = os.environ.get("LOCAL_DUB_ENGINE_INSTANCE_ID", "").strip()
 ENGINE_RUNTIME_ROOT = os.environ.get("LOCAL_DUB_ENGINE_RUNTIME_ROOT", "").strip()
 ENGINE_VERSION_OVERRIDE = os.environ.get("LOCAL_DUB_ENGINE_VERSION", "").strip()
 ENGINE_IDLE_SECONDS = max(0.1, float(os.environ.get("LOCAL_DUB_ENGINE_IDLE_SECONDS", "300")))
-ENGINE_ACTIVITY_LOCK = threading.Lock()
+ENGINE_ACTIVITY_LOCK = threading.RLock()
+ENGINE_ACCEPTING_WORK = True
 ENGINE_ACTIVE_WORK = 0
 ENGINE_LAST_ACTIVITY = time.monotonic()
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
@@ -273,11 +280,27 @@ def engine_has_work() -> bool:
     with ENGINE_ACTIVITY_LOCK:
         worker = KOKORO_MODEL_SERVICE._worker
         return bool(ENGINE_ACTIVE_WORK or FULL_TRANSCRIPT_CANCEL_EVENTS or DUB_TRACK_CANCEL_EVENTS
+                    or engine_updates.is_check_running()
+                    or engine_updates.has_native_work(ENGINE_ROOT)
                     or (worker is not None and worker.is_alive()))
 
 
 def engine_is_idle() -> bool:
     return not engine_has_work() and time.monotonic() - ENGINE_LAST_ACTIVITY >= ENGINE_IDLE_SECONDS
+
+
+@contextmanager
+def update_handoff_guard():
+    global ENGINE_ACCEPTING_WORK
+    with ENGINE_ACTIVITY_LOCK:
+        idle = engine_is_idle()
+        if idle:
+            ENGINE_ACCEPTING_WORK = False
+        try:
+            yield idle
+        except BaseException:
+            ENGINE_ACCEPTING_WORK = True
+            raise
 
 
 class KokoroModelService:
@@ -404,6 +427,9 @@ class LocalDubServer(ThreadingHTTPServer):
     def process_request(self, request, client_address) -> None:
         global ENGINE_ACTIVE_WORK
         with ENGINE_ACTIVITY_LOCK:
+            if not ENGINE_ACCEPTING_WORK:
+                self.shutdown_request(request)
+                return
             ENGINE_ACTIVE_WORK += 1
         try:
             super().process_request(request, client_address)
@@ -749,6 +775,7 @@ def build_health_payload(transport: str) -> dict[str, Any]:
         "architecture": normalized_architecture(),
         "instanceId": ENGINE_INSTANCE_ID,
         "runtimeRoot": ENGINE_RUNTIME_ROOT or str(ENGINE_ROOT.resolve()),
+        "updates": engine_updates.get_update_status(ENGINE_ROOT),
         "kokoroRuntime": runtime,
         "kokoroModel": str(model.get("state") or "not-installed"),
         "kokoroModelVersion": str(model.get("version") or ""),
@@ -4185,9 +4212,12 @@ def restart_current_process() -> None:
 
 
 def main() -> None:
+    global ENGINE_ACCEPTING_WORK
+    ENGINE_ACCEPTING_WORK = True
     ThreadingHTTPServer.allow_reuse_address = True
     server = LocalDubServer((HOST, PORT), LocalDubHandler)
     restore_completed_dub_tracks()
+    engine_updates.start_background_check(ENGINE_ROOT)
     print(f"LocalTube Dub server listening on http://{HOST}:{PORT}")
     print(f"Ollama endpoint: {OLLAMA_URL}")
     print(f"Ollama model: {OLLAMA_MODEL}")
@@ -4195,8 +4225,19 @@ def main() -> None:
     stopped = threading.Event()
 
     def stop_when_idle() -> None:
+        global ENGINE_ACCEPTING_WORK
         while not stopped.wait(min(1.0, ENGINE_IDLE_SECONDS / 2)):
             if engine_is_idle():
+                handed_off = False
+                try:
+                    handed_off = engine_updates.begin_install_if_ready(ENGINE_ROOT, os.getpid(), update_handoff_guard)
+                except Exception as error:
+                    print(f"Engine update handoff failed; keeping installed version: {error}", file=sys.stderr)
+                if not handed_off:
+                    with ENGINE_ACTIVITY_LOCK:
+                        ENGINE_ACCEPTING_WORK = True
+                    if not engine_is_idle():
+                        continue
                 print("LocalTube Dub Engine exiting after idle timeout")
                 server.shutdown()
                 return

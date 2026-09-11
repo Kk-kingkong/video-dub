@@ -1,7 +1,16 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-09-05
-Current reviewed version: 0.2.7 (GitHub testing release)
+Last reviewed: 2026-09-11
+Current reviewed version: 0.2.8 (automatic Engine update migration)
+
+## 0.2.8 Automatic Engine Updates
+
+- Installed bundled Engines check the fixed project GitHub stable feed on actual startup, at most once per six hours. Passive health remains passive; source checkouts do not opt into binary replacement.
+- The pinned update certificate authenticates the manifest; version/protocol/platform, archive size/SHA-256, and extraction layout are checked before staging. Only stable compatible newer versions qualify.
+- Activation waits for idle and drains accepted work before a detached helper starts. Automatic installers preserve the original validated Native bindings and external settings/models, verify new-runtime health, and retain rollback until validation succeeds.
+- macOS isolated installer regressions exercise multiple extension IDs, invalid/missing registrations, successful activation, wrong-version health, and injected rollback. Windows smoke includes equivalent preservation and wrong-protocol rollback with its verified process manager; all platform CI gates remain required before publication.
+- Stable-feed publication requires the exact release commit's successful cross-platform CI and all three matching packages. Private signing material is kept out of source and packages; update signing does not imply platform code signing or macOS notarization.
+- Old customers must install `0.2.8` once. Chrome Web Store continues to deliver extension updates; unpacked extensions remain manual. The updated privacy policy discloses fixed GitHub update requests without video/text/audio/credential uploads.
 
 ## 0.2.7 Unpacked Extension Binding Fix
 
@@ -413,9 +422,9 @@ These are not complete and must not be represented as finished:
 
 1. Source separation and final media muxing. The product exports synchronized pure-voice or full-original-audio-mixed M4A/WAV tracks, but it does not separate source speech from background audio or mux a new downloadable video file.
 2. Local TTS breadth. Kokoro provides cross-platform local Chinese and English speech, but additional target languages are not yet supported locally. macOS `say` remains a macOS-only last-resort option.
-3. Store-ready desktop packaging. ID-bound macOS ARM/Intel and Windows x64 private-beta ZIPs exist, but there is still no signed/notarized macOS app/pkg, signed Windows installer, auto-update mechanism, or hosted Engine download page.
+3. Store-ready desktop packaging. ID-bound macOS ARM/Intel and Windows x64 ZIPs and signed-feed automatic Engine updates exist, but there is still no Developer ID signed/notarized macOS app/pkg or code-signed Windows installer.
 4. Browser end-to-end automation. Static and Engine tests exist, but Chrome-based regression coverage for real YouTube navigation, Translator language-pack download, audio playback, and seeking is still missing.
-5. Release operations. The repository, public policy/support pages, Store item, and listing assets exist, but final signed Engine URLs and a desktop auto-update path still need publisher-owned infrastructure.
+5. Release operations. GitHub hosts versioned Engine packages and the signed stable update feed. Publisher-owned platform signing credentials, Store review, and retention of the update-signing recovery key remain operational responsibilities.
 
 ## Required Verification Before Each Release
 

@@ -12,7 +12,7 @@ Stores non-secret preferences such as target language, Provider, model, custom e
 
 Connects to the optional LocalTube Dub desktop Engine for local yt-dlp caption extraction, whisper.cpp transcription, Kokoro or system TTS, Engine health, and user-triggered start/restart/model-install actions. Captioned videos can use the extension without installing the Engine.
 
-The native host is installed separately by an explicit desktop installer. Its `allowed_origins` list contains only the final Chrome Web Store extension ID; wildcards are not used.
+The native host is installed separately by an explicit desktop installer. Its `allowed_origins` list contains the final Chrome Web Store extension ID by default; testing may explicitly register a validated unpacked extension ID. Automatic Engine upgrades preserve those existing valid bindings; wildcards are not used.
 
 ### `activeTab`
 
@@ -63,6 +63,8 @@ The default Microsoft natural-online speech mode is implemented by the separatel
 Choosing Kokoro stops this online speech transfer. The user explicitly installs fixed model data, the Engine verifies it, and Chinese/English synthesis then stays on the same computer. The model is optional data for the native Engine, not remotely hosted extension code. Choosing the macOS-only system voice also keeps speech generation local.
 
 The optional Engine may let yt-dlp read the local Chrome YouTube session only after public caption access fails. Those credentials are used solely for a request back to YouTube for the active video and are never sent to LocalTube Dub or an AI Provider.
+
+Bundled Engine `0.2.8` adds native software updates from this project's fixed signed GitHub stable feed. The separately installed Engine performs these requests, without new Chrome host permissions and without video URLs, text, audio, API keys, or cookies. It verifies and installs compatible Engine packages when idle; it never downloads extension code. Chrome Web Store updates remain browser-managed. See the public privacy policy for the GitHub connection and local update-state disclosure.
 
 ## Chrome Web Store privacy-field mapping
 

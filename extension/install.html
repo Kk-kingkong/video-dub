@@ -41,7 +41,7 @@
         <p>macOS：先完成 Engine 安装，再复制以下命令到“终端”执行，为当前扩展修复绑定。</p>
         <button class="copy-button" data-copy="#macBindingCommand" type="button">复制 macOS 绑定修复命令</button>
         <pre><code id="macBindingCommand">生成中...</code></pre>
-        <p>Windows：下载并解压 0.2.7 或更新的 Engine，在解压目录打开 PowerShell，执行以下安装命令。</p>
+        <p>Windows：下载并解压 0.2.8 或更新的 Engine，在解压目录打开 PowerShell，执行以下安装命令。</p>
         <button class="copy-button" data-copy="#windowsBindingCommand" type="button">复制 Windows 安装命令</button>
         <pre><code id="windowsBindingCommand">生成中...</code></pre>
         <p>完成后重新检查 Engine。如果仍显示拒绝访问，再完全退出并重新打开 Chrome。</p>
@@ -56,6 +56,7 @@
 
       <section>
         <h2>启动本地 Engine</h2>
+        <p data-audience="customer">从旧版升级时，请先手动安装一次 0.2.8 或更新的 Engine。之后使用时会在后台检查正式版、验证更新签名，并在任务结束且空闲后自动安装；更新失败会保留旧版。扩展通过 Chrome 应用商店更新，本地解压包仍需手动替换并重新加载。</p>
         <p data-audience="customer">完成安装后，开始翻译或配音时会按需启动 Engine，空闲 5 分钟后自动退出。检查状态不会唤醒 Engine；下面的按钮可手动启动、重启或修复。</p>
         <p data-audience="customer">如果提示“拒绝访问”，请先按本页“将 Engine 绑定到当前扩展”修复 ID 绑定；其他刚安装后的连接问题可尝试完全退出并重新打开 Chrome。</p>
         <p data-audience="developer">Engine 会监听 127.0.0.1:8787。插件会优先使用页面已有目标语言字幕；页面读取失败或只有原文字幕时，再用 Engine 调用 yt-dlp 提取字幕文本。同步配音会先调用本地 TTS 生成音频片段并按视频进度播放，失败时再退回浏览器朗读。</p>

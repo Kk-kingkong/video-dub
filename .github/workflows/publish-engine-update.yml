@@ -1,0 +1,69 @@
+name: Verify signed Engine update
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: engine-update-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify-update:
+    if: ${{ !github.event.release.draft && !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Resolve stable release and require passing Engine CI
+        id: release
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          release = event['release']
+          tag = release['tag_name']
+          if release['draft'] or release['prerelease'] or not re.fullmatch(r'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', tag):
+              raise SystemExit('Only complete stable version releases can become automatic updates')
+          repo = os.environ['GH_REPO']
+          commit = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/commits/{tag}']))['sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', commit):
+              raise SystemExit('Invalid release commit')
+          runs = json.loads(subprocess.check_output([
+              'gh', 'api', '--method', 'GET', f'repos/{repo}/actions/workflows/cross-platform-engine.yml/runs',
+              '-f', f'head_sha={commit}', '-f', 'status=completed', '-f', 'per_page=100',
+          ]))['workflow_runs']
+          if not any(run['head_sha'] == commit and run['status'] == 'completed'
+                     and run['conclusion'] == 'success' and run['event'] in ('push', 'workflow_dispatch')
+                     and run['path'] == '.github/workflows/cross-platform-engine.yml'
+                     for run in runs):
+              raise SystemExit('Release commit has no successful cross-platform Engine CI run')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\nversion={tag[1:]}\nsha={commit}\n')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.sha }}
+          persist-credentials: false
+      - name: Verify signing checks and download complete published packages
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          python3 tools/verify_update_publication.py
+          mkdir -p "$RUNNER_TEMP/engine-assets"
+          for platform in macOS-arm64 macOS-x64 Windows-x64; do
+            gh release download "$RELEASE_TAG" --repo "$GH_REPO" --pattern "LocalTube-Dub-Engine-v${RELEASE_VERSION}-${platform}.zip" --dir "$RUNNER_TEMP/engine-assets"
+          done
+          for name in LocalTube-Dub-update.json LocalTube-Dub-update.sig; do
+            gh release download "$RELEASE_TAG" --repo "$GH_REPO" --pattern "$name" --dir "$RUNNER_TEMP/engine-assets"
+          done
+          python3 tools/sign_engine_update.py --verify --version "$RELEASE_VERSION" --assets-dir "$RUNNER_TEMP/engine-assets" --output-dir "$RUNNER_TEMP/engine-assets"

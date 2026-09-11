@@ -6,7 +6,7 @@
 
 LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕时，再使用 Chrome 免费本地翻译或用户自己选择的翻译服务。没有字幕的视频可以使用可选的本地 Whisper Engine 转写。
 
-> **当前版本：** `0.2.7` 测试版，尚未发布到 Chrome 商店；可选的桌面 Engine 安装包目前仍是未签名、未公证的开发版本。
+> **当前版本：** `0.2.8`，新增 Engine 自动更新。Chrome 商店发布仍需单独提交；桌面安装包尚未完成操作系统代码签名和 macOS 公证。
 
 ## 主要功能
 
@@ -37,6 +37,14 @@ LocalTube Dub 会优先读取 YouTube 已有的中文字幕；没有中文字幕
 
 Kokoro 是可选功能。用户选择它以后，需要主动点击模型安装按钮；固定模型校验并下载完成后，中英文配音会在同一台电脑上生成。
 
+## 版本更新
+
+已安装旧 Engine 的用户需要先手动安装一次对应平台的 `0.2.8` Engine。此后，Engine 在实际使用启动时检查本项目 GitHub 上经过签名的正式更新，每六小时最多检查一次。兼容的新版会在后台下载，等任务完成并达到五分钟空闲后安装；升级失败会恢复旧运行环境，并保留设置、已下载模型和原扩展绑定。单纯检查状态不会唤醒 Engine 或触发更新检查。
+
+从同一个 Chrome 商店条目安装的扩展，由 Chrome 在新版审核发布后更新。源码版或 ZIP“加载已解压”扩展仍需手动覆盖并重新加载，Engine 更新器不会修改扩展文件。离线电脑和持续运行任务的电脑会稍后更新，不会在发布瞬间同时升级。
+
+更新签名用于确认更新来源和安装包校验值，与 Apple、Windows 的代码签名不同，因此目前的系统安装警告仍可能出现。
+
 ## 隐私说明
 
 - 非敏感设置可以通过 Chrome Sync 同步。
@@ -45,6 +53,7 @@ Kokoro 是可选功能。用户选择它以后，需要主动点击模型安装�
 - Microsoft 自然在线语音只接收合成语音所需的翻译文本和音色设置。
 - 用户必须先在扩展界面明确同意这项传输，Microsoft 在线配音才会开始请求。
 - Kokoro、macOS 系统语音和本地 Whisper 转写都在用户电脑上处理。
+- Engine 更新只请求固定的 GitHub 发布信息和安装包，不上传视频链接、字幕、音频、API Key 或 Cookie。
 
 完整说明请阅读公开的 [隐私政策](https://kk-kingkong.github.io/video-dub/privacy-policy.html) 和 [Chrome 权限说明](docs/chrome-web-store-permissions.md)。
 
@@ -60,6 +69,8 @@ PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_engine_l
 PYTHONPYCACHEPREFIX=/private/tmp/localtube-pycache python3 tools/verify_native_messaging.py
 python3 tools/verify_open_source_compliance.py
 python3 tools/verify_windows_package.py --source
+python3 tools/verify_engine_updates.py
+python3 tools/verify_update_publication.py
 ```
 
 ## 项目文档

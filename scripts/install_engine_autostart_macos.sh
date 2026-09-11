@@ -38,6 +38,8 @@ if [[ "$DRY_RUN" != "1" && "$SOURCE_ROOT" != "$RUNTIME_DIR" ]]; then
   ditto "$SOURCE_ROOT/.venv" "$STAGING_DIR/.venv"
   install -m 0644 "$SOURCE_ROOT/server/local_dub_server.py" "$STAGING_DIR/server/local_dub_server.py"
   install -m 0644 "$SOURCE_ROOT/server/kokoro_tts.py" "$STAGING_DIR/server/kokoro_tts.py"
+  install -m 0644 "$SOURCE_ROOT/server/engine_updates.py" "$STAGING_DIR/server/engine_updates.py"
+  install -m 0644 "$SOURCE_ROOT/server/update-signing-cert.cer" "$STAGING_DIR/server/update-signing-cert.cer"
   install -m 0755 "$SOURCE_ROOT/scripts/start_engine_macos.sh" "$STAGING_DIR/scripts/start_engine_macos.sh"
   install -m 0755 "$SOURCE_ROOT/scripts/install_engine_autostart_macos.sh" "$STAGING_DIR/scripts/install_engine_autostart_macos.sh"
   install -m 0755 "$SOURCE_ROOT/scripts/uninstall_engine_autostart_macos.sh" "$STAGING_DIR/scripts/uninstall_engine_autostart_macos.sh"

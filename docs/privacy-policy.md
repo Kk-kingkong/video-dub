@@ -5,7 +5,7 @@ title: LocalTube Dub Privacy Policy
 
 # LocalTube Dub Privacy Policy
 
-**Effective date:** July 30, 2026
+**Effective date:** September 11, 2026
 
 [Home](index.html) | [Support](support.html) | [Source code](https://github.com/Kk-kingkong/video-dub)
 
@@ -78,6 +78,14 @@ Selecting **local system voice** generates speech with the operating system's lo
 ## Local Engine communication
 
 The Chrome extension communicates with the optional Engine through Chrome Native Messaging or the loopback addresses `127.0.0.1` and `localhost`. LocalTube Dub does not operate a remote Engine server. Temporary media used by local transcription or rendering is deleted when processing completes; user-requested exported audio remains until the user deletes it.
+
+## Engine software updates
+
+Starting with the separately installed `0.2.8` customer Engine, actual Engine startup checks this project's fixed GitHub stable-release update metadata at most once every six hours. A compatible newer package may download in the background and install after local work finishes and Engine becomes idle. Old Engine versions need one manual installation to add this updater. Passive extension status checks do not wake Engine or initiate an update check.
+
+These HTTPS requests fetch the public update manifest, its signature, and the matching operating-system and architecture package from `github.com/Kk-kingkong/video-dub/releases` and GitHub's release-asset download infrastructure. Update requests do not include video URLs or IDs, captions, translated text, audio, API keys, YouTube cookies, or browsing history. GitHub can receive ordinary connection information such as the IP address and requested asset under its [Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement). There is no LocalTube Dub analytics or usage-reporting payload.
+
+The updater keeps its last-check time, available version, update status, temporary package files, and installation diagnostics on the same computer, alongside the installed runtime. It validates a pinned release-signing key and package checksums before activation, preserves existing extension bindings and user models/settings, and restores the old runtime if activation fails. It never downloads or replaces Chrome extension code. Chrome Web Store extension updates remain browser-managed; unpacked extensions require manual updates.
 
 ## Sharing, retention, and legal requests
 

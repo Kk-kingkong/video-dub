@@ -36,13 +36,15 @@ Features available in this release:
 
 The separate open-source LocalTube Dub Engine is recommended for reliable yt-dlp caption extraction, natural or local speech generation, local transcription, and complete audio export. Chrome extensions cannot install native software silently, so Engine installation is a separate, explicit user action. Optional pinned packages support Windows 10/11 x64, macOS Intel, and macOS Apple Silicon. Basic page-caption translation can work without the Engine when YouTube exposes a readable caption track and Chrome supports the required language pair.
 
+After one manual installation of Engine `0.2.8`, the Engine checks this project's signed compatible stable updates on actual startup, at most once every six hours, and installs after tasks complete and Engine becomes idle. This native updater preserves settings, models, and extension bindings, and restores the previous runtime if activation fails. It does not update extension code: Chrome handles updates to the Store extension. Fixed GitHub update requests contain no video URLs, captions, audio, API keys, or cookies. Update-feed signing is separate from the still-incomplete platform installer signing and notarization.
+
 No-caption transcription is opt-in. Local mode processes audio on the user's computer. Users who select Groq, Deepgram, or OpenAI transcription send a bounded active-video audio segment directly to that Provider with their own key.
 
 The extension has no LocalTube Dub account, subscription, advertising, analytics, or managed translation backend. API keys remain in local Chrome extension storage and are sent only to the Provider selected by the user.
 
 Current limitations:
 
-- The public companion installer must match the Chrome Web Store extension version and extension ID.
+- The companion installer must use a compatible Engine protocol and the authorized Chrome extension ID. Earlier Engines need a one-time manual upgrade to gain automatic updates.
 - Local no-caption transcription requires the separate Engine, FFmpeg, whisper.cpp, and a local model.
 - Mixed audio export attenuates the original track but does not separate dialogue from background sound.
 - Final video muxing and voice cloning are not included.
@@ -65,7 +67,7 @@ Chinese (Simplified) for the first listing, followed by an English localization.
 - Optional 1400 x 560 marquee tile.
 - Optional public YouTube demonstration video.
 
-Screenshots must show the shipping `0.2.7` UI and must not contain API keys, private videos, account information, or unavailable features.
+Screenshots must show the shipping `0.2.8` UI and must not contain API keys, private videos, account information, or unavailable features.
 
 ## Publisher URLs
 

@@ -99,6 +99,19 @@
     };
   }
 
+  function engineUpdateNotice(payload = {}) {
+    const updates = payload.updates;
+    if (!updates) return payload.service === "localtube-dub" ? "安装一次新版 Engine，即可启用后续自动更新。" : "";
+    if (!updates.enabled) return "";
+    const messages = {
+      checking: "正在检查 Engine 正式版更新，当前任务可继续。",
+      ready: `Engine ${String(updates.availableVersion || "新版").slice(0, 24)} 已下载，空闲后自动更新。`,
+      installing: "Engine 正在自动更新，请稍后再试。",
+      failed: "Engine 自动更新未完成，继续使用当前版本，稍后自动重试。"
+    };
+    return messages[updates.status] || "Engine 自动更新已开启，仅接收兼容的正式版。";
+  }
+
   function shouldAutoStartCaptionEngine(result = {}) {
     const status = Number(result?.status || 0);
     const code = String(result?.code || "");
@@ -205,6 +218,7 @@
     const semanticFailure = classified.find((failure) => !failure.activateLightweight);
     if (semanticFailure) {
       const messages = {
+        ENGINE_UPDATING: "Engine 正在自动更新，请稍后再试。",
         TTS_REQUEST_INVALID: "配音请求无效。",
         TTS_VOICE_UNAVAILABLE: "当前音色无法生成这个片段。"
       };
@@ -324,6 +338,7 @@
 
   const api = {
     assessEngineCompatibility,
+    engineUpdateNotice,
     classifyProviderFailure,
     classifyTtsEngineFailure,
     createTranscriptionRequestRegistry,

@@ -198,6 +198,7 @@ const nodes = {
   engineStatus: document.querySelector("#engineStatus"),
   engineStatusText: document.querySelector("#engineStatusText"),
   engineStatusMeta: document.querySelector("#engineStatusMeta"),
+  engineUpdateStatus: document.querySelector("#engineUpdateStatus"),
   engineInstallInline: document.querySelector("#engineInstallInline"),
   kokoroModelCard: document.querySelector("#kokoroModelCard"),
   kokoroModelStatus: document.querySelector("#kokoroModelStatus"),
@@ -701,10 +702,18 @@ async function refreshEngineStatus() {
     .sendMessage({ type: "localtube.captionEngineHealth", settings: currentSettings })
     .catch((error) => ({ ok: false, error: error.message || String(error) }));
 
+  if (nodes.engineUpdateStatus) {
+    nodes.engineUpdateStatus.textContent = response?.payload?.updateNotice || "";
+    nodes.engineUpdateStatus.hidden = !nodes.engineUpdateStatus.textContent;
+  }
   if (response?.ok) {
     const payload = response.payload || {};
     applyEnginePlatformPolicy(payload.platform);
     const transport = payload.transport === "native" ? "Native" : "HTTP";
+    if (payload.updates?.status === "installing") {
+      setEngineStatus("warn", "Engine 正在自动更新", "更新完成后即可开始翻译或配音，请稍后再试。");
+      return;
+    }
     if (payload.upgradeRequired) {
       setEngineStatus(
         "error",

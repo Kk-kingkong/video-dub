@@ -22,10 +22,10 @@ from assemble_engine_runtime import assemble_runtime, load_runtime_manifest  # n
 
 
 EXTENSION_ID = "ikoenamldegccnhmjjnlkffocdkbbbmo"
-PACKAGE_VERSION = "0.2.7"
-PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.7-Windows-x64.zip"
-CHECKSUM_NAME = "LocalTube-Dub-v0.2.7-Windows-x64-SHA256SUMS.txt"
-ENGINE_FOLDER = "LocalTube-Dub-Engine-v0.2.7-Windows-x64"
+PACKAGE_VERSION = "0.2.8"
+PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.8-Windows-x64.zip"
+CHECKSUM_NAME = "LocalTube-Dub-v0.2.8-Windows-x64-SHA256SUMS.txt"
+ENGINE_FOLDER = "LocalTube-Dub-Engine-v0.2.8-Windows-x64"
 
 
 class WindowsBuildError(RuntimeError):
@@ -104,6 +104,7 @@ def write_release_metadata(stage: Path) -> None:
         "platform": "windows",
         "architecture": "x64",
         "bundledRuntime": True,
+        "autoUpdate": True,
         "runtimeLock": ".venv/runtime-lock.json",
         "runtimeContract": runtime_contract(stage / ".venv"),
         "channel": "private-beta",
@@ -156,7 +157,7 @@ def build(output_dir: Path, cache_dir: Path) -> Path:
         stage.mkdir(parents=True)
         for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
             copy_file(ROOT_DIR / name, stage / name)
-        for name in ("local_dub_server.py", "kokoro_tts.py"):
+        for name in ("local_dub_server.py", "kokoro_tts.py", "engine_updates.py", "update-signing-cert.cer"):
             copy_file(ROOT_DIR / "server" / name, stage / "server" / name)
         copy_file(ROOT_DIR / "companion" / "native_host.py", stage / "companion" / "native_host.py")
         copy_file(

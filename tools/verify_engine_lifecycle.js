@@ -19,6 +19,14 @@ const autoStart = context.autoStartCaptionHttpEngine;
 const nativeMessage = context.sendNativeMessage;
 
 async function main() {
+  const helpers = context.LocalTubeDubBackgroundHelpers;
+  assert.match(helpers.engineUpdateNotice({ service: "localtube-dub" }), /安装一次/);
+  assert.equal(helpers.engineUpdateNotice({ updates: { enabled: false } }), "");
+  for (const [status, message] of [["checking", /正在检查/], ["ready", /0\.2\.9.*空闲/], ["installing", /正在自动更新/], ["failed", /继续使用当前版本/], ["idle", /自动更新已开启/]]) {
+    const payload = { updates: { enabled: true, status, availableVersion: "0.2.9" } };
+    assert.match(context.httpEngineSuccessPayload({ payload }).payload.updateNotice, message);
+    assert.match(context.nativeEngineSuccessPayload(payload).payload.updateNotice, message);
+  }
   let starts = 0;
   context.fetchForExtension = async () => { throw new TypeError("Failed to fetch"); };
   context.sendNativeMessage = async () => ({ ok: true, ytDlp: true });
@@ -92,6 +100,15 @@ async function main() {
   assert.equal(await autoStart("http://127.0.0.1:8787", launchErrors), null);
   assert.ok(launchErrors.join().includes(context.chrome.runtime.id));
   assert.equal(recoveryPolls, 0, "access denial cannot launch Engine and must not wait for HTTP recovery");
+
+  context.sendNativeMessage = async () => ({ ok: false, code: "ENGINE_UPDATING", error: "Engine 正在自动更新，请稍后再试。" });
+  for (const operation of [context.startLocalEngine, context.restartLocalEngine, context.installLocalWhisper, context.installEngineAutostart]) {
+    assert.equal((await operation()).code, "ENGINE_UPDATING");
+  }
+  vm.runInContext("captionEngineAutoStartCooldownUntil = 0", context);
+  assert.equal((await autoStart("http://127.0.0.1:8787")).code, "ENGINE_UPDATING");
+  assert.equal(recoveryPolls, 0, "installation must not trigger repeated launch/recovery attempts");
+  context.sendNativeMessage = nativeMessage;
 
   context.chrome.runtime.sendNativeMessage = (_host, _message, callback) => {
     context.chrome.runtime.lastError = { message: "Specified native messaging host not found." };

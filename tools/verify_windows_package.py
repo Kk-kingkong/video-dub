@@ -35,8 +35,8 @@ REGISTRY_ROOT = (
     r"HKCU\Software\Google\Chrome\NativeMessagingHosts"
     rf"\{NATIVE_HOST_NAME}"
 )
-WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.7-Windows-x64.zip"
-WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.7-Windows-x64-SHA256SUMS.txt"
+WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.8-Windows-x64.zip"
+WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.8-Windows-x64-SHA256SUMS.txt"
 WINDOWS_TEMPLATES = {
     "launcher": ROOT_DIR / "packaging" / "windows" / "Install LocalTube Dub Engine.cmd.in",
     "installer": ROOT_DIR / "packaging" / "windows" / "install-engine.ps1.in",
@@ -197,7 +197,7 @@ def verify_native_health_identity() -> None:
     runtime_root = ROOT_DIR / "Windows Runtime 路径"
     identity = {
         "service": "localtube-dub",
-        "engineVersion": "0.2.7",
+        "engineVersion": "0.2.8",
         "protocolVersion": 2,
         "platform": "windows",
         "architecture": "x64",
@@ -513,7 +513,7 @@ def wait_for_exact_health(
                 health = json.loads(response.read())
             expected = {
                 "service": "localtube-dub",
-                "engineVersion": "0.2.7",
+                "engineVersion": "0.2.8",
                 "protocolVersion": 2,
                 "platform": "windows",
                 "architecture": "x64",
@@ -551,7 +551,7 @@ def invoke_manager(
             "-Action",
             action,
             "-ExpectedVersion",
-            "0.2.7",
+            "0.2.8",
             "-ExpectedRuntimeRoot",
             str(runtime_root),
             "-StateRootOverride",
@@ -692,6 +692,13 @@ def verify_install_smoke(package: Path) -> None:
             len(installers) == 1 and len(uninstallers) == 1 and len(managers) == 1,
             "package installer layout is invalid",
         )
+        package_root = installers[0].parent
+        require((package_root / "server/engine_updates.py").is_file(), "package is missing the Engine updater")
+        require((package_root / "server/update-signing-cert.cer").read_bytes()
+                == (ROOT_DIR / "server/update-signing-cert.cer").read_bytes(),
+                "package update signing certificate does not match the pinned release key")
+        require(json.loads((package_root / "release.json").read_bytes()).get("autoUpdate") is True,
+                "customer package did not enable automatic updates")
 
         env = os.environ.copy()
         test_id = uuid.uuid4().hex
@@ -713,6 +720,7 @@ def verify_install_smoke(package: Path) -> None:
         )
         env["LOCALAPPDATA"] = str(local_app_data)
         env["LOCAL_DUB_RUNTIME_DIR"] = str(runtime_root)
+        env["LOCAL_DUB_AUTO_UPDATE"] = "0"
         env["LOCAL_DUB_STATE_DIR"] = str(state_root)
         env["LOCAL_DUB_NATIVE_MANIFEST_PATH"] = str(native_manifest_path)
         env["LOCAL_DUB_NATIVE_HOST_NAME"] = native_host_name
@@ -765,7 +773,7 @@ def verify_install_smoke(package: Path) -> None:
                         "-Action",
                         "Stop",
                         "-ExpectedVersion",
-                        "0.2.7",
+                        "0.2.8",
                         "-ExpectedRuntimeRoot",
                         str(runtime_root),
                         "-StateRootOverride",
@@ -845,7 +853,7 @@ def verify_install_smoke(package: Path) -> None:
                 runtime_root,
                 state_path,
             )
-            require(health["engineVersion"] == "0.2.7", "wrong Engine version accepted")
+            require(health["engineVersion"] == "0.2.8", "wrong Engine version accepted")
 
             stale_state = dict(initial_state)
             stale_state["pid"] = os.getpid()
@@ -921,8 +929,8 @@ def verify_install_smoke(package: Path) -> None:
             unpacked_id = "b" * 32
             run_installer(extension_id=unpacked_id)
             require(json.loads(native_manifest_path.read_bytes())["allowed_origins"]
-                    == [f"chrome-extension://{unpacked_id}/"],
-                    "repair did not bind the explicitly requested unpacked extension")
+                    == [f"chrome-extension://{STORE_EXTENSION_ID}/", f"chrome-extension://{unpacked_id}/"],
+                    "repair did not preserve existing bindings and the requested unpacked extension")
             require(json.loads((runtime_root / "release.json").read_bytes())["chromeExtensionId"]
                     == STORE_EXTENSION_ID, "unpacked binding modified packaged metadata")
             require(not task_fixture_exists(env) and not state_path.exists(), "repair enabled login startup or left Engine running")
@@ -934,11 +942,76 @@ def verify_install_smoke(package: Path) -> None:
                 "repair reused a stale Engine instance",
             )
 
+            run_installer()
+            require(json.loads(native_manifest_path.read_bytes())["allowed_origins"]
+                    == [f"chrome-extension://{STORE_EXTENSION_ID}/", f"chrome-extension://{unpacked_id}/"],
+                    "default manual migration reset the user's unpacked extension binding")
+            require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
+                    "manually migrated Native Host did not restart Engine")
+            _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
+
+            owned_registration = json.loads(native_manifest_path.read_bytes())
+            foreign_registration = {**owned_registration, "path": str(root / "foreign-launcher.exe")}
+            native_manifest_path.write_text(json.dumps(foreign_registration), encoding="utf-8")
+            run_installer()
+            require(json.loads(native_manifest_path.read_bytes())["allowed_origins"]
+                    == [f"chrome-extension://{STORE_EXTENSION_ID}/"],
+                    "manual migration copied bindings from an unrelated Native host")
+            native_manifest_path.write_text(json.dumps(owned_registration), encoding="utf-8")
+            require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
+                    "manually repaired Native Host did not restart Engine")
+            _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
+
+            print("Windows smoke: automatic update preserves existing extension bindings", flush=True)
+            automatic = {"LOCAL_DUB_UPDATE_INSTALL": "1", "LOCAL_DUB_AUTO_UPDATE": "0"}
+            update_native = json.loads(native_manifest_path.read_bytes())
+            native_manifest_path.write_text(json.dumps(update_native, indent=3) + "\n", encoding="utf-8")
+            preserved_registration = native_manifest_path.read_bytes()
+            settings = local_app_data / "LocalTube Dub" / "settings-fixture.json"
+            settings.write_text('{"voice":"keep"}', encoding="utf-8")
+            for malformed in ({**update_native, "allowed_origins": ["chrome-extension://*/"]},
+                              {**update_native, "path": str(root / "foreign-launcher.exe")},
+                              {**update_native, "type": "other"}):
+                native_manifest_path.write_text(json.dumps(malformed), encoding="utf-8")
+                before = native_manifest_path.read_bytes()
+                run_installer(automatic, expect_success=False)
+                require(native_manifest_path.read_bytes() == before
+                        and read_engine_state(state_path)["instanceId"] == repaired_state["instanceId"],
+                        "invalid registration preflight disturbed the installed Engine")
+            native_manifest_path.unlink()
+            run_installer(automatic, expect_success=False)
+            require(not native_manifest_path.exists(), "automatic update silently recreated missing registration")
+            native_manifest_path.write_bytes(preserved_registration)
+            run_installer(automatic)
+            require(native_manifest_path.read_bytes() == preserved_registration
+                    and settings.read_text(encoding="utf-8") == '{"voice":"keep"}'
+                    and not state_path.exists(), "automatic update reset user bindings or settings")
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey) as registry_key:
+                require(winreg.QueryValueEx(registry_key, None) == (registered_manifest, registry_type),
+                        "automatic update changed the registry manifest target")
+
+            print("Windows smoke: automatic update rejects wrong health and restores registration", flush=True)
+            source_server = installers[0].parent / "server" / "local_dub_server.py"
+            server_bytes = source_server.read_bytes()
+            require(b"ENGINE_PROTOCOL_VERSION = 2" in server_bytes, "health failure fixture could not find protocol version")
+            source_server.write_bytes(server_bytes.replace(b"ENGINE_PROTOCOL_VERSION = 2", b"ENGINE_PROTOCOL_VERSION = 3", 1))
+            try:
+                run_installer(automatic, expect_success=False)
+            finally:
+                source_server.write_bytes(server_bytes)
+            require(native_manifest_path.read_bytes() == preserved_registration and not state_path.exists(),
+                    "failed health check lost previous Native bindings or left a failed Engine running")
+            require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
+                    "automatic rollback did not restore a working Engine")
+            _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
+
             print("Windows smoke: rollback after injected failure", flush=True)
             run_installer(
-                {"LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE": "1"},
+                {**automatic, "LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE": "1"},
                 expect_success=False,
             )
+            require(native_manifest_path.read_bytes() == preserved_registration,
+                    "automatic rollback lost the original extension origins")
             require(not task_fixture_exists(env) and not state_path.exists(), "rollback enabled login startup or left Engine running")
             require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
                     "restored Native Host did not restart Engine")

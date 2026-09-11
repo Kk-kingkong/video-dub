@@ -41,13 +41,16 @@ jobs:
           PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_kokoro_engine.py
           PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_local_engine.py
           PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_engine_lifecycle.py
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_engine_updates.py
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_update_integration.py
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_update_publication.py
           PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 tools/verify_native_messaging.py
           python3 tools/verify_release_packages.py --self-test
           python3 tools/verify_open_source_compliance.py
           node --check extension/background.js
           node --check extension/content.js
           node --check extension/popup.js
-          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 -m py_compile server/kokoro_tts.py server/local_dub_server.py companion/native_host.py
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/localtube-pycache" python3 -m py_compile server/kokoro_tts.py server/local_dub_server.py server/engine_updates.py companion/native_host.py
           bash -n scripts/*.sh companion/*.sh
       - name: Build and smoke-test macOS package
         env:
@@ -58,9 +61,9 @@ jobs:
         with:
           name: localtube-dub-macos-${{ matrix.arch }}
           path: |
-            dist/LocalTube-Dub-extension-v0.2.7.zip
-            dist/LocalTube-Dub-Engine-v0.2.7-macOS-${{ matrix.arch }}.zip
-            dist/LocalTube-Dub-v0.2.7-SHA256SUMS.txt
+            dist/LocalTube-Dub-extension-v0.2.8.zip
+            dist/LocalTube-Dub-Engine-v0.2.8-macOS-${{ matrix.arch }}.zip
+            dist/LocalTube-Dub-v0.2.8-SHA256SUMS.txt
           if-no-files-found: error
 
   windows-engine:
@@ -86,24 +89,27 @@ jobs:
           py tools/verify_kokoro_engine.py
           py tools/verify_local_engine.py
           py tools/verify_engine_lifecycle.py
+          py tools/verify_engine_updates.py
+          py tools/verify_update_integration.py
+          py tools/verify_update_publication.py
           py tools/verify_release_packages.py --self-test
           py tools/verify_windows_package.py --source
           py tools/verify_open_source_compliance.py
           node --check extension/background.js
           node --check extension/content.js
           node --check extension/popup.js
-          py -m py_compile server/kokoro_tts.py server/local_dub_server.py companion/native_host.py
+          py -m py_compile server/kokoro_tts.py server/local_dub_server.py server/engine_updates.py companion/native_host.py
       - name: Build Windows package
         shell: pwsh
         run: py scripts/build_release_windows.py
       - name: Install, repair, health-check, and uninstall
         shell: pwsh
         timeout-minutes: 15
-        run: py tools/verify_windows_package.py --install-smoke dist/LocalTube-Dub-Engine-v0.2.7-Windows-x64.zip
+        run: py tools/verify_windows_package.py --install-smoke dist/LocalTube-Dub-Engine-v0.2.8-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: localtube-dub-windows-x64
           path: |
-            dist/LocalTube-Dub-Engine-v0.2.7-Windows-x64.zip
-            dist/LocalTube-Dub-v0.2.7-Windows-x64-SHA256SUMS.txt
+            dist/LocalTube-Dub-Engine-v0.2.8-Windows-x64.zip
+            dist/LocalTube-Dub-v0.2.8-Windows-x64-SHA256SUMS.txt
           if-no-files-found: error

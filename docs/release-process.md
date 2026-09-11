@@ -27,7 +27,7 @@ Build the Windows x64 Engine on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.7-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.8-Windows-x64.zip
 ```
 
 For a customer-facing build, inject a platform-neutral Engine download index and the support page at build time. The download URL must let users choose macOS Apple Silicon, macOS Intel, or Windows x64; it must not point every platform to one architecture-specific ZIP. Both values are optional for an offline private beta, but any configured URL must use HTTPS:
@@ -61,6 +61,30 @@ The source install page remains in development mode. During release assembly, `r
 5. Only users who need no-caption local transcription double-click `Install No-Caption Whisper.command`.
 
 The development packages are deliberately marked `signed: false` and `notarized: false`. macOS customers may need to right-click the `.command` file and choose Open. Windows may display an unsigned-app warning. Do not describe either package as signed until the relevant platform signing gate is complete.
+
+## Automatic Engine update publication
+
+`0.2.8` is the one-time manual migration for customers with older Engines. Bundled customer releases contain `autoUpdate: true`, the updater, and the pinned public update certificate. Source installations do not automatically replace their code. Engine checks the project's fixed stable GitHub feed on actual startup, at most once every six hours, and applies compatible staged updates only after work drains at the idle boundary. Offline or busy customers may update later. A failed activation restores the previous runtime and Native registration without replacing settings or models.
+
+Keep the private signing key locally at the ignored path `dist/update-signing/private.pem`, with a separately secured recovery copy. Never commit it, upload it to GitHub, or include it in an archive. The public certificate is `server/update-signing-cert.cer`; do not replace it casually, because installed updaters trust that key. GitHub Actions verifies the signed feed using that public certificate and does not require the private key.
+
+For each stable release:
+
+1. Run `tools/verify_engine_updates.py`, `tools/verify_update_publication.py`, and the normal release checks. Require a successful `cross-platform-engine.yml` run for the exact release commit, including macOS ARM/Intel and Windows installer smoke tests.
+2. Sign the three matching Engine archives locally with `tools/sign_engine_update.py` as shown below. Upload the matching extension ZIP, all three Engine ZIPs, checksums, `LocalTube-Dub-update.json`, and `LocalTube-Dub-update.sig` to a draft release tagged `vVERSION`.
+3. Verify the complete draft before publishing with **prerelease disabled**. Publication triggers `publish-engine-update.yml`, which checks the successful CI revision, all three archives, and the preuploaded feed/signature against the public certificate. Do not attach a stable update feed to a prerelease.
+4. Verify that the publication-verification workflow succeeded and both feed assets are present. A release missing either asset cannot be installed automatically. Do not overwrite released Engine ZIPs or feed files; fix a problem in a new version.
+5. Submit the extension ZIP to the existing Chrome Web Store item separately. Chrome controls reviewed Store extension updates; Engine publication never replaces extension code or updates ZIP/source extensions.
+
+```bash
+python3 tools/sign_engine_update.py \
+  --version VERSION \
+  --assets-dir dist \
+  --private-key dist/update-signing/private.pem \
+  --output-dir dist/update-feed
+```
+
+The signed manifest pins a stable version, compatible Engine protocol, and each platform archive's exact URL, size, and SHA-256. Its release signature authenticates the updater's input; it does **not** make the macOS/Windows executables code-signed or the macOS package notarized.
 
 ## Public Release Gates
 
@@ -104,4 +128,6 @@ python3 tools/verify_release_packages.py \
 )
 
 python3 tools/verify_windows_package.py --source
+python3 tools/verify_engine_updates.py
+python3 tools/verify_update_publication.py
 ```

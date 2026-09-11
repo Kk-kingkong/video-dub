@@ -23,7 +23,8 @@ Recommended product architecture:
 3. LocalTube Dub Engine
    - Installed separately as a desktop companion app.
    - Runs local Ollama, Whisper CLI, and TTS adapters.
-   - The macOS developer installer registers a login LaunchAgent; a signed public installer must preserve the same no-Terminal startup behavior from a stable application path.
+   - Native Messaging starts Engine on demand from a stable application path; five idle minutes end the process, and installers remove legacy login startup.
+   - Bundled `0.2.8` Engines add signed stable updates after one manual migration. Checks run on actual startup at most once per six hours; installation waits for completed work and idle, with health validation and rollback.
    - Optional for users who want fully local processing.
 
 4. Store listing and compliance
@@ -48,7 +49,7 @@ Recommended product architecture:
 
 - Add provider presets and first-run language-pack/API-key onboarding.
 - Versioned Web Store extension ZIP and an ID-bound macOS Engine bootstrap ZIP with double-click install/uninstall are implemented; signing and notarization remain required for public distribution.
-- Add Windows installer support.
+- macOS ARM/Intel and Windows x64 installers, plus signed-feed automatic Engine updates, are implemented; operating-system code signing and macOS notarization remain separate release work.
 - Add an in-extension first-run checklist.
 - Add a caption cache and translation history controls.
 - Publish an unlisted build from the same future production item; unlisted visibility still receives normal policy review.

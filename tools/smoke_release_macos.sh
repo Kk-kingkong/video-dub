@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export LOCAL_DUB_AUTO_UPDATE=0
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE_ZIP="${1:-}"

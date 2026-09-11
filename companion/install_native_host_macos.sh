@@ -56,19 +56,33 @@ if [[ "$DRY_RUN" == "1" && ! -x "$PYTHON_BIN" ]]; then
 fi
 "$PYTHON_BIN" - "$TARGET_FILE" "$HOST_PATH" "$EXTENSION_ID" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
 target_file = Path(sys.argv[1])
 host_path = Path(sys.argv[2]).resolve()
 extension_id = sys.argv[3].strip()
+origins = [f"chrome-extension://{extension_id}/"]
+try:
+    previous = json.loads(target_file.read_text(encoding="utf-8"))
+    previous_origins = previous.get("allowed_origins")
+    previous_path = Path(previous.get("path", ""))
+    if (previous.get("name") == "com.localtube.dub.engine" and previous.get("type") == "stdio"
+            and previous_path.is_absolute() and previous_path.resolve() == host_path
+            and isinstance(previous_origins, list) and previous_origins
+            and all(isinstance(origin, str) and re.fullmatch(r"chrome-extension://[a-p]{32}/", origin)
+                    for origin in previous_origins)):
+        origins = list(dict.fromkeys(previous_origins + origins))
+except (OSError, ValueError, TypeError, AttributeError):
+    pass
 
 manifest = {
     "name": "com.localtube.dub.engine",
     "description": "LocalTube Dub local AI engine",
     "path": str(host_path),
     "type": "stdio",
-    "allowed_origins": [f"chrome-extension://{extension_id}/"],
+    "allowed_origins": origins,
 }
 
 target_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
