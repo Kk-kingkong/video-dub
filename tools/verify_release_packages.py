@@ -81,8 +81,10 @@ def test_runtime_health_smoke() -> None:
         (runtime / "server").mkdir()
         server = runtime / "server/local_dub_server.py"
         fixture = '''import json, os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from socketserver import TCPServer
+from unittest.mock import patch
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         payload = dict(ok=True, service="localtube-dub", engineVersion="test", protocolVersion=2,
@@ -94,7 +96,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-HTTPServer(("127.0.0.1", int(os.environ["LOCAL_DUB_PORT"])), Handler).serve_forever()
+with patch("socket.getfqdn", side_effect=AssertionError("loopback fixture must not resolve DNS")):
+    TCPServer(("127.0.0.1", int(os.environ["LOCAL_DUB_PORT"])), Handler).serve_forever()
 '''
         for overrides in ({"ytDlp": False}, {"edgeTts": False}, {"instanceId": "other"},
                           {"runtimeRoot": "/other"}, {"engineVersion": "old"}, {}):
