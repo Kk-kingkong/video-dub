@@ -1576,6 +1576,633 @@ function testKokoroPrefetchWindow() {
     ["current", "next-1"],
     "a stale active request must leave only two queued slots"
   );
+  const overlapping = [
+    { key: "long", start: 0, end: 30 },
+    { key: "expired", start: 1, end: 2 },
+    { key: "silence", start: 4, end: 5, timeboxEnd: 7 },
+    { key: "future", start: 8, end: 9 }
+  ];
+  assert.deepEqual(helpers.selectKokoroPrefetchSegments(overlapping, 6).map((segment) => segment.key),
+    ["long", "silence", "future"], "overlapping segments and borrowed silence must remain eligible");
+  assert.deepEqual(helpers.selectKokoroPrefetchSegments(overlapping, 31), []);
+  assert.deepEqual(helpers.selectKokoroPrefetchSegments(overlapping, 0).map((segment) => segment.key),
+    ["long", "expired", "silence"], "seeking backward must restore earlier candidates");
+
+  let inspected = 0;
+  const longTimeline = Array.from({ length: 5000 }, (_, index) => ({
+    key: String(index), start: index * 2, get end() { inspected += 1; return index * 2 + 1; }
+  }));
+  assert.deepEqual(helpers.selectKokoroPrefetchSegments(longTimeline, 0).map((segment) => segment.key), ["0", "1", "2"]);
+  assert.equal(inspected, 3, "prefetch should stop once its three slots are filled");
+}
+
+function testTranslatedCueLookup() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const cues = Array.from({ length: 3000 }, (_, index) => ({ id: String(index), start: index, end: index + 1, text: "source" }));
+  const state = { translatedCues: cues, translatedCueKeys: new WeakMap() };
+  let keyReads = 0;
+  const context = { state, cueKey(cue) { keyReads += 1; return helpers.cueKey(cue); } };
+  const hasTranslatedCue = vm.runInNewContext(`(function hasTranslatedCue(cue) {${extractFunctionBody(content, "hasTranslatedCue")}})`, context);
+  for (const cue of cues) {
+    assert.equal(hasTranslatedCue({ ...cue, translatedText: "translation" }), true);
+  }
+  assert.equal(keyReads, 6000, "repeated lookups must not rescan the unchanged timeline");
+  state.translatedCues = [{ ...cues[0], text: "replacement source" }];
+  assert.equal(hasTranslatedCue(cues[0]), false, "a replacement timeline must invalidate old keys");
+  assert.equal(hasTranslatedCue(state.translatedCues[0]), true);
+  state.translatedCues = [];
+  assert.equal(hasTranslatedCue(cues[0]), false, "stop/reset must not reuse old translations");
+}
+
+function createContentTaskHarness() {
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  const messages = [];
+  const statuses = [];
+  const context = vm.createContext({
+    LocalTubeDubHelpers: helpers, LocalTubeDubVoiceHelpers: voiceHelpers,
+    chrome: { runtime: { getManifest: () => ({ version: "test" }), onMessage: { addListener(listener) { context.onMessage = listener; } } } },
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    window: {}, URL, console, setTimeout, clearTimeout, clearInterval, cancelAnimationFrame() {}
+  });
+  vm.runInContext(content.replace("\nboot();", ""), context);
+  const state = vm.runInContext("state", context);
+  Object.assign(state, {
+    operationId: 7, running: true, partialTranscription: true,
+    originalCues: [{ id: "first", start: 0, end: 2, text: "source" }],
+    translatedCues: [{ id: "first", start: 0, end: 2, text: "source", translatedText: "translated" }],
+    voiceSegments: [], video: { duration: 30, currentTime: 0, paused: true, pause() { this.paused = true; }, async play() { this.paused = false; } }
+  });
+  Object.assign(state.settings, { ttsEngine: "kokoro", voiceEnabled: false });
+  Object.assign(state.runtimeProfile, { allowTranscription: true, allowFullTrackExport: true });
+  Object.assign(context, {
+    sendRuntimeMessage: async (message) => { messages.push(message); return { ok: true, settings: message.settings }; },
+    loadSettings: async () => state.settings,
+    refreshActiveVideoReference: () => state.video,
+    getCurrentVideoId: () => "test-video",
+    isSubtitleExportComplete: () => true,
+    refreshVoiceSegments() {}, setStatus(message) { statuses.push(message); },
+    delay: async () => {},
+    applyCompleteTranscript: async (job) => { state.appliedJob = job.id; state.fullTranscriptPreparing = false; state.fullTranscriptJobId = ""; }
+  });
+  for (const name of ["updateExportControl", "cancelTabAudioRecording", "releaseRollingTranscriptionBuffer",
+    "stopDubTrackPreview", "installNavigationWatcher", "resetRuntimeProfileForOperation", "mountWidget", "unmountWidget",
+    "updateControlsFromSettings", "activateAudioControl", "applyAudioMixSettings", "refreshKokoroModelStatus",
+    "cancelCaptionAutoRetry", "invalidateVoicePlayback", "cancelQueuedVoiceAudio", "cancelElementAudioRecording",
+    "cancelActiveProviderDubs", "setWidgetPhase", "stopActiveBrowserSpeech", "stopActiveVoiceAudio", "clearStatusPulse",
+    "updateOriginalVolumeLabel", "updateProviderOptionsFromResponse"]) {
+    context[name] = () => {};
+  }
+  return { context, state, messages, statuses };
+}
+
+async function testSettingsTransitionOwnership() {
+  for (const [key, value] of [["targetLanguage", "ja-JP"], ["sourceLanguage", "en"], ["provider", "native"],
+    ["model", "new-model"], ["endpoint", "http://127.0.0.1:9999"], ["transcriptionProvider", "openai"], ["transcriptionModel", "new-transcriber"]]) {
+    const { context, state, messages } = createContentTaskHarness();
+    await context.boot();
+    const oldSettings = state.settings;
+    state.dubTrackJobId = "old-job";
+    context.onMessage({ type: "localtube.settingsChanged", settings: { [key]: value } });
+    assert.equal(state.operationId, 8, `${key} must invalidate old work`);
+    assert.equal(state.running, false);
+    assert.equal(state.translatedCues.length, 0);
+    assert.equal(state.settings[key], value);
+    assert.equal(messages.find((message) => message.type === "localtube.cancelDubTrack").settings, oldSettings,
+      "old jobs must be cancelled against their original connection settings");
+  }
+  const { context, state, messages } = createContentTaskHarness();
+  await context.boot();
+  context.onMessage({ type: "localtube.settingsChanged", settings: { originalVolume: 0.5 } });
+  assert.equal(state.operationId, 7, "volume changes must preserve the translated timeline");
+  assert.equal(state.running, true);
+  state.dubTrackRendering = true;
+  state.dubTrackJobId = "voice-job";
+  context.onMessage({ type: "localtube.settingsChanged", settings: { voiceId: "new-voice" } });
+  assert.equal(state.dubTrackRendering, false);
+  assert.ok(messages.some((message) => message.jobId === "voice-job"));
+  context.readSettingsFromWidget = () => ({ ...state.settings, targetLanguage: "fr-FR" });
+  await context.saveSettingsFromWidget();
+  assert.equal(state.operationId, 8, "widget and popup must use the same invalidation path");
+  context.onMessage({ type: "localtube.settingsChanged", settings: { enabled: false } });
+  assert.equal(state.settings.enabled, false);
+  assert.equal(state.running, false);
+
+  let resolveSave;
+  context.sendRuntimeMessage = (message) => message.type === "localtube.setSettings"
+    ? new Promise((resolve) => { resolveSave = () => resolve({ ok: true, settings: message.settings }); })
+    : Promise.resolve({ ok: true });
+  const save = context.saveSettingsFromWidget();
+  context.onMessage({ type: "localtube.settingsChanged", settings: { targetLanguage: "ja-JP" } });
+  resolveSave();
+  await save;
+  assert.equal(state.settings.targetLanguage, "ja-JP", "a late save response must not undo a newer popup change");
+
+  for (const engine of ["edge", "kokoro"]) {
+    const consent = createContentTaskHarness();
+    Object.assign(consent.state.settings, { ttsEngine: engine, microsoftTtsConsent: true });
+    consent.state.dubTrackRendering = true;
+    consent.state.dubTrackJobId = `${engine}-track`;
+    await consent.context.boot();
+    consent.context.onMessage({ type: "localtube.settingsChanged", settings: { microsoftTtsConsent: false } });
+    assert.equal(consent.state.dubTrackRendering, engine !== "edge", "revoking online consent cancels Edge jobs and preserves offline Kokoro jobs");
+    assert.equal(consent.messages.some((message) => message.type === "localtube.cancelDubTrack" && message.jobId === "edge-track"), engine === "edge");
+  }
+  const explicitConsent = createContentTaskHarness();
+  explicitConsent.context.readSettingsFromWidget = () => ({ ...explicitConsent.state.settings, microsoftTtsConsent: true });
+  await explicitConsent.context.saveSettingsFromWidget({ target: { dataset: { field: "microsoftTtsConsent" } } });
+  assert.equal(explicitConsent.messages.at(-1).consentChanged, true, "only an explicit checkbox change authorizes a consent write");
+  await explicitConsent.context.saveSettingsFromWidget();
+  assert.equal(explicitConsent.messages.at(-1).consentChanged, false, "ordinary settings snapshots cannot re-grant consent");
+}
+
+async function testKokoroFallbackSettingsOwnership() {
+  const { context, state, statuses } = createContentTaskHarness();
+  state.settings.voiceId = "unavailable";
+  context.renderAvailableVoiceOptions = () => {};
+  let finishSave;
+  context.sendRuntimeMessage = (message) => new Promise((resolve) => {
+    finishSave = () => resolve({ ok: true, settings: message.settings });
+  });
+  const fallback = context.applyKokoroVoiceFallback({ voiceFallback: true, actualVoice: "zf_xiaobei" }, "unavailable");
+  context.applySettingsTransition({ ...state.settings, targetLanguage: "en-US", voiceId: "af_heart" });
+  const latestSettings = state.settings;
+  const latestStatus = statuses.at(-1);
+  finishSave();
+  await fallback;
+  assert.equal(state.settings, latestSettings, "a late automatic voice save must not restore old settings");
+  assert.equal(statuses.at(-1), latestStatus, "a stale fallback must not replace the new settings notice");
+
+  for (const change of ["language", "engine", "voice", "operation"]) {
+    const h = createContentTaskHarness();
+    h.state.settings.voiceId = "auto";
+    h.state.runtimeProfile.useEngineTts = true;
+    h.context.renderAvailableVoiceOptions = () => {};
+    let finishSpeech;
+    h.context.sendRuntimeMessage = (message) => {
+      h.messages.push(message);
+      return message.type === "localtube.synthesizeSpeech"
+        ? new Promise((resolve) => { finishSpeech = resolve; })
+        : Promise.resolve({ ok: true, settings: message.settings });
+    };
+    const speech = h.context.requestVoiceSegmentAudio({ text: "你好", start: 0, end: 2, duration: 2 });
+    const request = h.messages[0];
+    assert.equal(request.payload.ttsEngine, "kokoro");
+    assert.equal(request.payload.language, "zh-CN");
+    assert.equal(request.payload.voice, "auto");
+    if (change === "operation") {
+      h.context.stopDubbing({ silent: true });
+    } else {
+      const patch = change === "language" ? { targetLanguage: "en-US" }
+        : change === "engine" ? { ttsEngine: "system" } : { voiceId: "af_heart" };
+      h.context.applySettingsTransition({ ...h.state.settings, ...patch });
+    }
+    const currentSettings = h.state.settings;
+    finishSpeech({ ok: true, payload: { dataUrl: "data:audio/wav;base64,AA==", voiceFallback: true, actualVoice: "zf_xiaobei" } });
+    assert.equal(await speech, null, `${change}: stale speech must be discarded before fallback persists a voice`);
+    assert.equal(h.state.settings, currentSettings);
+    assert.equal(h.messages.filter((message) => message.type === "localtube.setSettings").length, 0);
+  }
+
+  const valid = createContentTaskHarness();
+  valid.state.settings.voiceId = "unavailable";
+  valid.context.renderAvailableVoiceOptions = () => {};
+  valid.context.sendRuntimeMessage = async () => ({ ok: true, settings: { targetLanguage: "en-US", provider: "other-tab-provider" } });
+  assert.equal(await valid.context.applyKokoroVoiceFallback({ voiceFallback: true, actualVoice: "zf_xiaobei" }, "unavailable"), true);
+  assert.equal(valid.state.settings.voiceId, "zf_xiaobei");
+  assert.equal(valid.state.settings.targetLanguage, "zh-CN", "voice fallback must not import other tabs' global settings");
+  assert.equal(valid.state.settings.provider, "chrome-translator");
+  assert.match(valid.statuses.at(-1), /已切换为/);
+
+  const lateAudio = createContentTaskHarness();
+  lateAudio.state.settings.voiceId = "auto";
+  lateAudio.state.runtimeProfile.useEngineTts = true;
+  lateAudio.context.renderAvailableVoiceOptions = () => {};
+  let finishFallbackSave;
+  lateAudio.context.sendRuntimeMessage = (message) => message.type === "localtube.synthesizeSpeech"
+    ? Promise.resolve({ ok: true, payload: { dataUrl: "data:audio/wav;base64,AA==", voiceFallback: true, actualVoice: "zf_xiaobei" } })
+    : new Promise((resolve) => { finishFallbackSave = () => resolve({ ok: true, settings: message.settings }); });
+  const audio = lateAudio.context.getVoiceSegmentAudio({ key: "late-audio", text: "你好", start: 0, end: 2, duration: 2 });
+  await new Promise(setImmediate);
+  lateAudio.context.applySettingsTransition({ ...lateAudio.state.settings, voiceId: "zf_xiaoxiao" });
+  finishFallbackSave();
+  assert.equal(await audio, null, "the real audio queue must discard an old response after fallback-save ownership changes");
+  assert.equal(lateAudio.state.settings.voiceId, "zf_xiaoxiao");
+
+  const retry = createContentTaskHarness();
+  retry.state.settings.ttsEngine = "edge";
+  retry.state.runtimeProfile.useEngineTts = true;
+  retry.context.sendRuntimeMessage = async (message) => { retry.messages.push(message); return { ok: false, error: "connection failed" }; };
+  retry.context.delay = async () => { retry.state.runtimeProfile.useEngineTts = false; };
+  assert.equal(await retry.context.requestVoiceSegmentAudio({ text: "你好", start: 0, end: 2, duration: 2 }), null);
+  assert.equal(retry.messages.length, 1, "switching to lightweight mode during retry delay prevents another Engine request");
+}
+
+async function testAutomaticSettingsOwnership() {
+  const platform = createContentTaskHarness();
+  await platform.context.boot();
+  Object.assign(platform.state.settings, { ttsEngine: "system", voiceId: "Tingting", targetLanguage: "zh-CN" });
+  platform.state.renderedTtsEngine = "system";
+  platform.context.renderAvailableTtsEngineOptions = () => {};
+  platform.context.renderAvailableVoiceOptions = () => {};
+  let finishSave;
+  platform.context.sendRuntimeMessage = (message) => new Promise((resolve) => {
+    finishSave = () => resolve({ ok: true, settings: { ...message.settings, targetLanguage: "zh-CN" } });
+  });
+  platform.context.applyEnginePlatformPolicy("windows");
+  platform.context.onMessage({ type: "localtube.settingsChanged", settings: {
+    targetLanguage: "en-US", ttsEngine: "kokoro", voiceId: "af_maple"
+  } });
+  const latest = platform.state.settings;
+  finishSave();
+  await new Promise(setImmediate);
+  assert.equal(platform.state.settings, latest, "platform correction must not merge a late global settings response");
+
+  const start = createContentTaskHarness();
+  await start.context.boot();
+  start.state.running = start.state.busy = false;
+  start.context.readSettingsFromWidget = () => ({ ...start.state.settings });
+  start.context.beginChromeTranslationWarmupFromUserGesture = () => {};
+  const previous = { ...start.state.settings };
+  let finishLoad;
+  start.context.loadSettings = () => new Promise((resolve) => { finishLoad = () => resolve(previous); });
+  const starting = start.context.startDubbing();
+  start.context.onMessage({ type: "localtube.settingsChanged", settings: { targetLanguage: "ja-JP" } });
+  const selected = start.state.settings;
+  finishLoad();
+  await starting;
+  assert.equal(start.state.settings, selected, "cancelled startup must discard its settings read before assignment");
+  assert.equal(start.state.running, false);
+}
+
+function testOverlappingCaptionLookup() {
+  const { context, state } = createContentTaskHarness();
+  const vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:10.000\nLong sentence\n\n00:00:01.000 --> 00:00:02.000\nInterjection\n\n00:00:03.000 --> 00:00:04.000\nAnother interjection";
+  const cues = helpers.normalizeRollingCaptionCues(helpers.parseCaptionPayload(vtt));
+  state.originalCues = cues;
+  state.translatedCues = cues.map((cue) => ({ ...cue, translatedText: cue.text }));
+  assert.equal(context.findCueIndex(5), 0, "a long active cue must survive shorter nested cues");
+  assert.equal(context.hasSourceCueAt(5), true);
+  assert.equal(context.findCueIndexAtOrAfter(cues, 5), 0);
+  for (const time of [-1, 0, 1.9, 2.5, 3.5, 5, 10, 11]) {
+    const index = context.findCueIndexInList(cues, time);
+    assert.equal(index >= 0, cues.some((cue) => cue.start <= time && time <= cue.end), `active cue at ${time}`);
+    if (index >= 0) assert.ok(cues[index].start <= time && cues[index].end >= time);
+  }
+  state.translatedCues = [{ start: 20, end: 21 }];
+  assert.equal(context.findCueIndex(5), -1, "replaced timelines must not retain cached intervals");
+  assert.equal(context.findCueIndexInList([], 5), -1);
+  let startReads = 0;
+  let endReads = 0;
+  const longTimeline = Array.from({ length: 10000 }, (_, index) => ({
+    get start() { startReads += 1; return index * 2; },
+    get end() { endReads += 1; return index * 2 + 1; }
+  }));
+  assert.equal(context.findCueIndexInList(longTimeline, 19997.5), -1);
+  startReads = endReads = 0;
+  for (let frame = 0; frame < 100; frame += 1) context.findCueIndexInList(longTimeline, 19997.5);
+  assert.ok(startReads < 1500, "normal playback gaps retain logarithmic lookup after indexing");
+  assert.equal(endReads, 0, "a stable timeline must not rebuild its end index every frame");
+}
+
+async function testCapturedCaptionLanguageAndCache() {
+  for (const scenario of [
+    { query: "lang=en&tlang=es", target: "en-US", language: "es", text: "Hola, buenos días.", skip: false },
+    { query: "lang=en&tlang=es", target: "es-ES", language: "es", text: "Hola, buenos días.", skip: true },
+    { query: "lang=en", target: "en-US", language: "en", text: "Hello.", skip: true }
+  ]) {
+    const { context, state, messages } = createContentTaskHarness();
+    Object.assign(state.settings, { targetLanguage: scenario.target, provider: "native", ttsEngine: "system" });
+    state.runtimeProfile.provider = "native";
+    context.collectCaptionTracks = async () => ({ errors: [], hadUsableSource: true,
+      tracks: [{ languageCode: "en", baseUrl: "https://www.youtube.com/api/timedtext?v=test-video&lang=en" }] });
+    const capturedUrl = `https://www.youtube.com/api/timedtext?v=test-video&${scenario.query}`;
+    const body = JSON.stringify({ events: [{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: scenario.text }] }] });
+    const listeners = new Map();
+    const document = {
+      addEventListener(type, listener) { listeners.set(type, [...(listeners.get(type) || []), listener]); },
+      removeEventListener(type, listener) { listeners.set(type, (listeners.get(type) || []).filter((value) => value !== listener)); },
+      dispatchEvent(event) { for (const listener of listeners.get(event.type) || []) listener(event); },
+      getElementById() { return null; }
+    };
+    class CustomEvent { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } }
+    const window = { addEventListener() {}, postMessage() {},
+      fetch: async () => ({ url: capturedUrl, clone: () => ({ text: async () => body }) }) };
+    vm.runInNewContext(fs.readFileSync(path.join(root, "extension", "page_probe.js"), "utf8"), {
+      window, document, CustomEvent, URL, setTimeout, clearTimeout,
+      location: new URL("https://www.youtube.com/watch?v=test-video"), LocalTubeDubPageProbeHelpers: pageProbeHelpers
+    });
+    await window.fetch(capturedUrl);
+    await new Promise(setImmediate);
+    Object.assign(context, { document, CustomEvent });
+    const captions = await context.resolveVideoCaptionsFromPage("test-video");
+    assert.equal(captions.track.languageCode, scenario.language, "capture metadata must describe the response body language");
+    state.running = false;
+    state.busy = false;
+    context.readSettingsFromWidget = () => state.settings;
+    context.getPrimaryVideoElement = () => state.video;
+    for (const name of ["beginChromeTranslationWarmupFromUserGesture", "bindVideoEvents", "attachCaptionOverlay", "runSyncLoop"]) context[name] = () => {};
+    context.prepareRuntimeProfileForOperation = async () => { state.runtimeProfile = { ...state.runtimeProfile, mode: "full", useEngineTts: false }; };
+    context.loadCachedTimeline = async () => null;
+    context.resolveVideoCaptions = async (operationId, options) => options.pageResultPromise;
+    context.sendRuntimeMessage = async (message) => {
+      messages.push(message);
+      return message.type === "localtube.providerDub"
+        ? { ok: true, payload: { cues: message.payload.cues.map((cue) => ({ ...cue, translatedText: "Good morning." })) } }
+        : { ok: true, settings: message.settings };
+    };
+    await context.startDubbing();
+    await new Promise(setImmediate);
+    assert.equal(state.running, true);
+    assert.equal(state.skipTranslation, scenario.skip);
+    const translations = messages.filter((message) => message.type === "localtube.providerDub");
+    assert.equal(translations.length, scenario.skip ? 0 : 1);
+    if (!scenario.skip) assert.equal(translations[0].payload.sourceLanguage, scenario.language);
+    const saved = messages.find((message) => message.type === "localtube.saveCachedTimeline" && message.payload.provider !== "youtube-source");
+    assert.ok(saved, "the complete timeline should still be cached");
+    assert.equal(saved.payload.sourceLanguage, scenario.language);
+    assert.equal(saved.payload.targetLanguage, scenario.target);
+    assert.equal(saved.payload.provider, scenario.skip ? "youtube-captions" : "native");
+    assert.equal(saved.payload.cues[0].translatedText, scenario.skip ? scenario.text : "Good morning.");
+  }
+}
+
+async function testPlaybackGapRetryPolicy() {
+  const { context, state, statuses } = createContentTaskHarness();
+  state.translatedCues = [];
+  state.partialTranscription = false;
+  state.runtimeProfile.provider = state.settings.provider = "native";
+  state.video.currentTime = 0.5;
+  let now = 100_000;
+  context.Date = class extends Date { static now() { return now; } };
+  let requests = 0;
+  let reply = { ok: false, error: "Ollama unavailable" };
+  context.sendRuntimeMessage = async (message) => {
+    if (message.type === "localtube.providerDub") { requests += 1; return reply; }
+    return { ok: true };
+  };
+  const frame = async () => { context.maybeTranslatePlaybackGap(0.5); await new Promise(setImmediate); };
+  for (let i = 0; i < 8; i += 1) await frame();
+  assert.equal(requests, 1, "a persistent failure must not be retried every animation frame");
+  now += 10_000;
+  await frame();
+  assert.equal(requests, 2, "transient failures can retry after the cooldown");
+  now += 10_000;
+  await frame();
+  now += 1_000_000;
+  await frame();
+  assert.equal(requests, 3, "automatic retries must stop after three failures");
+  assert.match(statuses.at(-1), /自动补翻已暂停/);
+  reply = { ok: true, payload: { cues: state.originalCues.map((cue) => ({ ...cue, translatedText: "recovered" })) } };
+  context.handleVideoSeeking();
+  await new Promise(setImmediate);
+  assert.equal(requests, 4, "explicit seek permits recovery without waiting for the cooldown");
+  assert.equal(state.translatedCues[0].translatedText, "recovered");
+  assert.equal(state.playbackTranslationRetryAfter, 0);
+  assert.equal(state.playbackTranslationFailureCount, 0);
+
+  state.translatedCues = [];
+  state.runtimeProfile.provider = state.settings.provider = "openai";
+  context.translateCuesWithChromeTranslator = async () => { throw new Error("Chrome translator unavailable"); };
+  reply = { ok: false, code: "PROVIDER_AUTH_FAILED", status: 401, error: "invalid API key" };
+  await frame();
+  now += 1_000_000;
+  await frame();
+  assert.equal(requests, 5, "authentication errors must retain their code after Chrome fallback fails and require an explicit user retry");
+  for (const code of ["PROVIDER_PERMISSION_DENIED", "MISSING_API_KEY", "MISSING_ENDPOINT", "PROVIDER_MODEL_INVALID"]) {
+    reply = { ok: false, code, error: "configuration error" };
+    context.handleVideoSeeking();
+    await new Promise(setImmediate);
+    const count = requests;
+    now += 1_000_000;
+    await frame();
+    assert.equal(requests, count, `${code} must stop automatic retries immediately`);
+  }
+  context.stopDubbing({ silent: true });
+  assert.equal(state.playbackTranslationRetryAfter, 0);
+  assert.equal(state.playbackTranslationFailureCount, 0);
+
+  const stale = createContentTaskHarness();
+  stale.state.translatedCues = [];
+  let rejectOld;
+  stale.context.translateCues = () => new Promise((resolve, reject) => { rejectOld = reject; });
+  const pending = stale.context.translateCurrentPlaybackWindow(stale.state.operationId);
+  const failure = assert.rejects(pending, /old failure/);
+  stale.context.stopDubbing({ silent: true });
+  rejectOld(new Error("old failure"));
+  await failure;
+  assert.equal(stale.state.playbackTranslationRetryAfter, 0, "an old failure must not block a new operation");
+}
+
+async function testPendingTranslationOwnership() {
+  const { context, state } = createContentTaskHarness();
+  const cue = state.originalCues[0];
+  state.translatedCues = [];
+  const translations = [];
+  context.translateCues = () => new Promise((resolve) => translations.push(resolve));
+  const old = context.translateQueuedCues(7, [[cue]], "en", 1);
+  const failure = assert.rejects(old, { name: "OperationStaleError" });
+  context.stopDubbing({ silent: true });
+  state.running = true;
+  const current = context.translateQueuedCues(8, [[cue]], "en", 1);
+  translations[0]([{ ...cue, translatedText: "old" }]);
+  await failure;
+  assert.equal(state.pendingTranslationTracker.isPending(cue), true,
+    "an old finally must not release the replacement operation's reservation");
+  translations[1]([{ ...cue, translatedText: "current" }]);
+  await current;
+  assert.equal(state.pendingTranslationTracker.isPending(cue), false);
+  assert.equal(state.translatedCues[0].translatedText, "current");
+}
+
+async function testEngineJobOwnership() {
+  const jobs = [
+    { start: "prepareFullTranscript", cancel: "cancelFullTranscriptPreparation", toggle: "toggleFullTranscriptPreparation", type: "FullTranscript", flag: "fullTranscriptPreparing", generation: "fullTranscriptGeneration", id: "fullTranscriptJobId" },
+    { start: "startDubTrackRendering", cancel: "cancelDubTrackRendering", toggle: "handleDubTrackAction", type: "DubTrack", flag: "dubTrackRendering", generation: "dubTrackGeneration", id: "dubTrackJobId" }
+  ];
+  const completed = (id) => ({ ok: true, payload: { job: { id, status: "completed", progress: 100,
+    downloadUrl: `http://127.0.0.1:8787/api/dub-track/download?id=${id}`, outputFormat: "m4a" } } });
+  for (const task of jobs) {
+    // The first start returns after cancel + restart. It must cancel its late Engine job.
+    {
+      const { context, state, messages } = createContentTaskHarness();
+      const starts = [];
+      context.sendRuntimeMessage = (message) => {
+        messages.push(message);
+        return message.type === `localtube.start${task.type}`
+          ? new Promise((resolve, reject) => starts.push({ resolve, reject })) : Promise.resolve({ ok: true });
+      };
+      const old = context[task.start]();
+      const oldFailure = assert.rejects(old, { name: "OperationStaleError" });
+      context[task.cancel]();
+      const current = context[task.start]();
+      const generation = state[task.generation];
+      starts[0].resolve(completed("late"));
+      await oldFailure;
+      assert.equal(state[task.generation], generation);
+      assert.equal(state[task.flag], true);
+      assert.equal(state[task.id], "");
+      assert.ok(messages.some((message) => message.type === `localtube.cancel${task.type}` && message.jobId === "late"));
+      starts[1].resolve(completed("current"));
+      await current;
+      assert.equal(state[task.flag], false);
+      assert.equal(task.type === "DubTrack" ? new URL(state.dubTrackDownloadUrl).searchParams.get("id") : state.appliedJob, "current");
+    }
+    // An old status response cannot complete a new task or change its progress.
+    {
+      const { context, state, messages } = createContentTaskHarness();
+      let resolveStatus;
+      let startCount = 0;
+      context.sendRuntimeMessage = (message) => {
+        messages.push(message);
+        if (message.type === `localtube.start${task.type}`) {
+          startCount += 1;
+          return Promise.resolve(startCount === 1 ? { ok: true, payload: { job: { id: "old", status: "running", progress: 5 } } } : completed("new"));
+        }
+        if (message.type.endsWith("Status")) {
+          return new Promise((resolve) => { resolveStatus = resolve; });
+        }
+        return Promise.resolve({ ok: true });
+      };
+      const old = context[task.start]();
+      const oldFailure = assert.rejects(old, { name: "OperationStaleError" });
+      await new Promise(setImmediate);
+      assert.equal(messages.find((message) => message.type.endsWith("Status")).jobId, "old");
+      context[task.cancel]();
+      await context[task.start]();
+      resolveStatus(completed("old"));
+      await oldFailure;
+      assert.equal(task.type === "DubTrack" ? new URL(state.dubTrackDownloadUrl).searchParams.get("id") : state.appliedJob, "new");
+    }
+    // Rejections from an old start must not run the UI catch handler against its replacement.
+    {
+      const { context, state, statuses } = createContentTaskHarness();
+      const starts = [];
+      context.sendRuntimeMessage = (message) => message.type === `localtube.start${task.type}`
+        ? new Promise((resolve, reject) => starts.push({ resolve, reject })) : Promise.resolve({ ok: true });
+      context[task.toggle]();
+      context[task.cancel]();
+      context[task.toggle]();
+      const generation = state[task.generation];
+      const status = statuses.at(-1);
+      starts[0].reject(new Error("old start failed"));
+      await new Promise(setImmediate);
+      assert.equal(state[task.flag], true);
+      assert.equal(state[task.generation], generation);
+      assert.equal(statuses.at(-1), status);
+      starts[1].resolve(completed("replacement"));
+      await new Promise(setImmediate);
+    }
+    // The timeout wrapper must dispose a job received after its caller already gave up.
+    {
+      const { context, messages } = createContentTaskHarness();
+      let timeout;
+      let resolveStart;
+      context.setTimeout = (callback) => { timeout = callback; return 1; };
+      context.clearTimeout = () => {};
+      context.sendRuntimeMessage = (message) => {
+        messages.push(message);
+        return message.type === `localtube.start${task.type}`
+          ? new Promise((resolve) => { resolveStart = resolve; }) : Promise.resolve({ ok: true });
+      };
+      const start = context[task.start]();
+      const failure = assert.rejects(start, /超时/);
+      timeout();
+      await failure;
+      resolveStart(completed("timed-out"));
+      await new Promise(setImmediate);
+      assert.ok(messages.some((message) => message.type === `localtube.cancel${task.type}` && message.jobId === "timed-out"));
+    }
+    // Stopping the entire video operation also owns and cancels a not-yet-created job.
+    {
+      const { context, state, messages } = createContentTaskHarness();
+      let resolveStart;
+      context.sendRuntimeMessage = (message) => {
+        messages.push(message);
+        return message.type === `localtube.start${task.type}`
+          ? new Promise((resolve) => { resolveStart = resolve; }) : Promise.resolve({ ok: true });
+      };
+      const start = context[task.start]();
+      const failure = assert.rejects(start, { name: "OperationStaleError" });
+      context.stopDubbing({ silent: true });
+      resolveStart(completed("stopped"));
+      await failure;
+      assert.equal(state.running, false);
+      assert.ok(messages.some((message) => message.type === `localtube.cancel${task.type}` && message.jobId === "stopped"));
+    }
+  }
+
+  // Once the full transcript replaces rolling cues, cancelling must stop its translation too.
+  const { context, state, statuses } = createContentTaskHarness();
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  context.applyCompleteTranscript = vm.runInContext(
+    `(async function applyCompleteTranscript(job, operationId, generation) {${extractFunctionBody(content, "applyCompleteTranscript")}})`, context);
+  state.fullTranscriptPreparing = true;
+  state.fullTranscriptGeneration = 1;
+  state.video.paused = false;
+  let rejectTranslation;
+  context.translateQueuedCues = () => new Promise((resolve, reject) => { rejectTranslation = reject; });
+  const applying = context.applyCompleteTranscript({ id: "completed", cues: state.originalCues, durationSeconds: 30 }, 7, 1);
+  const failure = assert.rejects(applying, { name: "OperationStaleError" });
+  assert.equal(state.fullTranscriptApplying, true);
+  context.cancelFullTranscriptPreparation();
+  const cancelledStatus = statuses.at(-1);
+  rejectTranslation(new Error("cancelled old translation"));
+  await failure;
+  assert.equal(state.running, false);
+  assert.equal(state.video.paused, true, "a stale catch must not restart video playback after cancellation");
+  assert.equal(state.translatedCues.length, 0);
+  assert.equal(statuses.at(-1), cancelledStatus);
+}
+
+async function testFullTranscriptWorkerFailure() {
+  const { context, state, messages, statuses } = createContentTaskHarness();
+  const content = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+  context.applyCompleteTranscript = vm.runInContext(
+    `(async function applyCompleteTranscript(job, operationId, generation) {${extractFunctionBody(content, "applyCompleteTranscript")}})`, context);
+  context.cancelActiveProviderDubs = vm.runInContext(
+    `(function cancelActiveProviderDubs() {${extractFunctionBody(content, "cancelActiveProviderDubs")}})`, context);
+  state.settings.provider = "native";
+  state.runtimeProfile.provider = "native";
+  state.video.paused = false;
+  const cues = Array.from({ length: 25 }, (_, index) => ({ id: String(index), start: index, end: index + 1, text: `source-${index}` }));
+  const requests = [];
+  context.sendRuntimeMessage = (message) => {
+    messages.push(message);
+    if (message.type === "localtube.startFullTranscript") {
+      return Promise.resolve({ ok: true, payload: { job: { id: "complete", status: "completed", cues, durationSeconds: 30 } } });
+    }
+    if (message.type === "localtube.providerDub") {
+      return new Promise((resolve, reject) => requests.push({ message, resolve, reject }));
+    }
+    return Promise.resolve({ ok: true });
+  };
+  context.toggleFullTranscriptPreparation();
+  await new Promise(setImmediate);
+  assert.equal(requests.length, 2, "full translation starts two real queue workers");
+  const failedOperation = state.operationId;
+  state.priorityTranslationOperationId = failedOperation;
+  requests[0].reject(new Error("provider failed"));
+  await new Promise(setImmediate);
+  const failureStatus = statuses.at(-1);
+  assert.match(failureStatus, /完整字幕准备失败/);
+  assert.ok(state.operationId > failedOperation, "failure retires the entire translation operation");
+  assert.equal(state.priorityTranslationOperationId, 0);
+  assert.equal(state.pendingTranslationTracker.size(), 0);
+  assert.ok(messages.some((message) => message.type === "localtube.cancelProviderDub" && message.requestId === requests[1].message.requestId),
+    "the surviving worker's in-flight provider request must be cancelled");
+  const finish = (request) => request.resolve({ ok: true, payload: { cues: request.message.payload.cues.map((cue) => ({ ...cue, translatedText: "translated" })) } });
+  finish(requests[1]);
+  await new Promise(setImmediate);
+  assert.equal(requests.length, 2, "late sibling completion must not start the third batch");
+  assert.equal(state.translatedCues.length, 0);
+  assert.equal(statuses.at(-1), failureStatus, "late sibling completion must not overwrite the error");
+  assert.equal(state.video.paused, false, "failure keeps the existing playback recovery behavior");
+
+  const retry = context.translateCurrentPlaybackWindow(state.operationId);
+  assert.equal(requests.length, 3, "playback gap translation can recover with a fresh operation");
+  finish(requests[2]);
+  await retry;
+  assert.ok(state.translatedCues.length > 0);
 }
 
 function testNaturalVoiceStartupReanchor() {
@@ -2072,7 +2699,7 @@ function testNoCaptionStartupOrder() {
 }
 
 function extractFunctionBody(source, functionName) {
-  const marker = `function ${functionName}`;
+  const marker = `function ${functionName}(`;
   const functionIndex = source.indexOf(marker);
   assert.ok(functionIndex >= 0, `missing function ${functionName}`);
   const signatureEnd = source.indexOf(")", functionIndex);
@@ -2923,7 +3550,7 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
   assert.equal(manifest.content_scripts[0].world, "MAIN");
   assert.deepEqual(manifest.content_scripts[1].js, ["voice_helpers.js", "content_helpers.js", "content.js"]);
-  assert.equal(manifest.version, "0.2.8");
+  assert.equal(manifest.version, "0.2.9");
   assert.equal(manifest.permissions.includes("downloads"), false);
   assert.deepEqual(manifest.permissions, ["activeTab", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.optional_permissions, ["offscreen", "tabCapture"]);
@@ -3026,14 +3653,14 @@ function testManifestAndFlowGuards() {
   assert.match(content, /handleWidgetVolumeInput/);
   assert.match(content, /widgetVolumeSaveTimer/);
   const volumeInputBody = extractFunctionBody(content, "handleWidgetVolumeInput");
-  assert.match(volumeInputBody, /state\.settings = nextSettings/);
+  assert.match(volumeInputBody, /applySettingsTransition\(readSettingsFromWidget\(\)\)/);
   assert.match(volumeInputBody, /updateOriginalVolumeLabel\(\)/);
   assert.match(volumeInputBody, /activateAudioControl\(\)/);
   assert.match(volumeInputBody, /applyAudioMixSettings\(\)/);
   assert.match(content, /function activateAudioControl/);
   assert.match(content, /state\.originalMuted = state\.video\.muted/);
   assert.match(content, /message\?\.type === "localtube\.settingsChanged"[\s\S]*applyAudioMixSettings\(\)/);
-  assert.match(content, /if \(!state\.settings\.enabled\) \{\s*stopDubbing\(\{ silent: true \}\);\s*unmountWidget\(\);/);
+  assert.match(content, /if \(!state\.settings\.enabled\) \{\s*unmountWidget\(\);/);
   assert.match(content, /function unmountWidget/);
   assert.match(content, /isWatchPage\(\) && state\.settings\.enabled/);
   assert.match(content, /localtube\.captionEngineHealth/);
@@ -3110,7 +3737,6 @@ function testManifestAndFlowGuards() {
   assert.match(content, /localtube\.synthesizeSpeech/);
   assert.match(content, /data-field="ttsEngine"/);
   assert.match(content, /Microsoft 自然在线/);
-  assert.match(content, /ttsEngine: state\.settings\.ttsEngine \|\| DEFAULT_SETTINGS\.ttsEngine/);
   assert.match(content, /ttsEngine: "edge"/);
   const voicePlaybackBody = extractFunctionBody(content, "maybeSpeakVoiceSegment");
   assert.match(content, /function usesBrowserSpeechProfile\(\)/);
@@ -3154,13 +3780,6 @@ function testManifestAndFlowGuards() {
   assert.match(voiceRequestBody, /failurePolicy\.retryDelayMs/);
   assert.match(voiceRequestBody, /lastError\.code = response\?\.code/);
   assert.doesNotMatch(voiceRequestBody, /Date\.now\(\) \+ 60000/);
-  const voiceRetryLoopIndex = voiceRequestBody.indexOf("for (let attempt = 0;");
-  const retryProfileGuardIndex = voiceRequestBody.indexOf("if (!state.runtimeProfile.useEngineTts)", voiceRetryLoopIndex);
-  const synthesisRequestIndex = voiceRequestBody.indexOf('type: "localtube.synthesizeSpeech"');
-  assert.ok(
-    retryProfileGuardIndex > voiceRetryLoopIndex && retryProfileGuardIndex < synthesisRequestIndex,
-    "a fallback activated during retry delay must prevent another Engine synthesis request"
-  );
   const engineVoiceFailureBody = extractFunctionBody(content, "handleEngineVoiceFailure");
   assert.match(engineVoiceFailureBody, /lightweightFallbackDecision/);
   assert.match(engineVoiceFailureBody, /restartOperationInLightweightMode/);
@@ -3643,7 +4262,7 @@ function testManifestAndFlowGuards() {
   const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "utf8");
   assert.match(popup, /const EXTENSION_VERSION = chrome\.runtime\.getManifest\(\)\.version/);
   assert.match(popup, /nodes\.appVersion\.textContent = EXTENSION_VERSION/);
-  assert.match(popup, /notifyActiveTab\(pageSafeSettings\(settings\)\)/);
+  assert.match(popup, /notifyActiveTab\(pageSafeSettings\(settings\)(?:, generation)?\)/);
   assert.match(popup, /function pageSafeSettings/);
   assert.match(popup, /apiKey: ""/);
   assert.match(popup, /applyProviderRegistry/);
@@ -3657,7 +4276,7 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /localtube\.clearTranslationCache/);
   assert.match(popupHtml, /id="cacheTranslations"/);
   assert.match(popupHtml, /id="clearTranslationCache"/);
-  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.8<\/span>/);
+  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.9<\/span>/);
   assert.match(popupHtml, /id="testProvider"[^>]*>验证翻译 Key<\/button>/);
   assert.match(popup, /saveAndValidateApiKey/);
   assert.match(popupHtml, /免费 \/ 自带 Key/);
@@ -3871,8 +4490,8 @@ function testManifestAndFlowGuards() {
   const liveVoiceHarness = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.js"), "utf8");
   const liveVoiceHarnessHtml = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.html"), "utf8");
   assert.match(liveVoiceHarness, /syncLiveVoiceMediaElements/);
-  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.8/);
-  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.8/);
+  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.9/);
+  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.9/);
   assert.match(liveVoiceHarness, /data-action='self-test'/);
   assert.match(liveVoiceHarness, /late\.expectedEnd <= 5\.05/);
   assert.match(liveVoiceHarness, /late\.playbackRate <= 1\.2/);
@@ -4033,7 +4652,7 @@ function testManifestAndFlowGuards() {
   assert.match(changelog, /Native Host/);
   assert.match(changelog, /0\.1\.91/);
   assert.match(changelog, /single customer workflow/);
-  assert.match(developmentAudit, /Current reviewed version: 0\.2\.8/);
+  assert.match(developmentAudit, /Current reviewed version: 0\.2\.9/);
   assert.match(developmentAudit, /ikoenamldegccnhmjjnlkffocdkbbbmo/);
   assert.match(developmentAudit, /Dubbed voice-track export/);
   assert.match(developmentAudit, /Subtitle export/);
@@ -4079,6 +4698,16 @@ async function main() {
   testVoiceDeadlineRateBudget();
   testNaturalVoiceFailurePolicy();
   testKokoroPrefetchWindow();
+  testTranslatedCueLookup();
+  await testSettingsTransitionOwnership();
+  await testKokoroFallbackSettingsOwnership();
+  await testAutomaticSettingsOwnership();
+  testOverlappingCaptionLookup();
+  await testCapturedCaptionLanguageAndCache();
+  await testPlaybackGapRetryPolicy();
+  await testPendingTranslationOwnership();
+  await testEngineJobOwnership();
+  await testFullTranscriptWorkerFailure();
   testNaturalVoiceStartupReanchor();
   testLiveVoiceMediaElements();
   await testVoicePlaybackAttemptOwnership();

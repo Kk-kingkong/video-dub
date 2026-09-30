@@ -27,7 +27,7 @@ Build the Windows x64 Engine on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.8-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.9-Windows-x64.zip
 ```
 
 For a customer-facing build, inject a platform-neutral Engine download index and the support page at build time. The download URL must let users choose macOS Apple Silicon, macOS Intel, or Windows x64; it must not point every platform to one architecture-specific ZIP. Both values are optional for an offline private beta, but any configured URL must use HTTPS:
@@ -72,8 +72,8 @@ For each stable release:
 
 1. Run `tools/verify_engine_updates.py`, `tools/verify_update_publication.py`, and the normal release checks. Require a successful `cross-platform-engine.yml` run for the exact release commit, including macOS ARM/Intel and Windows installer smoke tests.
 2. Sign the three matching Engine archives locally with `tools/sign_engine_update.py` as shown below. Upload the matching extension ZIP, all three Engine ZIPs, checksums, `LocalTube-Dub-update.json`, and `LocalTube-Dub-update.sig` to a draft release tagged `vVERSION`.
-3. Verify the complete draft before publishing with **prerelease disabled**. Publication triggers `publish-engine-update.yml`, which checks the successful CI revision, all three archives, and the preuploaded feed/signature against the public certificate. Do not attach a stable update feed to a prerelease.
-4. Verify that the publication-verification workflow succeeded and both feed assets are present. A release missing either asset cannot be installed automatically. Do not overwrite released Engine ZIPs or feed files; fix a problem in a new version.
+3. Keep the release **draft** with **prerelease disabled**. On the default branch, run the **Publish verified Engine update** workflow (`publish-engine-update.yml`) manually with its exact `vVERSION` tag. This is the normal publication entry point for every stable Engine update; do not click GitHub's Publish release button. Do not attach a stable update feed to a prerelease.
+4. The promotion job checks the latest cross-platform CI run for the exact tagged commit, downloads all three private Engine packages and the preuploaded feed/signature, and verifies them with the public certificate. A failed, running or missing CI run, invalid asset, moved tag or changed draft stops publication. Only after a second draft/asset/CI check does the job publish the release and mark it latest, preserving existing clients' `latest/download` feed URLs. Do not change the draft or upload assets while promotion is running. Verify the job succeeded; released Engine ZIPs and feeds must not be overwritten—fix problems in a new version.
 5. Submit the extension ZIP to the existing Chrome Web Store item separately. Chrome controls reviewed Store extension updates; Engine publication never replaces extension code or updates ZIP/source extensions.
 
 ```bash
@@ -85,6 +85,10 @@ python3 tools/sign_engine_update.py \
 ```
 
 The signed manifest pins a stable version, compatible Engine protocol, and each platform archive's exact URL, size, and SHA-256. Its release signature authenticates the updater's input; it does **not** make the macOS/Windows executables code-signed or the macOS package notarized.
+
+Only the manual promotion job receives `contents: write`; it needs no private signing key and executes the default-branch gate, not code from downloaded packages. The existing `release.published` path remains a read-only audit for releases published outside Actions. GitHub does not trigger another release workflow for publication using `GITHUB_TOKEN`, so the promotion job itself verifies the publication response. Repository administrators can still bypass this workflow and publish manually; repository permissions and release immutability are separate GitHub settings, not enforced or changed by this source workflow. Such a manual bypass can expose an unchecked update and is not a supported release path.
+
+The macOS package smoke test starts its Engine on a temporary loopback port and requires the exact version, runtime directory, random instance identity, protocol and required caption/TTS capabilities. HTTP 200 alone is insufficient. `python3 tools/verify_release_packages.py --self-test` exercises rejected capabilities and wrong-instance responses using an isolated temporary server on macOS; it does not install a customer package.
 
 ## Public Release Gates
 

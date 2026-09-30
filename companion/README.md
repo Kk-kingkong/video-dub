@@ -6,7 +6,7 @@ The extension can be installed from the store, but the local AI engine must be i
 
 ## Customer packages
 
-Version `0.2.8` prepares matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
+Version `0.2.9` prepares matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
 
 - macOS: unzip the matching architecture package and open `Install LocalTube Dub Engine.command`.
 - Windows: unzip the x64 package and run `Install LocalTube Dub Engine.cmd`.
@@ -31,7 +31,7 @@ Kokoro is optional and not bundled in the Engine ZIP. Select **Kokoro high-quali
 
 ## Automatic updates and one-time migration
 
-Install the matching `0.2.8` Engine package manually once to add the updater to an older installation. Thereafter, actual Engine startup checks the fixed GitHub stable release feed at most once every six hours. Source installs do not opt into automatic binary replacement. Passive health checks remain local and do not wake Engine.
+Install a matching `0.2.8` or newer Engine package manually once to add the updater to an installation older than `0.2.8`. Thereafter, actual Engine startup checks the fixed GitHub stable release feed at most once every six hours. Source installs do not opt into automatic binary replacement. Passive health checks remain local and do not wake Engine.
 
 Only newer releases with a matching protocol, platform, and architecture qualify. Engine verifies the pinned update signature, package size and SHA-256, and archive layout before staging. Installation waits for the existing five-minute idle boundary and for accepted work to finish. The old process exits before a detached helper invokes the extracted package's installer. Native requests during this handoff report that Engine is updating.
 
@@ -69,6 +69,14 @@ The install guide can repair on-demand startup through Native Messaging. The leg
 5. Restart Chrome or reload the extension.
 6. In the extension popup, click "检查 Engine".
 
+For a source checkout started directly over HTTP, bind the unpacked extension's actual ID before starting Engine:
+
+```bash
+LOCAL_DUB_EXTENSION_ID=YOUR_EXTENSION_ID ./scripts/start_engine_macos.sh
+```
+
+For direct Python startup on Windows PowerShell, use `$env:LOCAL_DUB_EXTENSION_ID="YOUR_EXTENSION_ID"` before running `python server/local_dub_server.py`. Engine accepts browser API requests only from the package's extension ID, valid Native registrations belonging to that runtime, or this explicitly configured ID. Rebinding Native registration takes effect without restarting Engine; changing the environment requires a restart. An HTTP `FORBIDDEN_REQUEST` from a source build means its ID needs binding. Native clients and local command-line scripts still use loopback JSON requests without an Origin header. Requests to the Engine must use `127.0.0.1`, `localhost`, or `::1` with its actual listening port; arbitrary hostnames and webpage API origins are rejected. YouTube media access is limited to completed audio downloads.
+
 For free local transcription of videos without captions, open the extension install guide and click "一键安装本地转写", or run:
 
 ```bash
@@ -82,7 +90,7 @@ The release package is built and smoke-tested on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.8-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.9-Windows-x64.zip
 ```
 
 ## Smoke tests

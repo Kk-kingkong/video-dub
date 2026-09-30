@@ -5,11 +5,17 @@ import ast
 import hashlib
 import json
 import importlib.util
+import os
 import re
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
+import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -17,6 +23,91 @@ from urllib.parse import urlsplit
 
 def fail(message: str) -> None:
     raise SystemExit(message)
+
+
+def verify_runtime_health(runtime: Path, version: str, *, timeout: float = 10) -> None:
+    runtime = runtime.resolve()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    instance = uuid.uuid4().hex
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with tempfile.TemporaryDirectory(prefix="localtube-health-smoke-") as temporary, tempfile.TemporaryFile() as log:
+        env = {**os.environ, "LOCAL_DUB_HOST": "127.0.0.1", "LOCAL_DUB_PORT": str(port),
+               "LOCAL_DUB_AUTO_UPDATE": "0", "LOCAL_DUB_ENGINE_IDLE_SECONDS": "300",
+               "LOCAL_DUB_ENGINE_INSTANCE_ID": instance,
+               "LOCAL_DUB_DATA_DIR": str(Path(temporary) / "data"),
+               "LOCAL_DUB_CACHE_DIR": str(Path(temporary) / "cache")}
+        env.pop("LOCAL_DUB_ENGINE_VERSION", None)
+        env.pop("LOCAL_DUB_ENGINE_RUNTIME_ROOT", None)
+        process = subprocess.Popen([str(runtime / ".venv/bin/python"), str(runtime / "server/local_dub_server.py")],
+                                   cwd=runtime, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+        try:
+            deadline = time.monotonic() + timeout
+            while process.poll() is None and time.monotonic() < deadline:
+                try:
+                    with opener.open(f"http://127.0.0.1:{port}/api/health", timeout=1) as response:
+                        health = json.load(response)
+                except (urllib.error.URLError, TimeoutError):
+                    time.sleep(0.05)
+                    continue
+                if not (isinstance(health, dict) and health.get("ok") is True
+                        and health.get("service") == "localtube-dub" and health.get("engineVersion") == version
+                        and health.get("protocolVersion") == 2 and health.get("instanceId") == instance
+                        and health.get("runtimeRoot") == str(runtime)
+                        and health.get("ytDlp") is True and health.get("edgeTts") is True):
+                    raise RuntimeError("Packaged Engine health identity or required capabilities do not match")
+                return
+            log.seek(0)
+            raise RuntimeError("Packaged Engine failed its startup check: " + log.read().decode("utf-8", errors="replace")[-3000:])
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def test_runtime_health_smoke() -> None:
+    if sys.platform != "darwin":
+        print("macOS health subprocess self-test skipped on this platform")
+        return
+    with tempfile.TemporaryDirectory(prefix="localtube-health-fixture-") as temporary:
+        runtime = Path(temporary)
+        (runtime / ".venv/bin").mkdir(parents=True)
+        (runtime / ".venv/bin/python").symlink_to(sys.executable)
+        (runtime / "server").mkdir()
+        server = runtime / "server/local_dub_server.py"
+        fixture = '''import json, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        payload = dict(ok=True, service="localtube-dub", engineVersion="test", protocolVersion=2,
+                       instanceId=os.environ["LOCAL_DUB_ENGINE_INSTANCE_ID"], runtimeRoot=str(Path.cwd()),
+                       ytDlp=True, edgeTts=True)
+        payload.update(OVERRIDES)
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+HTTPServer(("127.0.0.1", int(os.environ["LOCAL_DUB_PORT"])), Handler).serve_forever()
+'''
+        for overrides in ({"ytDlp": False}, {"edgeTts": False}, {"instanceId": "other"},
+                          {"runtimeRoot": "/other"}, {"engineVersion": "old"}, {}):
+            server.write_text(f"OVERRIDES = {overrides!r}\n" + fixture)
+            try:
+                verify_runtime_health(runtime, "test", timeout=3)
+            except RuntimeError as error:
+                if not overrides:
+                    raise
+                assert "health identity or required capabilities" in str(error), error
+            else:
+                assert not overrides, f"HTTP 200 with invalid health was accepted: {overrides}"
+        print("macOS health smoke checks passed: required capabilities and exact instance identity")
 
 
 def normalized_files(archive: zipfile.ZipFile) -> set[str]:
@@ -420,7 +511,11 @@ def verify_engine(
 
 
 def main() -> None:
+    if len(sys.argv) == 4 and sys.argv[1] == "--health-smoke":
+        verify_runtime_health(Path(sys.argv[2]), sys.argv[3])
+        return
     if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+        test_runtime_health_smoke()
         root = Path(__file__).resolve().parents[1]
         manifest_path = root / "packaging" / "runtime-manifest.json"
         assembler_path = root / "scripts" / "assemble_engine_runtime.py"

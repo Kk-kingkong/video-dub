@@ -12,6 +12,7 @@ import threading
 import time
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -584,6 +585,248 @@ def test_kokoro_runtime_is_lazy_uses_two_threads_and_releases_after_idle() -> No
         assert runtime.loaded is False
 
 
+def test_kokoro_api_recovers_after_temporary_load_failure() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        clock = FakeClock()
+        fake_sherpa = FakeSherpaRuntime()
+        constructor = fake_sherpa.OfflineTts
+        attempts = []
+
+        def load(config):
+            attempts.append(clock())
+            if len(attempts) == 1:
+                raise MemoryError("temporary model allocation failure")
+            return constructor(config)
+
+        fake_sherpa.OfflineTts = load
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)),
+            clock=clock,
+            sherpa_loader=lambda: fake_sherpa,
+            runtime_probe=lambda: "1.13.4",
+            schedule_idle_release=False,
+        )
+        request = {"text": "你好", "language": "zh-CN", "voice": "auto", "ttsEngine": "kokoro"}
+        with patch.object(local_server, "KOKORO_RUNTIME", runtime):
+            first = local_server.build_tts_payload(request, "http")
+            assert first["ok"] is False and "temporary model allocation failure" in first["error"], first
+            for _ in range(10):
+                assert runtime.status()["available"] is False
+                assert local_server.build_tts_payload(request, "http")["ok"] is False
+            assert attempts == [0]
+            clock.advance(30)
+            # A healthy cold runtime is eligible to load; health must not load it.
+            assert runtime.status()["state"] == "ready", runtime.status()
+            assert runtime.loaded is False and attempts == [0]
+            recovered = local_server.build_tts_payload(request, "http")
+            assert recovered["ok"] is True, recovered
+            assert attempts == [0, 30]
+            assert runtime.status()["error"] == ""
+            clock.advance(301)
+            assert runtime.release_if_idle() is True
+            assert local_server.build_tts_payload(request, "http")["ok"] is True
+            assert attempts == [0, 30, 331]
+
+
+def test_kokoro_load_retry_limit_and_explicit_model_repair(tmp_path: Path) -> None:
+    entries = production_like_entries()
+    archive = make_tar(tmp_path, entries)
+    manager = kokoro.KokoroModelManager._for_tests(tmp_path / "models", manifest_for_archive(archive, entries))
+    assert manager._install_for_tests(lambda _url: archive)["state"] == "ready"
+    service = local_server.KokoroModelService(manager)
+    fake_sherpa = FakeSherpaRuntime()
+    constructor = fake_sherpa.OfflineTts
+    clock = FakeClock()
+    attempts = []
+
+    def load(config):
+        attempts.append(clock())
+        if len(attempts) <= 3:
+            raise MemoryError()  # Even exceptions without a message must count.
+        return constructor(config)
+
+    fake_sherpa.OfflineTts = load
+    runtime = kokoro.KokoroRuntime(
+        manager, clock=clock, sherpa_loader=lambda: fake_sherpa,
+        runtime_probe=lambda: "1.13.4", schedule_idle_release=False,
+    )
+    request = {"text": "你好", "language": "zh-CN", "voice": "auto", "ttsEngine": "kokoro"}
+    with (
+        patch.object(local_server, "KOKORO_MODEL_SERVICE", service),
+        patch.object(local_server, "KOKORO_RUNTIME", runtime),
+        patch.object(manager, "install", side_effect=lambda: manager._install_for_tests(lambda _url: archive)),
+    ):
+        for attempt in range(3):
+            assert local_server.build_tts_payload(request, "http")["ok"] is False
+            for _ in range(5):
+                assert runtime.status()["state"] == "runtime-load-failed"
+                assert local_server.build_tts_payload(request, "http")["ok"] is False
+            assert len(attempts) == attempt + 1
+            clock.advance(30)
+        clock.advance(600)
+        assert runtime.release_if_idle() is False
+        assert runtime.status()["available"] is False
+        assert "restart Engine" in runtime.status()["error"]
+        assert local_server.build_tts_payload(request, "http")["ok"] is False
+        assert len(attempts) == 3
+        # Neither polling nor malformed repair requests can reset the budget.
+        assert local_server.build_kokoro_model_payload("uninstall", {"invalid": True}, "http")["ok"] is False
+        assert runtime.status()["available"] is False
+        assert local_server.build_kokoro_model_payload("uninstall", {}, "http")["model"]["state"] == "not-installed"
+        assert runtime.status()["state"] == "model-not-installed"
+        local_server.build_kokoro_model_payload("install", {}, "http")
+        worker = service._worker
+        if worker:
+            worker.join(2)
+            assert not worker.is_alive()
+        assert manager.status()["state"] == "ready"
+        assert runtime.status()["available"] is True
+        recovered = local_server.build_tts_payload(request, "http")
+        assert recovered["ok"] is True, recovered
+        assert len(attempts) == 4 and runtime.loaded
+        local_server.build_kokoro_model_payload("uninstall", {}, "http")
+        assert runtime.loaded is False
+
+
+def test_kokoro_queued_requests_do_not_bypass_load_cooldown() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        load_started = threading.Event()
+        finish_load = threading.Event()
+        second_waiting = threading.Event()
+        fake_sherpa = FakeSherpaRuntime()
+        attempts = []
+
+        def load(config):
+            attempts.append(config)
+            load_started.set()
+            assert finish_load.wait(2)
+            raise MemoryError("temporary load failure")
+
+        fake_sherpa.OfflineTts = load
+        runtime = kokoro.KokoroRuntime(
+            FakeKokoroModelManager(Path(temp_dir_name)), clock=FakeClock(),
+            sherpa_loader=lambda: fake_sherpa, runtime_probe=lambda: "1.13.4",
+            schedule_idle_release=False,
+        )
+        acquire = runtime._acquire_synthesis_lock
+
+        def observed_acquire(cancel_event):
+            if threading.current_thread().name == "queued-kokoro":
+                second_waiting.set()
+            acquire(cancel_event)
+
+        responses = []
+        request = {"text": "你好", "language": "zh-CN", "voice": "auto", "ttsEngine": "kokoro"}
+        with (
+            patch.object(local_server, "KOKORO_RUNTIME", runtime),
+            patch.object(runtime, "_acquire_synthesis_lock", side_effect=observed_acquire),
+        ):
+            first = threading.Thread(target=lambda: responses.append(local_server.build_tts_payload(request, "http")))
+            second = threading.Thread(
+                target=lambda: responses.append(local_server.build_tts_payload(request, "http")), name="queued-kokoro",
+            )
+            first.start()
+            try:
+                assert load_started.wait(1)
+                second.start()
+                assert second_waiting.wait(1)  # Both passed the API readiness check.
+            finally:
+                finish_load.set()
+                first.join(2)
+                if second.ident:
+                    second.join(2)
+            assert not first.is_alive() and not second.is_alive()
+        assert len(attempts) == 1 and len(responses) == 2
+        assert all(response["ok"] is False for response in responses), responses
+        assert any("Retry Kokoro after" in response["error"] for response in responses), responses
+
+
+def test_kokoro_uninstall_invalidates_pending_load(tmp_path: Path) -> None:
+    for fails in (False, True):
+        root = tmp_path / str(fails)
+        root.mkdir()
+        entries = production_like_entries()
+        archive = make_tar(root, entries)
+        manager = kokoro.KokoroModelManager._for_tests(root / "models", manifest_for_archive(archive, entries))
+        assert manager._install_for_tests(lambda _url: archive)["state"] == "ready"
+        service = local_server.KokoroModelService(manager)
+        load_started = threading.Event()
+        finish_load = threading.Event()
+        fake_sherpa = FakeSherpaRuntime()
+        constructor = fake_sherpa.OfflineTts
+        attempts = []
+
+        def load(config):
+            attempts.append(config)
+            if len(attempts) == 1:
+                load_started.set()
+                assert finish_load.wait(2)
+                if fails:
+                    raise MemoryError("old model load failure")
+            return constructor(config)
+
+        fake_sherpa.OfflineTts = load
+        runtime = kokoro.KokoroRuntime(
+            manager, sherpa_loader=lambda: fake_sherpa, runtime_probe=lambda: "1.13.4",
+            schedule_idle_release=False,
+        )
+        request = {"text": "你好", "language": "zh-CN", "voice": "auto", "ttsEngine": "kokoro"}
+        responses = []
+        with (
+            patch.object(local_server, "KOKORO_MODEL_SERVICE", service),
+            patch.object(local_server, "KOKORO_RUNTIME", runtime),
+            patch.object(manager, "install", side_effect=lambda: manager._install_for_tests(lambda _url: archive)),
+        ):
+            first = threading.Thread(target=lambda: responses.append(local_server.build_tts_payload(request, "http")))
+            first.start()
+            try:
+                assert load_started.wait(1)
+                local_server.build_kokoro_model_payload("uninstall", {}, "http")
+                local_server.build_kokoro_model_payload("install", {}, "http")
+                worker = service._worker
+                if worker:
+                    worker.join(2)
+                    assert not worker.is_alive()
+            finally:
+                finish_load.set()
+                first.join(2)
+            assert not first.is_alive()
+            assert len(responses) == 1 and responses[0]["ok"] is False, responses
+            assert runtime.loaded is False and runtime.status()["error"] == "", runtime.status()
+            assert fake_sherpa.generate_calls == []
+            assert local_server.build_tts_payload(request, "http")["ok"] is True
+            assert len(attempts) == 2
+
+
+def test_kokoro_incompatible_configuration_does_not_retry() -> None:
+    for incompatible in ("version", "configuration"):
+        with tempfile.TemporaryDirectory() as temp_dir_name:
+            clock = FakeClock()
+            fake_sherpa = FakeSherpaRuntime()
+            if incompatible == "version":
+                fake_sherpa.__version__ = "1.12.0"
+            else:
+                fake_sherpa.OfflineTtsConfig.validate = lambda _self: False
+            with patch.object(fake_sherpa, "OfflineTts", wraps=fake_sherpa.OfflineTts) as constructor:
+                loader_calls = []
+
+                def load():
+                    loader_calls.append(clock())
+                    return fake_sherpa
+
+                runtime = kokoro.KokoroRuntime(
+                    FakeKokoroModelManager(Path(temp_dir_name)), clock=clock,
+                    sherpa_loader=load, runtime_probe=lambda: "1.13.4", schedule_idle_release=False,
+                )
+                request = {"text": "你好", "language": "zh-CN", "voice": "auto", "ttsEngine": "kokoro"}
+                with patch.object(local_server, "KOKORO_RUNTIME", runtime):
+                    for _ in range(3):
+                        assert local_server.build_tts_payload(request, "http")["ok"] is False
+                        clock.advance(600)
+                        assert runtime.status()["state"] == "runtime-incompatible"
+                assert len(loader_calls) == 1 and constructor.call_count == 0
+
+
 def test_kokoro_voice_failure_retries_once_then_uses_one_same_provider_fallback() -> None:
     with tempfile.TemporaryDirectory() as temp_dir_name:
         fake_sherpa = FakeSherpaRuntime(
@@ -785,6 +1028,59 @@ def test_kokoro_health_uses_exact_installed_runtime_metadata() -> None:
     assert observed_distributions == ["sherpa-onnx"] * len(cases)
 
 
+def test_health_reuses_one_fresh_model_snapshot(tmp_path: Path) -> None:
+    entries = production_like_entries()
+    archive = make_tar(tmp_path, entries)
+    manifest = manifest_for_archive(archive, entries)
+    manager = kokoro.KokoroModelManager._for_tests(tmp_path / "models", manifest)
+    service = local_server.KokoroModelService(manager)
+    runtime = kokoro.KokoroRuntime(manager, runtime_probe=lambda: "1.13.4", schedule_idle_release=False)
+    fetch_started = threading.Event()
+    finish_fetch = threading.Event()
+
+    def fetch(_url):
+        fetch_started.set()
+        assert finish_fetch.wait(2)
+        return archive
+
+    with (
+        patch.object(local_server, "KOKORO_MODEL_SERVICE", service),
+        patch.object(local_server, "KOKORO_RUNTIME", runtime),
+        patch.object(local_server, "get_runtime_health", return_value={}),
+        patch.object(local_server.engine_updates, "get_update_status", return_value={}),
+        patch.object(manager, "install", side_effect=lambda: manager._install_for_tests(fetch)),
+        patch.object(manager, "_active_payload_stats", wraps=manager._active_payload_stats) as scan,
+    ):
+        def health(expected_model, expected_runtime, expected_scans):
+            scan.reset_mock()
+            result = local_server.build_health_payload("http")
+            assert result["kokoroModel"] == expected_model, result
+            assert result["kokoroRuntime"]["state"] == expected_runtime, result
+            assert result["kokoroModelBytes"] == (manifest["installedBytes"] if expected_model == "ready" else 0)
+            assert scan.call_count == expected_scans, scan.call_count
+
+        health("not-installed", "model-not-installed", 0)
+        service.install("http")
+        worker = service._worker
+        try:
+            assert fetch_started.wait(1)
+            health("installing", "model-installing", 0)
+        finally:
+            finish_fetch.set()
+            worker.join(2)
+        assert not worker.is_alive()
+        health("ready", "ready", 1)
+
+        tokens = manager.active_path / "tokens.txt"
+        original_tokens = tokens.read_bytes()
+        tokens.write_bytes(original_tokens + b"corrupt")
+        health("not-installed", "model-not-installed", 1)
+        tokens.write_bytes(original_tokens)
+        health("ready", "ready", 1)
+        service.uninstall("http")
+        health("not-installed", "model-not-installed", 0)
+
+
 def test_kokoro_load_rejects_empty_module_version() -> None:
     with tempfile.TemporaryDirectory() as temp_dir_name:
         fake_sherpa = FakeSherpaRuntime()
@@ -908,12 +1204,21 @@ def main() -> None:
     test_http_model_routes_allow_only_empty_objects()
     test_complete_kokoro_voice_catalog_has_stable_provider_ids()
     test_kokoro_runtime_is_lazy_uses_two_threads_and_releases_after_idle()
+    test_kokoro_api_recovers_after_temporary_load_failure()
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        test_kokoro_load_retry_limit_and_explicit_model_repair(Path(temp_dir_name))
+    test_kokoro_queued_requests_do_not_bypass_load_cooldown()
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        test_kokoro_uninstall_invalidates_pending_load(Path(temp_dir_name))
+    test_kokoro_incompatible_configuration_does_not_retry()
     test_kokoro_voice_failure_retries_once_then_uses_one_same_provider_fallback()
     test_kokoro_rejects_empty_or_non_finite_output_without_cross_provider_fallback()
     test_kokoro_runtime_reports_model_and_runtime_failures_without_loading_inference()
     test_runtime_lock_allows_only_one_kokoro_job()
     test_kokoro_rejects_unsupported_locale_before_loading_runtime()
     test_kokoro_health_uses_exact_installed_runtime_metadata()
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        test_health_reuses_one_fresh_model_snapshot(Path(temp_dir_name))
     test_kokoro_load_rejects_empty_module_version()
     test_cancelled_kokoro_job_exits_while_waiting_for_global_lock()
     print("kokoro engine checks ok")

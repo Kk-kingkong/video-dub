@@ -220,6 +220,7 @@ let currentSettings = { ...DEFAULT_SETTINGS };
 let engineStatusTimer = 0;
 let kokoroModelStatusTimer = 0;
 let volumeSaveTimer = 0;
+let settingsSaveGeneration = 0;
 let availableVoiceOptions = [];
 let enginePlatform = "";
 let renderedTtsEngine = "edge";
@@ -445,11 +446,7 @@ function applyEnginePlatformPolicy(platform) {
   if (transition.shouldPersist) {
     currentSettings = { ...currentSettings, ttsEngine: transition.configuredEngine, voiceId: "auto" };
     renderVoiceOptions("auto");
-    chrome.runtime.sendMessage({ type: "localtube.setSettings", settings: currentSettings }).then((response) => {
-      if (response?.ok && response.settings) {
-        currentSettings = { ...currentSettings, ...response.settings };
-      }
-    }).catch(() => {});
+    saveFromForm({ requestPermissions: false }).catch(() => {});
     return true;
   }
   if (transition.effectiveChanged) {
@@ -788,25 +785,7 @@ function shortEngineHealthError(error, code) {
 }
 
 async function selectMode(setupMode) {
-  const settings = normalizeMode({
-    ...buildSettingsFromForm(),
-    setupMode
-  });
-
-  try {
-    await ensureSelectedPermissions(settings);
-  } catch (error) {
-    nodes.status.textContent = error.message || String(error);
-    return;
-  }
-
-  const response = await chrome.runtime.sendMessage({ type: "localtube.setSettings", settings });
-  if (response?.ok) {
-    applyProviderRegistry(response);
-    render(response.settings);
-    notifyActiveTab(response.settings);
-    nodes.status.textContent = `已切换到${MODE_COPY[setupMode].label}`;
-  }
+  return saveFromForm({ setupMode, savedMessage: `已切换到${MODE_COPY[setupMode].label}` });
 }
 
 async function handleProviderChange() {
@@ -825,29 +804,33 @@ async function handleTranscriptionProviderChange() {
 
 async function saveFromForm(options = {}) {
   clearTimeout(volumeSaveTimer);
-  const settings = normalizeMode(buildSettingsFromForm());
+  const generation = ++settingsSaveGeneration;
+  const settings = normalizeMode({ ...buildSettingsFromForm(), ...(options.setupMode ? { setupMode: options.setupMode } : {}) });
 
-  if (options.requestPermissions !== false) {
+  const consentChanged = options.target === nodes.microsoftTtsConsent;
+  if (options.requestPermissions !== false && !(consentChanged && !settings.microsoftTtsConsent)) {
     try {
       await ensureSelectedPermissions(settings);
     } catch (error) {
-      nodes.status.textContent = error.message || String(error);
+      if (generation === settingsSaveGeneration) nodes.status.textContent = error.message || String(error);
       return null;
     }
   }
 
-  notifyActiveTab(pageSafeSettings(settings));
+  if (generation !== settingsSaveGeneration) return null;
+  notifyActiveTab(pageSafeSettings(settings), generation);
   const savedNewKey = Boolean(settings.apiKey);
   const savedNewTranscriptionKey = Boolean(settings.transcriptionApiKey);
-  const response = await chrome.runtime.sendMessage({ type: "localtube.setSettings", settings });
+  const response = await chrome.runtime.sendMessage({
+    type: "localtube.setSettings", settings,
+    consentChanged
+  });
+  if (generation !== settingsSaveGeneration) return null;
   if (response?.ok) {
     applyProviderRegistry(response);
     render(response.settings);
     notifyActiveTab(response.settings);
-    nodes.status.textContent =
-      savedNewKey || savedNewTranscriptionKey
-        ? "设置和 Key 已保存"
-        : "设置已保存";
+    nodes.status.textContent = options.savedMessage || (savedNewKey || savedNewTranscriptionKey ? "设置和 Key 已保存" : "设置已保存");
   }
   return response?.ok ? response : null;
 }
@@ -862,6 +845,7 @@ async function saveAndValidateApiKey() {
 }
 
 function handleOriginalVolumeInput() {
+  settingsSaveGeneration += 1;
   nodes.originalVolumeValue.textContent = `${nodes.originalVolume.value}%`;
   currentSettings = {
     ...currentSettings,
@@ -890,25 +874,19 @@ async function getSettings() {
 
 async function testProvider(options = {}) {
   nodes.status.textContent = "检查中...";
-  const settings = normalizeMode(buildSettingsFromForm());
-
+  let generation = settingsSaveGeneration;
   try {
-    await ensureSelectedPermissions(settings);
-
-    if (!options.skipSave) {
-      const saveResponse = await chrome.runtime.sendMessage({ type: "localtube.setSettings", settings });
-      if (saveResponse?.ok) {
-        applyProviderRegistry(saveResponse);
-        render(saveResponse.settings);
-        notifyActiveTab(saveResponse.settings);
-      }
-    }
-
+    const saving = options.skipSave ? { settings: normalizeMode(buildSettingsFromForm()) } : saveFromForm();
+    generation = settingsSaveGeneration;
+    const saved = await saving;
+    if (!saved || generation !== settingsSaveGeneration) return;
+    const settings = saved.settings;
     const response = await chrome.runtime.sendMessage({
       type: "localtube.providerHealth",
       settings
     });
 
+    if (generation !== settingsSaveGeneration) return;
     if (!response?.ok) {
       throw new Error(response?.error || "验证失败");
     }
@@ -931,22 +909,26 @@ async function testProvider(options = {}) {
 
     nodes.status.textContent = `${getProvider(settings.provider).label} 连接成功`;
   } catch (error) {
-    nodes.status.textContent = error.message || "连接失败";
+    if (generation === settingsSaveGeneration) nodes.status.textContent = error.message || "连接失败";
   }
 }
 
 async function clearApiKey() {
+  const generation = ++settingsSaveGeneration;
   const provider = nodes.provider.value;
   await chrome.runtime.sendMessage({ type: "localtube.clearApiKey", provider });
   const settings = await getSettings();
+  if (generation !== settingsSaveGeneration) return;
   render(settings);
   nodes.status.textContent = "当前翻译服务的 Key 已清除";
 }
 
 async function clearTranscriptionApiKey() {
+  const generation = ++settingsSaveGeneration;
   const provider = nodes.transcriptionProvider.value;
   await chrome.runtime.sendMessage({ type: "localtube.clearTranscriptionApiKey", provider });
   const settings = await getSettings();
+  if (generation !== settingsSaveGeneration) return;
   render(settings);
   nodes.status.textContent = "当前转写服务的 Key 已清除";
 }
@@ -1088,9 +1070,9 @@ function openInstallGuide() {
   chrome.tabs.create({ url: chrome.runtime.getURL("install.html") });
 }
 
-async function notifyActiveTab(settings) {
+async function notifyActiveTab(settings, generation = settingsSaveGeneration) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !/youtube\.com/.test(tab.url || "")) {
+  if (generation !== settingsSaveGeneration || !tab?.id || !/^https:\/\/(www\.)?youtube\.com\//.test(tab.url || "")) {
     return;
   }
 

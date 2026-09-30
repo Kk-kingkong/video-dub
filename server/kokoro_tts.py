@@ -245,7 +245,8 @@ class KokoroModelManager:
             state = self._state
             if state not in {"installing", "failed"}:
                 state = "ready" if self._active_model_is_valid() else "not-installed"
-            installed_bytes = self._installed_bytes() if state == "ready" else 0
+            # Validation above already checked the payload size against the manifest.
+            installed_bytes = int(self.manifest["installedBytes"]) if state == "ready" else 0
             total_bytes = int(self.manifest["archiveBytes"])
             return {
                 "state": state,
@@ -444,9 +445,6 @@ class KokoroModelManager:
             )
         except (OSError, ValueError, json.JSONDecodeError):
             return False
-
-    def _installed_bytes(self) -> int:
-        return self._active_payload_stats()[1]
 
     def _active_payload_stats(self) -> tuple[int, int]:
         file_count = 0
@@ -652,6 +650,8 @@ class KokoroRuntime:
     max_concurrent_jobs = 1
     num_threads = KOKORO_NUM_THREADS
     provider = "cpu"
+    load_retry_seconds = 30
+    max_load_attempts = 3
 
     def __init__(
         self,
@@ -675,25 +675,32 @@ class KokoroRuntime:
         self._active_job = False
         self._idle_timer: threading.Timer | None = None
         self._runtime_error = ""
+        self._runtime_incompatible = False
+        self._load_failures = 0
+        self._load_retry_after = 0.0
+        self._model_generation = 0
 
     @property
     def loaded(self) -> bool:
         with self._state_lock:
             return self._tts is not None
 
-    def status(self) -> dict[str, Any]:
-        model = self.model_manager.status()
+    def status(self, *, model_status: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+        model = self.model_manager.status() if model_status is None else model_status
         model_state = str(model.get("state") or "not-installed")
         runtime_version = self._runtime_version()
         with self._state_lock:
             loaded = self._tts is not None
-            runtime_error = self._runtime_error
+            runtime_incompatible = self._runtime_incompatible
+            runtime_error = self._load_blocked_error()
         if model_state != "ready":
             state = "model-not-installed" if model_state == "not-installed" else f"model-{model_state}"
         elif not runtime_version:
             state = "runtime-not-installed"
-        elif runtime_version != KOKORO_SHERPA_ONNX_VERSION or runtime_error:
+        elif runtime_version != KOKORO_SHERPA_ONNX_VERSION or runtime_incompatible:
             state = "runtime-incompatible"
+        elif runtime_error:
+            state = "runtime-load-failed"
         else:
             state = "ready"
         health_error = runtime_error
@@ -711,6 +718,36 @@ class KokoroRuntime:
             "provider": self.provider,
             "error": health_error,
         }
+
+    def reset_after_model_uninstall(self) -> None:
+        """An explicit model repair starts a new, bounded loading lifetime."""
+
+        with self._state_lock:
+            self._model_generation += 1
+            self._tts = None
+            self._runtime_error = ""
+            self._runtime_incompatible = False
+            self._load_failures = 0
+            self._load_retry_after = 0.0
+            timer = self._idle_timer
+            self._idle_timer = None
+        if timer:
+            timer.cancel()
+
+    def _load_blocked_error(self) -> str:
+        # Called with _state_lock held, including after acquiring the synthesis
+        # lock: requests already queued behind a failed load must obey its delay.
+        if not self._runtime_error or self._runtime_incompatible:
+            return self._runtime_error
+        if self._load_failures >= self.max_load_attempts:
+            return (
+                f"{self._runtime_error}. Kokoro loading stopped after {self.max_load_attempts} attempts; "
+                "restart Engine or uninstall and reinstall the Kokoro model to retry."
+            )
+        remaining = self._load_retry_after - self._clock()
+        if remaining > 0:
+            return f"{self._runtime_error}. Retry Kokoro after {math.ceil(remaining)} seconds."
+        return ""
 
     def synthesize(
         self,
@@ -829,6 +866,10 @@ class KokoroRuntime:
         with self._state_lock:
             if self._tts is not None:
                 return self._tts
+            blocked_error = self._load_blocked_error()
+            if blocked_error:
+                raise KokoroRuntimeError(blocked_error)
+            generation = self._model_generation
         model = self.model_manager.status()
         if str(model.get("state") or "") != "ready":
             raise KokoroRuntimeError("Kokoro model is not installed or is not ready")
@@ -869,21 +910,33 @@ class KokoroRuntime:
             loaded = sherpa_onnx.OfflineTts(config)
         except KokoroRuntimeError as error:
             with self._state_lock:
-                self._runtime_error = str(error)
+                if generation == self._model_generation:
+                    self._runtime_error = str(error)
+                    self._runtime_incompatible = True
             raise
         except Exception as error:
             with self._state_lock:
-                self._runtime_error = str(error)
+                if generation == self._model_generation:
+                    self._runtime_error = str(error) or type(error).__name__
+                    self._load_failures += 1
+                    self._load_retry_after = self._clock() + self.load_retry_seconds
             raise KokoroRuntimeError(f"Kokoro runtime failed to load: {error}") from error
         with self._state_lock:
+            if generation != self._model_generation:
+                raise KokoroRuntimeError("Kokoro model was uninstalled while loading; retry after reinstalling it")
             self._tts = loaded
             self._runtime_error = ""
+            self._runtime_incompatible = False
+            self._load_failures = 0
+            self._load_retry_after = 0.0
         return loaded
 
     def _schedule_release(self) -> None:
         if not self._schedule_idle_release:
             return
         with self._state_lock:
+            if self._tts is None:
+                return
             previous = self._idle_timer
             timer = threading.Timer(self._idle_unload_seconds, self.release_if_idle)
             timer.daemon = True

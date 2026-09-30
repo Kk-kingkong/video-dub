@@ -2,7 +2,7 @@ let activeRecording = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "localtube.offscreenCancelTabAudio") {
-    sendResponse({ ok: true, cancelled: cancelActiveRecording() });
+    sendResponse({ ok: true, cancelled: cancelActiveRecording(message.requestId) });
     return false;
   }
 
@@ -17,54 +17,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function recordTabAudio(message) {
-  cancelActiveRecording();
   const streamId = message.streamId;
+  const requestId = String(message.requestId || "");
   const durationMs = clamp(Number(message.durationMs || 45000), 5000, 120000);
-  if (!streamId) {
-    throw new Error("Missing tab audio stream id");
+  if (!streamId || !requestId) {
+    throw new Error("Missing tab audio stream or request id");
   }
-
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      mandatory: {
-        chromeMediaSource: "tab",
-        chromeMediaSourceId: streamId
-      }
-    },
-    video: false
-  });
-
-  const audioContext = new AudioContext();
-  const source = audioContext.createMediaStreamSource(stream);
-  source.connect(audioContext.destination);
-
+  if (activeRecording) throw new Error("另一个视频页正在录音，请完成后再试。");
+  const active = { requestId, recorder: null, timer: 0, cancelled: false };
+  activeRecording = active;
+  let stream;
+  let audioContext;
+  let source;
   try {
-    const recording = await collectRecording(stream, durationMs);
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } },
+      video: false
+    });
+    if (active.cancelled) throw new Error("录音已取消");
+    audioContext = new AudioContext();
+    source = audioContext.createMediaStreamSource(stream);
+    source.connect(audioContext.destination);
+    const recording = await collectRecording(stream, durationMs, active);
+    const dataUrl = await blobToDataUrl(recording.blob);
+    if (active.cancelled) throw new Error("录音已取消");
     return {
       ok: true,
       mimeType: recording.mimeType,
-      dataUrl: await blobToDataUrl(recording.blob),
+      dataUrl,
       durationMs
     };
   } finally {
-    stream.getTracks().forEach((track) => track.stop());
-    source.disconnect();
-    await audioContext.close().catch(() => {});
+    clearTimeout(active.timer);
+    if (activeRecording === active) activeRecording = null;
+    stream?.getTracks().forEach((track) => track.stop());
+    source?.disconnect();
+    await audioContext?.close().catch(() => {});
   }
 }
 
-function collectRecording(stream, durationMs) {
+function collectRecording(stream, durationMs, active) {
   return new Promise((resolve, reject) => {
     const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
     const recorder = new MediaRecorder(stream, { mimeType });
     const chunks = [];
-    const active = {
-      recorder,
-      stream,
-      timer: 0,
-      cancelled: false
-    };
-    activeRecording = active;
+    active.recorder = recorder;
 
     recorder.addEventListener("dataavailable", (event) => {
       if (event.data?.size) {
@@ -74,9 +71,6 @@ function collectRecording(stream, durationMs) {
 
     recorder.addEventListener("error", () => reject(new Error("Audio recorder failed")));
     recorder.addEventListener("stop", () => {
-      if (activeRecording === active) {
-        activeRecording = null;
-      }
       if (active.cancelled) {
         reject(new Error("录音已取消"));
         return;
@@ -96,19 +90,16 @@ function collectRecording(stream, durationMs) {
   });
 }
 
-function cancelActiveRecording() {
+function cancelActiveRecording(requestId) {
   const active = activeRecording;
-  if (!active) {
+  if (!active || active.requestId !== requestId) {
     return false;
   }
 
   active.cancelled = true;
   clearTimeout(active.timer);
-  active.stream?.getTracks().forEach((track) => track.stop());
   if (active.recorder?.state && active.recorder.state !== "inactive") {
     active.recorder.stop();
-  } else {
-    activeRecording = null;
   }
   return true;
 }

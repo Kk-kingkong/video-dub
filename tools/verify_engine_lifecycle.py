@@ -94,7 +94,7 @@ def check_busy_work() -> None:
 
     def request_tts(port):
         try:
-            request = urllib.request.Request(f"http://127.0.0.1:{port}/api/tts", data=b"{}", method="POST")
+            request = urllib.request.Request(f"http://127.0.0.1:{port}/api/tts", data=b"{}", method="POST", headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(request, timeout=3) as response:
                 assert json.load(response)["ok"]
         except Exception as error:
@@ -247,6 +247,66 @@ def check_macos_on_demand_registration() -> None:
                 "invalid extension ID modified the existing installation"
 
 
+def check_macos_manual_rollback() -> None:
+    # Run the real customer installer, Native writer, and Native uninstaller.
+    # Stub only dependency/startup setup; every path is inside the temporary tree.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        package = root / "package"
+        for name in ("companion/install_native_host_macos.sh", "companion/uninstall_native_host_macos.sh"):
+            target = package / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, target)
+        for name in ("scripts/install_engine_deps_macos.sh", "scripts/install_engine_autostart_macos.sh",
+                     "companion/native_host_launcher_macos.sh"):
+            target = package / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("#!/bin/sh\nexit 0\n")
+            target.chmod(0o755)
+        (package / "companion/native_host.py").write_text("")
+        (package / ".venv/bin").mkdir(parents=True)
+        (package / ".venv/bin/python").symlink_to(sys.executable)
+        (package / "release.json").write_text(json.dumps({"version": "0.2.8"}))
+        installer = package / "Install.command"
+        installer.write_text((ROOT / "packaging/macos/Install LocalTube Dub Engine.command.in")
+                             .read_text().replace("__EXTENSION_ID__", "c" * 32)
+                             .replace("__VERSION__", "0.2.8"))
+        for had_runtime, had_manifest in ((False, False), (False, True), (True, False), (True, True)):
+            case = root / f"runtime-{had_runtime}-manifest-{had_manifest}"
+            case.mkdir()
+            installed, manifest = case / "installed", case / "native.json"
+            if had_runtime:
+                shutil.copytree(package, installed, symlinks=True)
+                (installed / "release.json").write_text(json.dumps({"version": "0.2.7"}))
+                (installed / "keep.txt").write_text("old runtime")
+            native = {"name": "com.localtube.dub.engine", "type": "stdio",
+                      "path": str(installed / "companion/native_host_launcher_macos.sh"),
+                      "allowed_origins": [f"chrome-extension://{identifier * 32}/" for identifier in "ab"]}
+            original = (json.dumps(native, indent=3) + "\n").encode()
+            if had_manifest:
+                manifest.write_bytes(original)
+            env = {**os.environ, "LOCAL_DUB_RUNTIME_DIR": str(installed),
+                   "LOCAL_DUB_NATIVE_MANIFEST_PATH": str(manifest), "LOCAL_DUB_AUTO_UPDATE": "0",
+                   "LOCAL_DUB_UPDATE_INSTALL": "0", "LOCAL_DUB_INSTALL_DRY_RUN": "0",
+                   "LOCAL_DUB_NATIVE_INSTALL_DRY_RUN": "0", "LOCAL_DUB_UNINSTALL_DRY_RUN": "0",
+                   "LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE": "1"}
+            failed = subprocess.run(["/bin/bash", str(installer)], env=env, stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=20)
+            output = failed.stdout + failed.stderr
+            assert failed.returncode != 0 and "Injected installer failure" in output, output
+            assert "自动恢复未能完成" not in output, output
+            if had_runtime:
+                assert (installed / "keep.txt").read_text() == "old runtime", "manual rollback lost old runtime"
+                assert json.loads((installed / "release.json").read_bytes())["version"] == "0.2.7"
+            else:
+                assert not installed.exists(), "failed initial installation left a runtime"
+            if had_manifest:
+                assert manifest.read_bytes() == original, "manual rollback did not restore exact Native bindings"
+            else:
+                assert not manifest.exists(), "manual rollback recreated originally absent Native registration"
+            assert not list(case.glob("installed.*")), "successful rollback left backup/staging files"
+
+
 def check_macos_unattended_update() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -324,5 +384,6 @@ if __name__ == "__main__":
     check_idle_shutdown_drains_queued_work()
     if sys.platform == "darwin":
         check_macos_on_demand_registration()
+        check_macos_manual_rollback()
         check_macos_unattended_update()
     print("Engine lifecycle checks passed")

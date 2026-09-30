@@ -286,8 +286,8 @@
     const ttlMs = Math.max(60000, Number(options.ttlMs || 7 * 24 * 60 * 60 * 1000));
     const maxEntries = Math.max(1, Number(options.maxEntries || 12));
     const maxBytes = Math.max(1024, Number(options.maxBytes || 4 * 1024 * 1024));
-    // Version 1 could contain wrong translations or truncated timelines; these are safe to regenerate.
-    const entries = (cache?.version === 2 && Array.isArray(cache.entries) ? cache.entries : [])
+    // Older versions could contain truncated timelines or captions mislabeled by YouTube's lang/tlang.
+    const entries = (cache?.version === 3 && Array.isArray(cache.entries) ? cache.entries : [])
       .filter((entry) => {
         const updatedAt = Number(entry?.updatedAt || 0);
         return entry?.key && Array.isArray(entry?.cues) && entry.cues.length && updatedAt > 0 && now - updatedAt <= ttlMs;
@@ -301,10 +301,10 @@
       }
       return unescape(encodeURIComponent(serialized)).length;
     };
-    while (entries.length && byteLength({ version: 2, entries }) > maxBytes) {
+    while (entries.length && byteLength({ version: 3, entries }) > maxBytes) {
       entries.pop();
     }
-    return { version: 2, entries };
+    return { version: 3, entries };
   }
 
   function upsertTimelineCache(cache, request = {}, timeline = {}, options = {}) {
@@ -326,7 +326,7 @@
       updatedAt: now,
       cues
     });
-    return pruneTimelineCache({ version: 2, entries: existing }, { ...options, now });
+    return pruneTimelineCache({ version: 3, entries: existing }, { ...options, now });
   }
 
   function findTimelineCache(cache, request = {}, options = {}) {

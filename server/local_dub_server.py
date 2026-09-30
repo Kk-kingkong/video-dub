@@ -17,6 +17,7 @@ import base64
 import functools
 import hashlib
 import importlib.util
+import ipaddress
 import platform
 import re
 import secrets
@@ -415,7 +416,10 @@ def build_kokoro_model_payload(operation: str, payload: Any, transport: str) -> 
             "transport": transport,
             "model": KOKORO_MODEL_SERVICE.status(transport)["model"],
         }
-    return handler(transport)
+    result = handler(transport)
+    if operation == "uninstall" and result.get("ok"):
+        KOKORO_RUNTIME.reset_after_model_uninstall()
+    return result
 
 
 class LocalDubServer(ThreadingHTTPServer):
@@ -447,8 +451,95 @@ class LocalDubServer(ThreadingHTTPServer):
                 ENGINE_ACTIVE_WORK -= 1
 
 
+def allowed_extension_origins() -> set[str]:
+    """Reuse trusted package/Native registration; source runs can explicitly bind their ID."""
+    extension_id = os.environ.get("LOCAL_DUB_EXTENSION_ID", "").strip()
+    release = engine_updates.read_json(ENGINE_ROOT / "release.json")
+    ids = {extension_id, str(release.get("chromeExtensionId") or "")}
+    origins = {f"chrome-extension://{value}" for value in ids if re.fullmatch(r"[a-p]{32}", value)}
+    override = os.environ.get("LOCAL_DUB_NATIVE_MANIFEST_PATH", "").strip()
+    if override:
+        manifest_path = Path(override).expanduser()
+    elif sys.platform == "darwin":
+        manifest_path = Path.home() / "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.localtube.dub.engine.json"
+    elif os.name == "nt":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\NativeMessagingHosts\com.localtube.dub.engine") as key:
+                manifest_path = Path(winreg.QueryValueEx(key, "")[0])
+        except (OSError, TypeError):
+            return origins
+    else:
+        manifest_path = Path.home() / ".config/google-chrome/NativeMessagingHosts/com.localtube.dub.engine.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        launcher = Path(manifest.get("path", ""))
+        registered = manifest.get("allowed_origins")
+        if (manifest.get("name") == "com.localtube.dub.engine" and manifest.get("type") == "stdio"
+                and launcher.is_absolute() and launcher.resolve().parent == (ENGINE_ROOT / "companion").resolve()
+                and launcher.name in {"native_host_launcher_macos.sh", "native_host_launcher.exe", "native_host.py"}
+                and isinstance(registered, list)
+                and all(isinstance(origin, str) and re.fullmatch(r"chrome-extension://[a-p]{32}/", origin)
+                        for origin in registered)):
+            origins.update(origin[:-1] for origin in registered)
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return origins
+
+
 class LocalDubHandler(BaseHTTPRequestHandler):
     server_version = "LocalTubeDub/0.1"
+
+    def parse_request(self) -> bool:
+        self.authorized_request = False
+        if not super().parse_request():
+            return False
+        self.allowed_origin = ""
+        try:
+            hosts = self.headers.get_all("host", [])
+            origins = self.headers.get_all("origin", [])
+            target = urllib.parse.urlsplit(self.path)
+            host = urllib.parse.urlsplit("//" + (hosts[0] if len(hosts) == 1 else ""))
+            host_port = 80 if host.port is None else host.port
+            if (len(hosts) != 1 or not re.fullmatch(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", hosts[0], re.I)
+                    or host_port != self.server.server_port or host.username is not None
+                    or host.password is not None or host.path or host.query or host.fragment
+                    or target.scheme or target.netloc
+                    or not ipaddress.ip_address(self.client_address[0]).is_loopback
+                    or len(origins) > 1):
+                raise ValueError("Invalid loopback request authority")
+            if origins:
+                origin = origins[0]
+                media_request = (
+                    target.path == "/api/dub-track/download" and self.command in {"GET", "HEAD", "OPTIONS"}
+                    and origin in {"https://www.youtube.com", "https://youtube.com"}
+                )
+                if origin not in allowed_extension_origins() and not media_request:
+                    raise ValueError("This browser origin is not authorized for LocalTube Dub")
+                self.allowed_origin = origin
+        except ValueError as error:
+            self.send_json({"ok": False, "code": "FORBIDDEN_REQUEST", "error": str(error)}, status=403)
+            return False
+        if self.command == "POST" and (len(self.headers.get_all("content-type", [])) != 1
+                or self.headers.get_content_type() != "application/json"):
+            self.send_json({"ok": False, "error": "POST requests require application/json"}, status=415)
+            return False
+        if self.headers.get("transfer-encoding") or len(self.headers.get_all("content-length", [])) > 1:
+            self.send_json({"ok": False, "error": "Ambiguous request body framing"}, status=400)
+            return False
+        self.authorized_request = True
+        return True
+
+    def end_headers(self) -> None:
+        # Only validated browser origins receive CORS access. Native clients need none.
+        origin = getattr(self, "allowed_origin", "")
+        if origin:
+            self.send_header("access-control-allow-origin", origin)
+            self.send_header("vary", "Origin")
+            self.send_header("access-control-allow-methods", "GET, HEAD, POST, OPTIONS")
+            self.send_header("access-control-allow-headers", "content-type, range")
+            self.send_header("access-control-expose-headers", "content-length, content-range, accept-ranges")
+        super().end_headers()
 
     def handle(self) -> None:
         global ENGINE_LAST_ACTIVITY
@@ -456,7 +547,7 @@ class LocalDubHandler(BaseHTTPRequestHandler):
             super().handle()
         finally:
             path = urllib.parse.urlsplit(getattr(self, "path", "")).path
-            if path and path not in ("/api/health", "/api/voices", "/api/tts-model/kokoro/status"):
+            if getattr(self, "authorized_request", False) and path and path not in ("/api/health", "/api/voices", "/api/tts-model/kokoro/status"):
                 with ENGINE_ACTIVITY_LOCK:
                     ENGINE_LAST_ACTIVITY = time.monotonic()
 
@@ -621,13 +712,15 @@ class LocalDubHandler(BaseHTTPRequestHandler):
 
     def read_json(self) -> dict[str, Any]:
         content_length = int(self.headers.get("content-length", "0"))
-        if content_length <= 0:
+        if content_length < 0 or content_length > 64 * 1024 * 1024:
+            raise ValueError("JSON body exceeds the 64 MiB request limit")
+        if content_length == 0:
             return {}
 
         raw = self.rfile.read(content_length)
         try:
             data = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"Invalid JSON: {exc}") from exc
 
         if not isinstance(data, dict):
@@ -639,11 +732,9 @@ class LocalDubHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("content-type", "application/json; charset=utf-8")
         self.send_header("content-length", str(len(body)))
-        self.send_header("access-control-allow-origin", "*")
-        self.send_header("access-control-allow-methods", "GET, HEAD, POST, OPTIONS")
-        self.send_header("access-control-allow-headers", "content-type, range")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def send_dub_track(self, job_id: str, head_only: bool = False, inline: bool = False) -> None:
         job, path = get_dub_track_file(job_id)
@@ -651,7 +742,6 @@ class LocalDubHandler(BaseHTTPRequestHandler):
             if head_only:
                 self.send_response(404)
                 self.send_header("content-length", "0")
-                self.send_header("access-control-allow-origin", "*")
                 self.end_headers()
                 return
             self.send_json({"ok": False, "error": "配音音轨不存在、尚未完成或已过期。"}, status=404)
@@ -665,8 +755,6 @@ class LocalDubHandler(BaseHTTPRequestHandler):
             self.send_header("content-range", f"bytes */{file_size}")
             self.send_header("accept-ranges", "bytes")
             self.send_header("content-length", "0")
-            self.send_header("access-control-allow-origin", "*")
-            self.send_header("access-control-expose-headers", "content-length, content-range, accept-ranges")
             self.end_headers()
             return
         start, end = byte_range if byte_range else (0, max(0, file_size - 1))
@@ -679,8 +767,6 @@ class LocalDubHandler(BaseHTTPRequestHandler):
         self.send_header("cache-control", "private, max-age=3600")
         if byte_range:
             self.send_header("content-range", f"bytes {start}-{end}/{file_size}")
-        self.send_header("access-control-allow-origin", "*")
-        self.send_header("access-control-expose-headers", "content-length, content-range, accept-ranges")
         self.end_headers()
         if head_only:
             return
@@ -763,7 +849,7 @@ def normalize_cues(raw_cues: Any) -> list[dict[str, Any]]:
 def build_health_payload(transport: str) -> dict[str, Any]:
     health = get_runtime_health()
     model = KOKORO_MODEL_SERVICE.status(transport).get("model") or {}
-    runtime = KOKORO_RUNTIME.status()
+    runtime = KOKORO_RUNTIME.status(model_status=model)
     return {
         "ok": True,
         "service": "localtube-dub",
@@ -829,8 +915,8 @@ def build_captions_payload(payload: dict[str, Any], transport: str) -> dict[str,
     target_language = str(payload.get("targetLanguage") or "").strip()
     if not video_url and video_id:
         video_url = f"https://www.youtube.com/watch?v={video_id}"
-    if not video_url:
-        return {"ok": False, "code": "BAD_REQUEST", "error": "Missing YouTube video URL"}
+    if not is_supported_youtube_url(video_url):
+        return {"ok": False, "code": "BAD_REQUEST", "error": "Only YouTube video URLs can provide captions"}
 
     cache_key = caption_cache_key(video_url, source_language, target_language)
     cached = get_cached_captions(cache_key)
@@ -955,12 +1041,12 @@ def caption_error_http_status(code: str) -> int:
 
 
 def caption_cache_key(video_url: str, source_language: str, target_language: str = "") -> str:
-    return "|".join(
+    return json.dumps(
         [
             video_url.strip(),
-            normalize_language_code(source_language) or "auto",
-            normalize_language_code(target_language) or "target-auto",
-        ]
+            source_language.strip().lower().replace("_", "-") or "auto",
+            target_language.strip().lower().replace("_", "-") or "auto",
+        ], ensure_ascii=True, separators=(",", ":"),
     )
 
 
@@ -1007,7 +1093,15 @@ def set_cached_caption_failure(cache_key: str, payload: dict[str, Any]) -> None:
     if not CAPTION_FAILURE_BACKOFF_SECONDS.get(str(payload.get("code") or "")):
         return
     with CAPTION_CACHE_LOCK:
-        CAPTION_FAILURE_CACHE[cache_key] = (time.time(), payload)
+        now = time.time()
+        for key, (created_at, failure) in list(CAPTION_FAILURE_CACHE.items()):
+            ttl = CAPTION_FAILURE_BACKOFF_SECONDS.get(str(failure.get("code") or ""), 0)
+            if now - created_at > ttl:
+                CAPTION_FAILURE_CACHE.pop(key, None)
+        CAPTION_FAILURE_CACHE[cache_key] = (now, payload)
+        while len(CAPTION_FAILURE_CACHE) > CAPTION_CACHE_MAX_ENTRIES:
+            oldest_key = min(CAPTION_FAILURE_CACHE, key=lambda key: CAPTION_FAILURE_CACHE[key][0])
+            CAPTION_FAILURE_CACHE.pop(oldest_key, None)
 
 
 def build_dub_payload(payload: dict[str, Any], transport: str) -> dict[str, Any]:
@@ -1141,19 +1235,18 @@ def start_full_transcript_job(payload: dict[str, Any]) -> dict[str, Any]:
     model = str(payload.get("model") or WHISPER_MODEL).strip() or WHISPER_MODEL
     key = full_transcript_job_key(video_url, language, model)
     cleanup_full_transcript_jobs()
-    with DUB_TRACK_LOCK:
-        dub_track_busy = any(job.get("status") in ("queued", "rendering") for job in DUB_TRACK_JOBS.values())
-    if dub_track_busy:
-        return {
-            "ok": False,
-            "code": "HEAVY_ENGINE_JOB_BUSY",
-            "error": "本地 Engine 正在生成配音音轨，请完成或取消后再准备完整字幕。",
-        }
-    with FULL_TRANSCRIPT_LOCK:
+    # Both admissions use this lock order; cancellation retains its slot until the worker exits.
+    with FULL_TRANSCRIPT_LOCK, DUB_TRACK_LOCK:
+        if DUB_TRACK_CANCEL_EVENTS or any(job.get("status") in ("queued", "rendering") for job in DUB_TRACK_JOBS.values()):
+            return {
+                "ok": False,
+                "code": "HEAVY_ENGINE_JOB_BUSY",
+                "error": "本地 Engine 正在生成配音音轨，请完成或取消后再准备完整字幕。",
+            }
         for job in FULL_TRANSCRIPT_JOBS.values():
             if job.get("key") == key and job.get("status") in ("queued", "downloading", "transcribing", "completed"):
                 return {"ok": True, "job": public_full_transcript_job(job), "reused": True}
-        if any(job.get("status") in ("queued", "downloading", "transcribing") for job in FULL_TRANSCRIPT_JOBS.values()):
+        if FULL_TRANSCRIPT_CANCEL_EVENTS or any(job.get("status") in ("queued", "downloading", "transcribing") for job in FULL_TRANSCRIPT_JOBS.values()):
             return {
                 "ok": False,
                 "code": "FULL_TRANSCRIPT_BUSY",
@@ -1241,7 +1334,8 @@ def cleanup_full_transcript_jobs() -> None:
         expired = [
             job_id
             for job_id, job in FULL_TRANSCRIPT_JOBS.items()
-            if float(job.get("updatedAt") or 0) < cutoff and job.get("status") in ("completed", "failed", "cancelled")
+            if job_id not in FULL_TRANSCRIPT_CANCEL_EVENTS
+            and float(job.get("updatedAt") or 0) < cutoff and job.get("status") in ("completed", "failed", "cancelled")
         ]
         for job_id in expired:
             FULL_TRANSCRIPT_JOBS.pop(job_id, None)
@@ -1252,6 +1346,11 @@ def update_full_transcript_job(job_id: str, **updates: Any) -> None:
     with FULL_TRANSCRIPT_LOCK:
         job = FULL_TRANSCRIPT_JOBS.get(job_id)
         if not job:
+            return
+        event = FULL_TRANSCRIPT_CANCEL_EVENTS.get(job_id)
+        if updates.get("status") == "completed" and (job.get("status") == "cancelled" or (event and event.is_set())):
+            raise FullTranscriptCancelled("任务已取消")
+        if job.get("status") == "cancelled":
             return
         job.update(updates)
         job["updatedAt"] = time.time()
@@ -1376,22 +1475,19 @@ def start_dub_track_job(payload: dict[str, Any]) -> dict[str, Any]:
         video_id=str(payload.get("videoId") or "").strip(),
     )
     cleanup_dub_track_jobs()
-    with FULL_TRANSCRIPT_LOCK:
-        full_transcript_busy = any(
+    with FULL_TRANSCRIPT_LOCK, DUB_TRACK_LOCK:
+        if FULL_TRANSCRIPT_CANCEL_EVENTS or any(
             job.get("status") in ("queued", "downloading", "transcribing") for job in FULL_TRANSCRIPT_JOBS.values()
-        )
-    if full_transcript_busy:
-        return {
-            "ok": False,
-            "code": "HEAVY_ENGINE_JOB_BUSY",
-            "error": "本地 Engine 正在生成完整字幕，请完成或取消后再导出配音音轨。",
-        }
-
-    with DUB_TRACK_LOCK:
+        ):
+            return {
+                "ok": False,
+                "code": "HEAVY_ENGINE_JOB_BUSY",
+                "error": "本地 Engine 正在生成完整字幕，请完成或取消后再导出配音音轨。",
+            }
         for job in DUB_TRACK_JOBS.values():
             if job.get("key") == key and job.get("status") in ("queued", "rendering", "completed"):
                 return {"ok": True, "job": public_dub_track_job(job), "reused": True}
-        if any(job.get("status") in ("queued", "rendering") for job in DUB_TRACK_JOBS.values()):
+        if DUB_TRACK_CANCEL_EVENTS or any(job.get("status") in ("queued", "rendering") for job in DUB_TRACK_JOBS.values()):
             return {
                 "ok": False,
                 "code": "DUB_TRACK_BUSY",
@@ -1553,7 +1649,8 @@ def cleanup_dub_track_jobs() -> None:
         expired = [
             job_id
             for job_id, job in DUB_TRACK_JOBS.items()
-            if float(job.get("updatedAt") or 0) < cutoff and job.get("status") in ("completed", "failed", "cancelled")
+            if job_id not in DUB_TRACK_CANCEL_EVENTS
+            and float(job.get("updatedAt") or 0) < cutoff and job.get("status") in ("completed", "failed", "cancelled")
         ]
         for job_id in expired:
             job = DUB_TRACK_JOBS.pop(job_id, None) or {}
@@ -1575,6 +1672,12 @@ def update_dub_track_job(job_id: str, **updates: Any) -> None:
     with DUB_TRACK_LOCK:
         job = DUB_TRACK_JOBS.get(job_id)
         if not job:
+            return
+        # Commit and cancellation share the lock, including the on-disk completion metadata.
+        event = DUB_TRACK_CANCEL_EVENTS.get(job_id)
+        if updates.get("status") == "completed" and (job.get("status") == "cancelled" or (event and event.is_set())):
+            raise FullTranscriptCancelled("任务已取消")
+        if job.get("status") == "cancelled":
             return
         job.update(updates)
         job["updatedAt"] = time.time()
@@ -2050,14 +2153,18 @@ def probe_audio_duration(path: Path) -> float:
 
 
 def is_supported_youtube_url(video_url: str) -> bool:
+    if re.search(r"[\\\x00-\x20\x7f]", str(video_url or "")):
+        return False
     try:
         parsed = urllib.parse.urlsplit(str(video_url or ""))
+        valid_port = parsed.port in (None, 443 if parsed.scheme == "https" else 80)
     except ValueError:
         return False
     host = (parsed.hostname or "").lower()
-    return parsed.scheme in ("http", "https") and (
+    return (parsed.scheme in ("http", "https") and valid_port
+            and parsed.username is None and parsed.password is None and (
         host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
-    )
+    ))
 
 
 def download_youtube_audio_window(video_url: str, start_time: float, duration_seconds: float) -> tuple[bytes, str]:

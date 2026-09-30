@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "decisions": [
+    {
+      "path": "extension/assets/icon-128.png",
+      "decision": "include",
+      "role": "商店与页面品牌图标",
+      "reason": "manifest.icons 的128像素入口，同时经 web_accessible_resources 暴露给 YouTube 页面。",
+      "confidence": 99,
+      "source_sha256": "10824709f170c068b7b50fd867ce3b1e96d3661bfc5cd10a4ecd39294a55e361",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "extension/assets/icon-16.png",
+      "decision": "include",
+      "role": "扩展小尺寸图标",
+      "reason": "manifest.icons 的16像素入口，由图标生成器从主图缩放。",
+      "confidence": 99,
+      "source_sha256": "1760c32bc1c9ac000dcdbc766177def8551050e664cee3ad5597c2907d207bf6",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "extension/assets/icon-32.png",
+      "decision": "include",
+      "role": "扩展中尺寸图标",
+      "reason": "manifest.icons 的32像素入口，由图标生成器从主图缩放。",
+      "confidence": 99,
+      "source_sha256": "5d91c84c1930e339bbb5053fbd87bc0126cc93d477a2a8c4a741df8bdd8d67e3",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "extension/assets/icon-48.png",
+      "decision": "include",
+      "role": "扩展管理图标",
+      "reason": "manifest.icons 的48像素入口，由图标生成器从主图缩放。",
+      "confidence": 99,
+      "source_sha256": "f31a636302c80643c60c556efa97a76d9b218281a1fa7aa2c7734ae5f4a2eebf",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "extension/assets/icon-master.png",
+      "decision": "include",
+      "role": "品牌图标源素材",
+      "reason": "generate_extension_icons.py 从该主图生成全部扩展和工具栏图标，保留可再生源资产。",
+      "confidence": 99,
+      "source_sha256": "378d2ad1ba9b0dc5c5ac0d67098c08c97db971708a625ddd2d687ea8e8b6d1d6",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "extension/assets/toolbar-icon-128.png",
+      "decision": "include",
+      "role": "大尺寸工具栏图标",
+      "reason": "manifest.action.default_icon 的128像素入口，采用中心放大构图。",
+      "confidence": 99,
+      "source_sha256": "6b99410a45c325213cd169d5dd08c6416e96de6dcb2282981ff65a0adc2ae11f",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "extension/assets/toolbar-icon-16.png",
+      "decision": "include",
+      "role": "常规工具栏图标",
+      "reason": "manifest.action.default_icon 的16像素入口，采用中心放大构图。",
+      "confidence": 99,
+      "source_sha256": "394cea78cec363407b557733c1ae45398e3e7dfec39e2bac075dadaa470c456e",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "extension/assets/toolbar-icon-32.png",
+      "decision": "include",
+      "role": "高密度工具栏图标",
+      "reason": "manifest.action.default_icon 的32像素入口，采用中心放大构图。",
+      "confidence": 99,
+      "source_sha256": "c0ef9ebe3cc437fd55b388b59759084e18fb5663300297244f957295b44a85ee",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "extension/assets/toolbar-icon-48.png",
+      "decision": "include",
+      "role": "中尺寸工具栏图标",
+      "reason": "manifest.action.default_icon 的48像素入口，采用中心放大构图。",
+      "confidence": 99,
+      "source_sha256": "29109e14a4fdf522af6a0da1167fb940954ccab459617501dd13df5ffb1e94d0",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    },
+    {
+      "path": "server/update-signing-cert.cer",
+      "decision": "include",
+      "role": "自动更新信任锚",
+      "reason": "DER公钥证书由 engine_updates.py 在Windows和macOS验签使用，固定可信发布者，必须保留索引以记录信任边界。",
+      "confidence": 99,
+      "source_sha256": "0b874eb271e22e87ded67a0626c6735811a023737abc06789b2875afd9222b4c",
+      "agent": "codex",
+      "updated_at": "2026-09-30T04:43:23Z"
+    }
+  ]
+}

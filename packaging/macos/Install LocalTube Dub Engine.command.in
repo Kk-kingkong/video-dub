@@ -17,6 +17,7 @@ STAGING_ROOT="$RUNTIME_ROOT.staging.$$"
 BACKUP_ROOT="$RUNTIME_ROOT.backup.$$"
 ACTIVATION_STARTED=0
 HAD_PREVIOUS_RUNTIME=0
+HAD_PREVIOUS_MANIFEST=0
 
 if [[ "$UPDATE_INSTALL" == "1" && "$DRY_RUN" == "1" ]]; then
   echo "Automatic update must complete real installation and health verification."
@@ -40,15 +41,15 @@ rollback_runtime() {
       echo "旧 Engine 备份已保留：$BACKUP_ROOT"
       return 1
     fi
-    if [[ "$UPDATE_INSTALL" == "1" ]]; then
-      cp -p "$MANIFEST_BACKUP" "$NATIVE_MANIFEST" || return 1
-    elif [[ "$DRY_RUN" != "1" && -x "$RUNTIME_ROOT/companion/install_native_host_macos.sh" ]]; then
-      LOCAL_DUB_RUNTIME_DIR="$RUNTIME_ROOT" \
-        "$RUNTIME_ROOT/companion/install_native_host_macos.sh" "$EXTENSION_ID" \
-        || echo "旧 Engine 已恢复，但按需启动注册仍需手动处理。"
-    fi
   else
     rm -rf "$BACKUP_ROOT"
+  fi
+  # Registration is part of the transaction, including a previously absent file.
+  if [[ "$HAD_PREVIOUS_MANIFEST" == "1" ]]; then
+    mkdir -p "$(dirname "$NATIVE_MANIFEST")" || return 1
+    cp -p "$MANIFEST_BACKUP" "$NATIVE_MANIFEST" || return 1
+  else
+    rm -f "$NATIVE_MANIFEST" || return 1
   fi
 }
 
@@ -106,11 +107,14 @@ if (manifest.get("name") != "com.localtube.dub.engine" or manifest.get("type") !
         or any(not isinstance(origin, str) or not re.fullmatch(r"chrome-extension://[a-p]{32}/", origin) for origin in origins)):
     raise SystemExit("Refusing automatic update: Native Messaging registration is not owned by this runtime.")
 PY
-  cp -p "$NATIVE_MANIFEST" "$MANIFEST_BACKUP"
 fi
 
-rm -rf "$STAGING_ROOT" "$BACKUP_ROOT"
 mkdir -p "$(dirname "$RUNTIME_ROOT")"
+if [[ -e "$NATIVE_MANIFEST" || -L "$NATIVE_MANIFEST" ]]; then
+  cp -p "$NATIVE_MANIFEST" "$MANIFEST_BACKUP"
+  HAD_PREVIOUS_MANIFEST=1
+fi
+rm -rf "$STAGING_ROOT" "$BACKUP_ROOT"
 ditto "$ROOT_DIR" "$STAGING_ROOT"
 if [[ -d "$RUNTIME_ROOT" ]]; then
   mv "$RUNTIME_ROOT" "$BACKUP_ROOT"
@@ -129,6 +133,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   ACTIVATION_STARTED=0
   rm -rf "$BACKUP_ROOT"
+  rm -f "$MANIFEST_BACKUP"
   trap - EXIT
   echo "安装干运行完成。未修改 Chrome、LaunchAgent 或用户目录以外的配置。"
   exit 0

@@ -39,6 +39,11 @@ $RuntimeRoot = if ($env:LOCAL_DUB_RUNTIME_DIR) {
 } else {
     Join-Path $DefaultProductRoot "engine-runtime"
 }
+# A Native Host repair runs from the installed runtime and keeps its directory
+# open. Repair registration/lifecycle in place instead of moving that directory.
+$InPlaceRepair = $Repair -and -not $UpdateInstall -and (
+    [string]::Equals($SourceRoot.TrimEnd('\'), $RuntimeRoot.TrimEnd('\'),
+        [StringComparison]::OrdinalIgnoreCase))
 $StateRoot = if ($env:LOCAL_DUB_STATE_DIR) {
     [System.IO.Path]::GetFullPath($env:LOCAL_DUB_STATE_DIR)
 } else {
@@ -57,7 +62,11 @@ $OperationStarted = $false
 $HadPreviousRuntime = $false
 $PreviousVersion = ""
 $OriginalManifestBytes = $null
+$HadOriginalManifest = $false
+$HadOriginalRegistryKey = $false
+$HadOriginalRegistryValue = $false
 $OriginalRegistryValue = $null
+$OriginalRegistryKind = $null
 
 function Test-OwnedRegistration([object]$Native) {
     try {
@@ -100,6 +109,23 @@ function Read-UpdateRegistration {
     }
     $script:OriginalManifestBytes = $Bytes
     $script:OriginalRegistryValue = $RegisteredPath
+}
+
+function Save-NativeRegistration {
+    $script:HadOriginalManifest = Test-Path -LiteralPath $NativeManifestPath
+    if ($HadOriginalManifest) {
+        $script:OriginalManifestBytes = [System.IO.File]::ReadAllBytes($NativeManifestPath)
+    }
+    $script:HadOriginalRegistryKey = Test-Path -LiteralPath $RegistryPath
+    if ($HadOriginalRegistryKey) {
+        $Key = Get-Item -LiteralPath $RegistryPath -ErrorAction Stop
+        $script:HadOriginalRegistryValue = $Key.GetValueNames() -contains ""
+        if ($HadOriginalRegistryValue) {
+            $script:OriginalRegistryValue = $Key.GetValue("", $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $script:OriginalRegistryKind = $Key.GetValueKind("")
+        }
+    }
 }
 
 function Get-RuntimeVersion([string]$Root) {
@@ -182,7 +208,9 @@ function Stop-Engine([string]$Root, [string]$ExpectedVersion) {
 function Register-NativeHost([string]$Root) {
     if ($UpdateInstall) {
         [System.IO.File]::WriteAllBytes($NativeManifestPath, $OriginalManifestBytes)
-        New-Item -Path $RegistryPath -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $RegistryPath)) {
+            New-Item -Path $RegistryPath -Force | Out-Null
+        }
         Set-Item -Path $RegistryPath -Value $OriginalRegistryValue
         return
     }
@@ -207,7 +235,9 @@ function Register-NativeHost([string]$Root) {
     $ManifestJson = $Manifest | ConvertTo-Json -Depth 4
     $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($NativeManifestPath, $ManifestJson, $Utf8NoBom)
-    New-Item -Path $RegistryPath -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $RegistryPath)) {
+        New-Item -Path $RegistryPath -Force | Out-Null
+    }
     Set-Item -Path $RegistryPath -Value $NativeManifestPath
 }
 
@@ -219,17 +249,35 @@ function Start-And-TestEngine([string]$Root, [string]$ExpectedVersion) {
         -ExpectedVersion $ExpectedVersion
 }
 
-function Remove-Registration {
+function Restore-NativeRegistration {
     if (-not $UpdateInstall) {
         Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     }
-    Remove-Item -LiteralPath $RegistryPath -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $NativeManifestPath -Force -ErrorAction SilentlyContinue
+    if ($HadOriginalManifest) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $NativeManifestPath) -Force | Out-Null
+        [System.IO.File]::WriteAllBytes($NativeManifestPath, $OriginalManifestBytes)
+    } elseif (Test-Path -LiteralPath $NativeManifestPath) {
+        Remove-Item -LiteralPath $NativeManifestPath -Force
+    }
+    if ($HadOriginalRegistryKey) {
+        # Leave unrelated values/subkeys intact; installation only changes the default value.
+        $Key = (Get-Item -LiteralPath $RegistryPath -ErrorAction Stop).OpenSubKey("", $true)
+        try {
+            if ($HadOriginalRegistryValue) {
+                $Key.SetValue("", $OriginalRegistryValue, $OriginalRegistryKind)
+            } else {
+                $Key.DeleteValue("", $false)
+            }
+        } finally {
+            if ($Key) { $Key.Close() }
+        }
+    } elseif (Test-Path -LiteralPath $RegistryPath) {
+        Remove-Item -LiteralPath $RegistryPath -Recurse -Force
+    }
 }
 
 function Restore-PreviousRuntime {
-    Remove-Registration
     Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
     if ($ActivationStarted) {
         Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -237,12 +285,12 @@ function Restore-PreviousRuntime {
             Move-Item -LiteralPath $BackupRoot -Destination $RuntimeRoot
         }
     }
+    Restore-NativeRegistration
     if ($HadPreviousRuntime -and (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
         $RestoredVersion = Get-RuntimeVersion $RuntimeRoot
         if (-not $RestoredVersion) {
             throw "Rollback restored runtime has no valid release metadata."
         }
-        Register-NativeHost $RuntimeRoot
         Start-And-TestEngine $RuntimeRoot $RestoredVersion
         Stop-Engine $RuntimeRoot $RestoredVersion
     }
@@ -263,23 +311,26 @@ try {
     if ($UpdateInstall) {
         Read-UpdateRegistration
     }
+    Save-NativeRegistration
     Stop-Engine $RuntimeRoot $PreviousVersion
     $OperationStarted = $true
 
-    Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Path (Split-Path -Parent $RuntimeRoot) -Force | Out-Null
-    New-Item -ItemType Directory -Path $StagingRoot -Force | Out-Null
-    Get-ChildItem -LiteralPath $SourceRoot -Force |
-        Copy-Item -Destination $StagingRoot -Recurse -Force
-    Invoke-RuntimeVerification $StagingRoot $Version
+    if (-not $InPlaceRepair) {
+        Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path (Split-Path -Parent $RuntimeRoot) -Force | Out-Null
+        New-Item -ItemType Directory -Path $StagingRoot -Force | Out-Null
+        Get-ChildItem -LiteralPath $SourceRoot -Force |
+            Copy-Item -Destination $StagingRoot -Recurse -Force
+        Invoke-RuntimeVerification $StagingRoot $Version
 
-    if ($HadPreviousRuntime) {
-        Move-Item -LiteralPath $RuntimeRoot -Destination $BackupRoot
+        if ($HadPreviousRuntime) {
+            Move-Item -LiteralPath $RuntimeRoot -Destination $BackupRoot
+        }
+        $ActivationStarted = $true
+        Move-Item -LiteralPath $StagingRoot -Destination $RuntimeRoot
+        Invoke-RuntimeVerification $RuntimeRoot $Version
     }
-    $ActivationStarted = $true
-    Move-Item -LiteralPath $StagingRoot -Destination $RuntimeRoot
-    Invoke-RuntimeVerification $RuntimeRoot $Version
     Register-NativeHost $RuntimeRoot
     if (-not $UpdateInstall) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue

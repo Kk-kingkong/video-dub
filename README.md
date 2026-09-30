@@ -6,7 +6,7 @@ An open-source Chrome extension that translates YouTube captions into Chinese an
 
 LocalTube Dub prefers an existing Chinese YouTube caption track. When Chinese captions are unavailable, it can use Chrome's free on-device Translator or a translation Provider chosen by the user. Videos without captions can use the optional local Whisper Engine.
 
-> **Status:** `0.2.8` adds automatic Engine updates. Chrome Web Store publication remains separate; desktop installers still lack platform code signing and macOS notarization.
+> **Status:** `0.2.9` improves caption accuracy, settings synchronization, task cancellation, and Engine update reliability. Chrome Web Store publication remains separate; desktop installers still lack platform code signing and macOS notarization.
 
 ## Highlights
 
@@ -39,7 +39,7 @@ Kokoro is optional. Selecting it exposes an explicit model-install button; after
 
 ## Updates
 
-Existing Engine users must install the matching `0.2.8` Engine package once. After that, the installed Engine checks this project's signed stable GitHub update feed when it starts for actual work, at most once every six hours. Compatible updates download in the background and install after work completes and Engine reaches its five-minute idle boundary. A failed activation restores the previous runtime; settings, downloaded models, and existing extension bindings are preserved. Passive status checks do not start Engine or trigger an update check.
+Users with an Engine older than `0.2.8` must install a matching `0.2.8` or newer Engine package once. After that, the installed Engine checks this project's signed stable GitHub update feed when it starts for actual work, at most once every six hours. Compatible updates download in the background and install after work completes and Engine reaches its five-minute idle boundary. A failed activation restores the previous runtime; settings, downloaded models, and existing extension bindings are preserved. Passive status checks do not start Engine or trigger an update check.
 
 Chrome manages updates for extensions installed from the same Chrome Web Store item after review and publication. Unpacked/source/ZIP extensions still need manual replacement and reload; the Engine updater never replaces extension files. Offline customers and continuously active sessions update later, not immediately when a release is published.
 

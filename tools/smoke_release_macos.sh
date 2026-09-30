@@ -172,28 +172,8 @@ PY
 "$RUNTIME_DIR/.venv/bin/python" -c 'import curl_cffi, edge_tts, sherpa_onnx, yt_dlp; import shutil; raise SystemExit(0 if shutil.which("ffmpeg") else 1)'
 "$RUNTIME_DIR/.venv/bin/yt-dlp" --version >/dev/null
 "$RUNTIME_DIR/.venv/bin/edge-tts" --help >/dev/null
-LOCAL_DUB_HOST=127.0.0.1 \
-LOCAL_DUB_PORT=18787 \
-  "$RUNTIME_DIR/.venv/bin/python" "$RUNTIME_DIR/server/local_dub_server.py" >"$TEMP_ROOT/engine.log" 2>&1 &
-ENGINE_PID=$!
-cleanup_engine() {
-  kill "$ENGINE_PID" >/dev/null 2>&1 || true
-  wait "$ENGINE_PID" >/dev/null 2>&1 || true
-}
-trap 'cleanup_engine; rm -rf "$TEMP_ROOT"' EXIT
-for _ in {1..40}; do
-  if curl -fsS --max-time 1 http://127.0.0.1:18787/api/health 2>/dev/null | "$RUNTIME_DIR/.venv/bin/python" -c 'import json,sys; p=json.load(sys.stdin); raise SystemExit(0 if int(p.get("protocolVersion") or 0) >= 2 and p.get("ytDlp") and p.get("edgeTts") else 1)' >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.25
-done
-if ! curl -fsS --max-time 1 http://127.0.0.1:18787/api/health >/dev/null 2>&1; then
-  echo "Packaged Engine did not pass its isolated health check."
-  cat "$TEMP_ROOT/engine.log" >&2 || true
-  exit 1
-fi
-cleanup_engine
-trap 'rm -rf "$TEMP_ROOT"' EXIT
+"$RUNTIME_DIR/.venv/bin/python" "$ROOT_DIR/tools/verify_release_packages.py" \
+  --health-smoke "$RUNTIME_DIR" "$VERSION"
 
 LOCAL_DUB_UNINSTALL_DRY_RUN=1 \
 LOCAL_DUB_NATIVE_MANIFEST_PATH="$MANIFEST_PATH" \

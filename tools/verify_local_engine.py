@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import http.client
 import json
+import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +75,112 @@ def test_http_byte_ranges(server):
         except ValueError:
             continue
         raise AssertionError(f"range should be rejected: {invalid}")
+
+
+def test_http_browser_boundary(server):
+    class QuietHandler(server.LocalDubHandler):
+        def log_message(self, *_args):
+            pass
+
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        root = Path(temp_dir_name)
+        manifest_path = root / "native.json"
+        registered_origin = "chrome-extension://" + "a" * 32
+        source_origin = "chrome-extension://" + "b" * 32
+        package_origin = "chrome-extension://" + "c" * 32
+        registration = {"name": "com.localtube.dub.engine", "type": "stdio",
+                        "path": str(root / "companion/native_host_launcher_macos.sh"),
+                        "allowed_origins": [registered_origin + "/"]}
+        manifest_path.write_text(json.dumps(registration), encoding="utf-8")
+        (root / "release.json").write_text(json.dumps({"chromeExtensionId": "c" * 32}), encoding="utf-8")
+        manager = server.KokoroModelManager(root / "models")
+        marker = manager.active_path / "user-model"
+        track = root / "track.wav"
+        track.write_bytes(b"audio-for-test")
+        with (
+            patch.dict(os.environ, {"LOCAL_DUB_NATIVE_MANIFEST_PATH": str(manifest_path), "LOCAL_DUB_EXTENSION_ID": "b" * 32}),
+            patch.object(server, "ENGINE_ROOT", root),
+            patch.object(server, "ENGINE_LAST_ACTIVITY", 0),
+            patch.object(server, "KOKORO_MODEL_SERVICE", server.KokoroModelService(manager)),
+            patch.object(server, "build_health_payload", return_value={"ok": True}) as health,
+            patch.object(server, "get_dub_track_file", return_value=({"status": "completed"}, track)) as download,
+        ):
+            httpd = server.LocalDubServer(("127.0.0.1", 0), QuietHandler)
+            worker = server.threading.Thread(target=httpd.serve_forever, daemon=True)
+            worker.start()
+
+            def request(method, path, headers=(), body=None, expected=200):
+                connection = http.client.HTTPConnection("127.0.0.1", httpd.server_port, timeout=3)
+                try:
+                    connection.putrequest(method, path, skip_host=True)
+                    for name, value in headers:
+                        connection.putheader(name, value)
+                    if body is not None:
+                        connection.putheader("Content-Length", str(len(body)))
+                    connection.endheaders(body)
+                    response = connection.getresponse()
+                    data = response.read()
+                    assert response.status == expected, (method, headers, response.status, data)
+                    return dict(response.getheaders()), data
+                finally:
+                    connection.close()
+
+            authority = [("Host", f"127.0.0.1:{httpd.server_port}")]
+            endpoint = "/api/tts-model/kokoro/uninstall"
+            marker.parent.mkdir(parents=True)
+            marker.write_bytes(b"keep")
+            try:
+                for method, path in (("POST", endpoint), ("GET", "/api/health"),
+                                     ("OPTIONS", endpoint), ("HEAD", "/api/dub-track/download?id=test")):
+                    for origin in ("https://untrusted.example", "null", "chrome-extension://" + "d" * 32):
+                        headers, _ = request(method, path, authority + [("Origin", origin), ("Content-Type", "application/json")],
+                                             b"{}" if method == "POST" else None, expected=403)
+                        assert "access-control-allow-origin" not in headers
+                    for host in (f"untrusted.example:{httpd.server_port}", f"127.0.0.1:{httpd.server_port + 1}",
+                                 f"user@127.0.0.1:{httpd.server_port}", f"127.0.0.1:{httpd.server_port}?", "127.0.0.1"):
+                        request(method, path, [("Host", host)], expected=403)
+                    request(method, path, authority * 2, expected=403)
+                request("POST", endpoint, authority + [("Origin", registered_origin)] * 2, b"{}", expected=403)
+                for content_type in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data"):
+                    request("POST", endpoint, authority + [("Content-Type", content_type)], b"{}", expected=415)
+                request("POST", endpoint, authority, b"{}", expected=415)
+                assert marker.exists() and health.call_count == 0 and download.call_count == 0
+                assert server.ENGINE_LAST_ACTIVITY == 0, "rejected webpage requests must not prolong Engine lifetime"
+
+                for origin in (registered_origin, source_origin, package_origin):
+                    headers, _ = request("GET", "/api/health", authority + [("Origin", origin)])
+                    assert headers["access-control-allow-origin"] == origin
+                    request("OPTIONS", endpoint, authority + [("Origin", origin), ("Access-Control-Request-Method", "POST")])
+                    assert marker.exists()
+                request("GET", "/api/health", authority)  # Native/curl liveness probe.
+                for origin in (None, registered_origin, "https://www.youtube.com"):
+                    headers = authority + ([("Origin", origin)] if origin else []) + [("Range", "bytes=0-4")]
+                    _, audio = request("GET", "/api/dub-track/download?id=test", headers, expected=206)
+                    assert audio == b"audio"
+                    _, body = request("HEAD", "/api/dub-track/download?id=test", headers, expected=206)
+                    assert body == b""
+                request("POST", endpoint, authority + [("Origin", "https://www.youtube.com"), ("Content-Type", "application/json")], b"{}", expected=403)
+                assert marker.exists()
+                for origin in (None, registered_origin, source_origin):
+                    marker.parent.mkdir(parents=True, exist_ok=True)
+                    marker.write_bytes(b"delete only when authorized")
+                    request("POST", endpoint, authority + [("Content-Type", "application/json")] + ([("Origin", origin)] if origin else []), b"{}")
+                    assert not marker.exists()
+
+                # Registration is read afresh; unrelated or malformed manifests grant nothing.
+                registration["path"] = str(root / "another-runtime/companion/native_host_launcher_macos.sh")
+                manifest_path.write_text(json.dumps(registration), encoding="utf-8")
+                request("GET", "/api/health", authority + [("Origin", registered_origin)], expected=403)
+                manifest_path.write_text('{"allowed_origins": ["*"]}', encoding="utf-8")
+                request("GET", "/api/health", authority + [("Origin", registered_origin)], expected=403)
+                registration["path"] = str(root / "companion/native_host_launcher_macos.sh")
+                registration["allowed_origins"].append("chrome-extension://" + "d" * 32 + "/")
+                manifest_path.write_text(json.dumps(registration), encoding="utf-8")
+                request("GET", "/api/health", authority + [("Origin", "chrome-extension://" + "d" * 32)])
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                worker.join(3)
 
 
 def test_whisper_segments_to_cues(server):
@@ -342,6 +451,50 @@ def test_full_transcript_job_validation(server):
         server.FULL_TRANSCRIPT_JOBS.clear()
 
 
+def test_full_transcript_cancellation_wins_during_completion(server):
+    reached, resume, finished = (server.threading.Event() for _ in range(3))
+    original_run = server.run_full_transcript_job
+    original_parse = server.whisper_payload_to_cues
+
+    def run(*args):
+        try:
+            original_run(*args)
+        finally:
+            finished.set()
+
+    def parse(*args):
+        reached.set()
+        assert resume.wait(3)
+        return original_parse(*args)
+
+    with (
+        patch.object(server, "FULL_TRANSCRIPT_JOBS", {}),
+        patch.object(server, "FULL_TRANSCRIPT_CANCEL_EVENTS", {}),
+        patch.object(server, "DUB_TRACK_JOBS", {}),
+        patch.object(server, "DUB_TRACK_CANCEL_EVENTS", {}),
+        patch.object(server, "check_ytdlp", return_value=True),
+        patch.object(server, "check_whisper", return_value=True),
+        patch.object(server, "run_full_transcript_job", side_effect=run),
+        patch.object(server, "download_youtube_full_audio", return_value=Path("unused")),
+        patch.object(server, "transcribe_audio_path_with_whisper", return_value={
+            "language": "en", "segments": [{"start": 0, "end": 1, "text": "hello"}]}),
+        patch.object(server, "whisper_payload_to_cues", side_effect=parse),
+    ):
+        started = server.start_full_transcript_job({"videoId": "cancel-at-completion", "durationSeconds": 10})
+        job_id = started["job"]["id"]
+        try:
+            assert reached.wait(2)
+            assert server.cancel_full_transcript_job(job_id)["job"]["status"] == "cancelled"
+        finally:
+            resume.set()
+            assert finished.wait(3)
+        job = server.get_full_transcript_job(job_id)["job"]
+        assert job["status"] == "cancelled" and not job["cues"], job
+        assert job_id not in server.FULL_TRANSCRIPT_CANCEL_EVENTS
+        server.update_full_transcript_job(job_id, status="failed", error="late error")
+        assert server.get_full_transcript_job(job_id)["job"]["status"] == "cancelled"
+
+
 def test_build_tts_payload(server):
     original_tts = server.synthesize_speech_with_system
 
@@ -491,7 +644,7 @@ class FakeKokoroRuntime:
         self.state = state
         self.synthesis_calls = []
 
-    def status(self):
+    def status(self, *, model_status=None):
         return {
             "state": self.state,
             "available": self.state == "ready",
@@ -788,9 +941,139 @@ def test_dub_track_job_worker(server):
         assert "voiceFallback" not in result["job"]
         assert output_path.is_file()
         assert abs(server.validate_wav_duration(output_path) - 2) < 0.001
+        assert server.cancel_dub_track_job(job_id)["job"]["status"] == "completed"
+        assert output_path.is_file() and output_path.with_suffix(".json").is_file()
 
     server.DUB_TRACK_JOBS.clear()
     server.DUB_TRACK_CANCEL_EVENTS.clear()
+
+
+def test_dub_track_cancellation_wins_during_output_commit(server):
+    for phase in ("assembling", "committing"):
+        reached, resume, finished = (server.threading.Event() for _ in range(3))
+        original_run = server.run_dub_track_job
+        original_write = server.write_dub_track_wav
+        original_update = server.update_dub_track_job
+        server.DUB_TRACK_JOBS.clear()
+        server.DUB_TRACK_CANCEL_EVENTS.clear()
+        server.FULL_TRANSCRIPT_JOBS.clear()
+        server.FULL_TRANSCRIPT_CANCEL_EVENTS.clear()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            segment = root / "segment.wav"
+            write_test_wav(segment, 1000, 1000)
+
+            def run(*args):
+                try:
+                    original_run(*args)
+                finally:
+                    finished.set()
+
+            def write(*args):
+                if phase == "assembling":
+                    reached.set()
+                    assert resume.wait(3)
+                return original_write(*args)
+
+            def update(job_id, **updates):
+                if phase == "committing" and updates.get("status") == "completed":
+                    reached.set()
+                    assert resume.wait(3)
+                return original_update(job_id, **updates)
+
+            with (
+                patch.object(server, "DUB_TRACK_OUTPUT_DIR", root / "exports"),
+                patch.object(server, "tts_engine_ready", return_value=True),
+                patch.object(server, "find_ffmpeg_command", return_value="unused"),
+                patch.object(server, "run_dub_track_job", side_effect=run),
+                patch.object(server, "render_dub_track_segment", return_value={"index": 0, "start": 0, "end": 1, "path": segment}),
+                patch.object(server, "write_dub_track_wav", side_effect=write),
+                patch.object(server, "update_dub_track_job", side_effect=update),
+            ):
+                request = {"videoId": phase, "cues": [{"text": "test", "start": 0, "end": 1}], "durationSeconds": 1}
+                started = server.start_dub_track_job(request)
+                job_id = started["job"]["id"]
+                try:
+                    assert reached.wait(2)
+                    cancelled = server.cancel_dub_track_job(job_id)
+                    assert cancelled["job"]["status"] == "cancelled"
+                finally:
+                    resume.set()
+                    assert finished.wait(3)
+                job = server.get_dub_track_job(job_id)["job"]
+                assert job["status"] == "cancelled", (phase, job)
+                assert "downloadUrl" not in job
+                assert not list((root / "exports").iterdir()), "cancelled output/metadata must be removed"
+                assert job_id not in server.DUB_TRACK_CANCEL_EVENTS
+                original_update(job_id, status="rendering", progress=99)
+                original_update(job_id, status="failed", error="late worker error")
+                assert server.get_dub_track_job(job_id)["job"]["status"] == "cancelled"
+        server.DUB_TRACK_JOBS.clear()
+        server.DUB_TRACK_CANCEL_EVENTS.clear()
+
+
+def test_heavy_job_admission_is_atomic(server):
+    paused, resume = server.threading.Event(), server.threading.Event()
+
+    class PausedAdmissionLock:
+        def __init__(self):
+            self.lock = server.threading.Lock()
+            self.full_entries = 0
+
+        def __enter__(self):
+            if server.threading.current_thread().name == "full-admission-test":
+                self.full_entries += 1
+                # First acquisition is cleanup. Pause before the admission acquisition.
+                if self.full_entries == 2:
+                    paused.set()
+                    assert resume.wait(3)
+            self.lock.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            self.lock.release()
+
+    full_result = {}
+    with (
+        tempfile.TemporaryDirectory() as temporary,
+        patch.object(server, "DUB_TRACK_OUTPUT_DIR", Path(temporary)),
+        patch.object(server, "FULL_TRANSCRIPT_JOBS", {}),
+        patch.object(server, "FULL_TRANSCRIPT_CANCEL_EVENTS", {}),
+        patch.object(server, "DUB_TRACK_JOBS", {}),
+        patch.object(server, "DUB_TRACK_CANCEL_EVENTS", {}),
+        patch.object(server, "FULL_TRANSCRIPT_LOCK", PausedAdmissionLock()),
+        patch.object(server, "check_ytdlp", return_value=True),
+        patch.object(server, "check_whisper", return_value=True),
+        patch.object(server, "tts_engine_ready", return_value=True),
+        patch.object(server, "find_ffmpeg_command", return_value="unused"),
+        patch.object(server, "run_full_transcript_job"),
+        patch.object(server, "run_dub_track_job"),
+    ):
+        full_request = {"videoId": "admission-test", "durationSeconds": 10}
+        dub_request = {"videoId": "admission-test", "cues": [{"text": "test", "start": 0, "end": 1}], "durationSeconds": 10}
+        thread = server.threading.Thread(name="full-admission-test", target=lambda: full_result.update(server.start_full_transcript_job(full_request)))
+        thread.start()
+        try:
+            assert paused.wait(2)
+            dub_result = server.start_dub_track_job(dub_request)
+        finally:
+            resume.set()
+            thread.join(3)
+        assert not thread.is_alive()
+        assert dub_result["ok"] and full_result.get("code") == "HEAVY_ENGINE_JOB_BUSY", (dub_result, full_result)
+        server.cancel_dub_track_job(dub_result["job"]["id"])
+        server.DUB_TRACK_JOBS[dub_result["job"]["id"]]["updatedAt"] = 1
+        server.cleanup_dub_track_jobs()
+        assert server.start_full_transcript_job(full_request).get("code") == "HEAVY_ENGINE_JOB_BUSY"
+        assert server.start_dub_track_job(dub_request).get("code") == "DUB_TRACK_BUSY"
+        server.DUB_TRACK_CANCEL_EVENTS.clear()  # The old worker has now finished cleanup.
+        full_result = server.start_full_transcript_job(full_request)
+        assert full_result["ok"]
+        server.cancel_full_transcript_job(full_result["job"]["id"])
+        server.FULL_TRANSCRIPT_JOBS[full_result["job"]["id"]]["updatedAt"] = 1
+        server.cleanup_full_transcript_jobs()
+        assert server.start_dub_track_job(dub_request).get("code") == "HEAVY_ENGINE_JOB_BUSY"
+        assert server.start_full_transcript_job(full_request).get("code") == "FULL_TRANSCRIPT_BUSY"
 
 
 def test_kokoro_dub_track_coalesces_fallback_and_reuses_actual_voice(server):
@@ -1189,10 +1472,12 @@ def test_dub_track_reuse_matches_duration_and_video(server):
         first = server.start_dub_track_job(payload)
         first_id = first["job"]["id"]
         server.DUB_TRACK_JOBS[first_id]["status"] = "completed"
+        server.DUB_TRACK_CANCEL_EVENTS.pop(first_id)  # Simulate the completed worker's finally.
         assert server.start_dub_track_job(payload)["job"]["id"] == first_id
         longer = server.start_dub_track_job({**payload, "durationSeconds": 20})
         assert longer["job"]["id"] != first_id, "20-second export reused the 10-second track"
         server.DUB_TRACK_JOBS[longer["job"]["id"]]["status"] = "completed"
+        server.DUB_TRACK_CANCEL_EVENTS.pop(longer["job"]["id"])
         other_video = server.start_dub_track_job({**payload, "videoId": "second"})
         assert other_video["job"]["id"] != first_id, "voice-only export reused another video's track"
         server.DUB_TRACK_JOBS.clear()
@@ -1402,6 +1687,63 @@ def test_caption_singleflight(server):
     assert sum(bool(result.get("coalesced")) for result in results) == 3
 
 
+def test_caption_language_identity_and_url_boundary(server):
+    server.CAPTION_CACHE.clear()
+    server.CAPTION_FAILURE_CACHE.clear()
+    languages = (("zh-CN", "en"), ("zh-TW", "en"), ("auto", "zh-CN"), ("auto", "zh-TW"),
+                 ("auto", "pt-BR"), ("auto", "pt-PT"), ("en-US", "fr"), ("en-GB", "fr"))
+    rendezvous = server.threading.Barrier(len(languages))
+    responses = {}
+
+    def extract(_url, source, target):
+        rendezvous.wait(timeout=2)
+        return {"engine": "test", "source": "test", "sourceLanguage": source,
+                "cues": [{"id": "0", "start": 0, "end": 1, "text": f"{source}/{target}"}]}
+
+    def run(source, target):
+        responses[(source, target)] = server.build_captions_payload(
+            {"videoId": "language-variants", "sourceLanguage": source, "targetLanguage": target}, "test")
+
+    try:
+        with patch.object(server, "extract_youtube_captions", side_effect=extract) as extractor:
+            threads = [server.threading.Thread(target=run, args=pair) for pair in languages]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(3)
+            assert all(not thread.is_alive() for thread in threads)
+            assert extractor.call_count == len(languages)
+            for pair in languages:
+                assert responses[pair]["ok"], responses[pair]
+                run(*pair)
+                assert responses[pair]["cache"]
+                assert responses[pair]["cues"][0]["text"] == "/".join(pair)
+            assert extractor.call_count == len(languages)
+        assert server.caption_cache_key("url", "ZH_cn", "PT_br") == server.caption_cache_key("url", "zh-CN", "pt-BR")
+        failure_key = server.caption_cache_key("https://youtu.be/backoff", "auto", "zh-CN")
+        server.set_cached_caption_failure(failure_key, {"code": "YOUTUBE_RATE_LIMITED"})
+        with patch.object(server, "extract_youtube_captions", return_value={"engine": "test", "source": "test", "sourceLanguage": "zh-TW", "cues": []}) as extractor:
+            failed = server.build_captions_payload({"videoUrl": "https://youtu.be/backoff", "targetLanguage": "zh-CN"}, "test")
+            succeeded = server.build_captions_payload({"videoUrl": "https://youtu.be/backoff", "targetLanguage": "zh-TW"}, "test")
+            assert failed["code"] == "YOUTUBE_RATE_LIMITED" and succeeded["ok"]
+            assert extractor.call_count == 1
+
+        with patch.object(server, "extract_youtube_captions") as extractor:
+            for invalid in ("http://127.0.0.1/internal", "file:///etc/passwd", "https://youtube.com.evil.test/watch?v=x",
+                            "https://youtube.com@evil.test/watch?v=x", "https://evil.test@youtube.com/watch?v=x",
+                            "https://youtube.com:444/watch?v=x", "https://youtube.com:invalid/watch?v=x",
+                            "https://you\ntube.com/watch?v=x", "https://[invalid", ""):
+                for transport in ("http", "native"):
+                    result = server.build_captions_payload({"videoUrl": invalid}, transport)
+                    assert result.get("code") == "BAD_REQUEST", (invalid, result)
+            assert extractor.call_count == 0
+            for valid in ("https://www.youtube.com/watch?v=x", "https://youtu.be/x", "https://m.youtube.com/watch?v=x"):
+                assert server.is_supported_youtube_url(valid)
+    finally:
+        server.CAPTION_CACHE.clear()
+        server.CAPTION_FAILURE_CACHE.clear()
+
+
 def test_ytdlp_429_error(server):
     message = server.read_ytdlp_error("ERROR: HTTP Error 429: Too Many Requests")
     assert "429" in message
@@ -1477,6 +1819,26 @@ def test_caption_failure_backoff_cache(server):
     assert first["code"] == "YOUTUBE_RATE_LIMITED"
     assert second["cache"] is True
     assert second["retryAfterSeconds"] > 0
+
+
+def test_caption_failure_cache_eviction(server):
+    from unittest.mock import patch
+
+    server.CAPTION_FAILURE_CACHE.clear()
+    try:
+        with patch.object(server, "CAPTION_CACHE_MAX_ENTRIES", 4), patch.object(server.time, "time") as clock:
+            for index in range(6):
+                clock.return_value = 1000 + index
+                server.set_cached_caption_failure(str(index), {"code": "YOUTUBE_RATE_LIMITED"})
+            assert set(server.CAPTION_FAILURE_CACHE) == {"2", "3", "4", "5"}
+            assert server.get_cached_caption_failure("5")["retryAfterSeconds"] > 0
+            clock.return_value = 10000
+            server.set_cached_caption_failure("fresh", {"code": "NO_PUBLIC_CAPTIONS"})
+            assert set(server.CAPTION_FAILURE_CACHE) == {"fresh"}
+            server.set_cached_caption_failure("ignored", {"code": "CAPTION_EMPTY"})
+            assert set(server.CAPTION_FAILURE_CACHE) == {"fresh"}
+    finally:
+        server.CAPTION_FAILURE_CACHE.clear()
 
 
 def test_caption_empty_failure_is_not_cached(server):
@@ -2004,6 +2366,7 @@ def main() -> None:
     test_data_url_decode(server)
     test_health_version_metadata(server)
     test_http_byte_ranges(server)
+    test_http_browser_boundary(server)
     test_whisper_segments_to_cues(server)
     test_whisper_text_fallback(server)
     test_build_transcribe_payload(server)
@@ -2013,6 +2376,7 @@ def main() -> None:
     test_ytdlp_full_audio_command(server)
     test_full_transcript_job_worker(server)
     test_full_transcript_job_validation(server)
+    test_full_transcript_cancellation_wins_during_completion(server)
     test_build_tts_payload(server)
     test_tts_duration_helpers(server)
     test_trim_wav_leading_silence(server)
@@ -2024,6 +2388,8 @@ def main() -> None:
     test_dub_track_audio_mix(server)
     test_dub_track_m4a_encoding(server)
     test_dub_track_job_worker(server)
+    test_dub_track_cancellation_wins_during_output_commit(server)
+    test_heavy_job_admission_is_atomic(server)
     test_kokoro_dub_track_coalesces_fallback_and_reuses_actual_voice(server)
     test_dub_track_parallel_synthesis(server)
     test_dub_track_parallel_cancellation(server)
@@ -2036,11 +2402,13 @@ def main() -> None:
     test_build_captions_payload(server)
     test_caption_cache_and_ytdlp_command(server)
     test_caption_singleflight(server)
+    test_caption_language_identity_and_url_boundary(server)
     test_ytdlp_429_error(server)
     test_video_availability_metadata(server)
     test_caption_download_timeout_returns_none(server)
     test_caption_error_classification(server)
     test_caption_failure_backoff_cache(server)
+    test_caption_failure_cache_eviction(server)
     test_caption_empty_failure_is_not_cached(server)
     test_ytdlp_retries_with_cookies_when_captions_are_hidden(server)
     test_ytdlp_prefers_target_language(server)

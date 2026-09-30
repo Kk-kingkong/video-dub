@@ -1,7 +1,12 @@
 # LocalTube Dub Development Audit
 
-Last reviewed: 2026-09-11
-Current reviewed version: 0.2.8 (automatic Engine update migration)
+Last reviewed: 2026-09-30
+Current reviewed version: 0.2.9 (reliability and release hardening)
+
+## 0.2.9 Reliability and Release Audit
+
+- Workspace fixes and local checks are complete for the three September reviews: [initial audit](2026-09-30-aoci-audit.zh-CN.md), [second review](2026-09-30-second-review.zh-CN.md), and [third review](2026-09-30-third-review.zh-CN.md).
+- Three-platform CI for the final release commit, real YouTube playback acceptance, and production Kokoro model acceptance remain pending. Earlier CI results and isolated local regressions do not establish those results.
 
 ## 0.2.8 Automatic Engine Updates
 

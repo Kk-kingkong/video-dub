@@ -1,5 +1,15 @@
 # LocalTube Dub Changelog
 
+## 0.2.9 - 2026-09-30
+
+- Enforce local Engine request origins, loopback hosts, JSON body limits, and supported YouTube caption URLs before dispatching work.
+- Preserve caption language regions and YouTube-translated track identity; serialize subtitle cache updates and retain active overlapping cues. Reduce repeated caption scans and model-directory health checks.
+- Keep user settings stable across tabs and delayed replies. Automatic voice corrections use conditional field updates, and Microsoft online speech checks current consent for both live clips and full tracks.
+- Cancel superseded translation, transcription, recording, and dubbing work by its owning request or job. Discard stale playback results and avoid replaying failed or timed-out HTTP speech requests through Native Messaging.
+- Recover from temporary Kokoro load failures with bounded retries, and reset recovery state after model uninstall while rejecting stale load results.
+- Bound Engine update downloads across connection, headers, and body; preserve existing downloads on failure. Restore installation registrations on rollback and repair the installed Windows runtime without moving its active Native Host directory.
+- Gate stable Engine publication on the exact commit's successful three-platform CI and verified signed draft assets before making the update public. Strengthen installer health checks and regression coverage.
+
 ## 0.2.8 - 2026-09-11
 
 - Added automatic updates for installed bundled Engines: check this project's signed stable GitHub feed on actual startup, at most once per six hours; accept only a newer compatible release for the current platform and architecture.

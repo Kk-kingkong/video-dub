@@ -579,14 +579,18 @@
   function selectKokoroPrefetchSegments(segments, currentTime, activeSegmentKey = "") {
     const now = Math.max(0, Number(currentTime || 0));
     const activeKey = String(activeSegmentKey || "");
-    const candidates = (Array.isArray(segments) ? segments : []).filter((segment) => {
-      const end = Math.max(Number(segment?.timeboxEnd || 0), Number(segment?.end || 0));
-      return end >= now - 0.1;
-    });
     const queuedSlots = activeKey ? 2 : 3;
-    return candidates
-      .filter((segment) => String(segment?.key || "") !== activeKey)
-      .slice(0, queuedSlots);
+    const candidates = [];
+    for (const segment of Array.isArray(segments) ? segments : []) {
+      const end = Math.max(Number(segment?.timeboxEnd || 0), Number(segment?.end || 0));
+      if (end >= now - 0.1 && String(segment?.key || "") !== activeKey) {
+        candidates.push(segment);
+        if (candidates.length === queuedSlots) {
+          break;
+        }
+      }
+    }
+    return candidates;
   }
 
   function captionEngineWaitTimeout(pageResult, pageFallbackMs = 2000, totalMs = 23000) {

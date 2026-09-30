@@ -24,11 +24,158 @@ from sign_engine_update import MANIFEST_NAME, SIGNATURE_NAME
 ROOT = Path(__file__).resolve().parents[1]
 
 
+DOWNLOAD_SOCKET_FIXTURE = r'''
+import http.client
+import os
+from pathlib import Path
+import socket
+import threading
+import time
+import urllib.request
+
+def build_opener(*_handlers):
+    class Opener:
+        def open(self, request, timeout):
+            assert timeout == 15, "production socket idle timeout changed"
+            reader, writer = socket.socketpair()
+            reader.settimeout(0.5)  # Accelerate the socket idle limit, not the total deadline.
+            case = os.environ["LOCALTUBE_TEST_DOWNLOAD_CASE"]
+            Path(os.environ["LOCALTUBE_TEST_DOWNLOAD_STARTED"]).write_text(case)
+            if case == "connect-stall":
+                time.sleep(5)  # A blocked resolver/connect must also obey the total deadline.
+            def produce():
+                try:
+                    if case == "headers-idle":
+                        time.sleep(5)
+                        return
+                    if case == "headers-slow":
+                        writer.sendall(b"HTTP/1.1 200 OK\r\nX-Drip: ")
+                    elif case == "chunk-size-slow":
+                        writer.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                    elif case in {"body-slow", "body-idle"}:
+                        writer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nx")
+                    else:
+                        header = b"Content-Length: 3\r\n" if case != "unannounced-size" else b""
+                        writer.sendall(b"HTTP/1.1 200 OK\r\n" + header + b"\r\nabc")
+                        return
+                    if case == "body-idle":
+                        time.sleep(5)
+                        return
+                    for _ in range(500):
+                        writer.sendall(b"1" if case == "chunk-size-slow" else b"x")
+                        Path(os.environ["LOCALTUBE_TEST_DOWNLOAD_HEARTBEAT"]).write_text(str(time.monotonic()))
+                        time.sleep(0.01)
+                    if case == "headers-slow":
+                        writer.sendall(b"\r\nContent-Length: 3\r\n\r\nabc")
+                    elif case == "chunk-size-slow":
+                        writer.sendall(b"\r\nx\r\n0\r\n\r\n")
+                except OSError:
+                    pass  # The parent timed out and killed the reader.
+                finally:
+                    writer.close()
+            threading.Thread(target=produce, daemon=True).start()
+            response = http.client.HTTPResponse(reader)
+            try:
+                response.begin()
+            except BaseException:
+                response.close()
+                raise
+            finally:
+                reader.close()  # HTTPResponse owns the socket's file object.
+            response.geturl = lambda: request.full_url
+            return response
+    return Opener()
+'''
+
+
+def verify_download_deadlines(module):
+    # sitecustomize supplies an in-process HTTP peer in the actual download child;
+    # it makes no network connection and exercises real HTTPResponse buffering.
+    fixture = {}
+    exec(compile(DOWNLOAD_SOCKET_FIXTURE, "download_socket_fixture", "exec"), fixture)
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = Path(temporary)
+        (directory / "sitecustomize.py").write_text(DOWNLOAD_SOCKET_FIXTURE + "\nurllib.request.build_opener = build_opener\n")
+        destination = directory / "download"
+        heartbeat = directory / "heartbeat"
+        network_started = directory / "network-started"
+        children = []
+        original_popen = subprocess.Popen
+        original_case = os.environ.get("LOCALTUBE_TEST_DOWNLOAD_CASE")
+
+        def launch(*args, **kwargs):
+            child = original_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        with (patch.dict(os.environ, {"PYTHONPATH": str(directory), "LOCAL_DUB_AUTO_UPDATE": "1",
+                                     "LOCALTUBE_TEST_DOWNLOAD_HEARTBEAT": str(heartbeat),
+                                     "LOCALTUBE_TEST_DOWNLOAD_STARTED": str(network_started)}),
+              patch.object(module, "DOWNLOAD_TIMEOUT", 1.5, create=True),
+              patch.object(module.urllib.request, "build_opener", fixture["build_opener"]),
+              patch.object(module.subprocess, "Popen", side_effect=launch)):
+            for case in ("body-slow", "headers-slow", "chunk-size-slow", "headers-idle", "body-idle", "connect-stall"):
+                os.environ["LOCALTUBE_TEST_DOWNLOAD_CASE"] = case
+                heartbeat.unlink(missing_ok=True)
+                network_started.unlink(missing_ok=True)
+                destination.write_bytes(b"previous verified download")
+                started = time.monotonic()
+                error = rejected(lambda: module.download(module.MANIFEST_URL, destination, 65536))
+                elapsed = time.monotonic() - started
+                assert elapsed < 3, (case, "total download deadline did not interrupt blocked I/O", elapsed)
+                assert network_started.read_text() == case, "test killed startup before the network operation"
+                if case.endswith("slow") or case == "connect-stall":
+                    assert isinstance(error, TimeoutError), (case, error)
+                else:
+                    assert "timed out" in str(error), (case, error)
+                if case.endswith("slow"):
+                    assert heartbeat.exists(), "test never entered the slow stream"
+                assert destination.read_bytes() == b"previous verified download", "failed download replaced verified bytes"
+                assert not destination.with_name(destination.name + ".partial").exists()
+                assert children and children[-1].poll() is not None, "timed out download child was not reaped"
+                snapshot = heartbeat.read_bytes() if heartbeat.exists() else b""
+                time.sleep(0.03)
+                assert (heartbeat.read_bytes() if heartbeat.exists() else b"") == snapshot, "timed out child kept writing"
+
+            runtime = directory / "product/engine-runtime"
+            runtime.mkdir(parents=True)
+            (runtime / "release.json").write_text(json.dumps(dict(version="0.2.7", protocolVersion=2,
+                platform="windows" if os.name == "nt" else "macos", architecture="x64",
+                bundledRuntime=True, autoUpdate=True)))
+            os.environ["LOCALTUBE_TEST_DOWNLOAD_CASE"] = "headers-slow"
+            with patch.object(module, "verify_signature") as verify_signature:
+                module.start_background_check(runtime)
+                module._worker.join(3)
+                assert not module.is_check_running(), "timed out update keeps Engine busy forever"
+                verify_signature.assert_not_called()
+            status = module.get_update_status(runtime)
+            assert status["status"] == "failed" and "time limit" in status["error"], status
+            assert not list(module.state_directory(runtime).glob("download-*")), "partial update staging was retained"
+            with module.native_work_lease(runtime) as admitted:
+                assert admitted, "download timeout prevents subsequent Native work"
+
+            # Successful transfers and size validation should not depend on a short spawn budget.
+            module.DOWNLOAD_TIMEOUT = 10
+            for case, limit, expected, succeeds in (("success", 3, 3, True), ("success", 2, None, False),
+                    ("unannounced-size", 2, None, False), ("success", 4, 4, False), ("success", 3, 2, False)):
+                os.environ["LOCALTUBE_TEST_DOWNLOAD_CASE"] = case
+                destination.write_bytes(b"previous verified download")
+                if succeeds:
+                    module.download(module.MANIFEST_URL, destination, limit, expected)
+                    assert destination.read_bytes() == b"abc"
+                else:
+                    error = rejected(lambda: module.download(module.MANIFEST_URL, destination, limit, expected))
+                    assert not isinstance(error, TimeoutError), "size rejection only passed due to spawn timeout"
+                    assert destination.read_bytes() == b"previous verified download"
+                assert not destination.with_name(destination.name + ".partial").exists()
+        assert os.environ.get("LOCALTUBE_TEST_DOWNLOAD_CASE") == original_case, "download fixture leaked environment"
+
+
 def rejected(action):
     try:
         action()
-    except (ValueError, RuntimeError, OSError, zipfile.BadZipFile):
-        return
+    except (ValueError, RuntimeError, OSError, zipfile.BadZipFile) as error:
+        return error
     raise AssertionError("unsafe update was accepted")
 
 
@@ -38,6 +185,7 @@ def main():
     spec = importlib.util.spec_from_file_location("engine_updates", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    verify_download_deadlines(module)
     assert module.MANIFEST_URL.rsplit("/", 1)[-1] == MANIFEST_NAME
     assert module.SIGNATURE_URL.rsplit("/", 1)[-1] == SIGNATURE_NAME, "updater requests a signature filename that publication never creates"
     with tempfile.TemporaryDirectory() as temporary:

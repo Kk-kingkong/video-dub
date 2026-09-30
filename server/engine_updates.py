@@ -28,6 +28,7 @@ CERTIFICATE = Path(__file__).with_name("update-signing-cert.cer")
 CHECK_INTERVAL = 6 * 60 * 60
 MAX_ARCHIVE = 512 * 1024 ** 2
 MAX_EXPANDED = 2 * 1024 ** 3
+DOWNLOAD_TIMEOUT = 300
 _worker = None
 _thread_lock = threading.Lock()
 
@@ -227,7 +228,29 @@ def validate_download_url(url):
 
 def download(url, destination, limit, expected_size=None):
     validate_download_url(url)
-    deadline, count = time.monotonic() + 300, 0
+    destination = Path(destination)
+    partial = destination.with_name(destination.name + ".partial")
+    command = [sys.executable, str(Path(__file__).resolve()), "--download", url, str(partial.resolve()),
+               str(limit), "" if expected_size is None else str(expected_size)]
+    try:
+        # Socket timeouts measure idle reads, not a whole header/body trickled one byte at a time.
+        # run() kills and waits for this child on timeout, so no reader/writer survives the deadline.
+        result = subprocess.run(command, timeout=DOWNLOAD_TIMEOUT, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+        if result.returncode:
+            raise RuntimeError("Update download failed: " + result.stderr.decode("utf-8", errors="replace").strip()[:500])
+        partial.replace(destination)
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError(f"Update download exceeded its {DOWNLOAD_TIMEOUT:g} second time limit") from error
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def _download(url, destination, limit, expected_size=None):
+    """Download child only; the parent enforces the total deadline, including DNS and headers."""
+    validate_download_url(url)
+    count = 0
     opener = urllib.request.build_opener(TrustedRedirect())
     request = urllib.request.Request(url, headers={"User-Agent": "LocalTube-Dub-Engine-Updater", "Accept-Encoding": "identity"})
     with opener.open(request, timeout=15) as response, destination.open("wb") as output:
@@ -236,8 +259,8 @@ def download(url, destination, limit, expected_size=None):
             raise ValueError("Update download exceeds size limit")
         while chunk := response.read(1024 * 1024):
             count += len(chunk)
-            if count > limit or time.monotonic() > deadline:
-                raise ValueError("Update download exceeded its size or time limit")
+            if count > limit:
+                raise ValueError("Update download exceeded its size limit")
             output.write(chunk)
     if expected_size is not None and count != expected_size:
         raise ValueError("Update download is incomplete")
@@ -485,5 +508,12 @@ def run_installer(root, extracted, parent_pid):
     write_state(root, state)
 
 
-if __name__ == "__main__" and len(sys.argv) == 5 and sys.argv[1] == "--install":
-    run_installer(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))
+if __name__ == "__main__":
+    if len(sys.argv) == 6 and sys.argv[1] == "--download":
+        try:
+            _download(sys.argv[2], Path(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]) if sys.argv[5] else None)
+        except Exception as error:
+            print(str(error), file=sys.stderr)
+            sys.exit(1)
+    elif len(sys.argv) == 5 and sys.argv[1] == "--install":
+        run_installer(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))

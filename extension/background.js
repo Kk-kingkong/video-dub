@@ -118,6 +118,7 @@ const DEEPGRAM_TRANSCRIPTION_ENDPOINT = "https://api.deepgram.com/v1/listen";
 const DEFAULT_TRANSCRIPTION_SECONDS = 12;
 const TIMELINE_CACHE_STORAGE_KEY = "translationTimelineCacheV1";
 let creatingOffscreenDocument = null;
+let timelineCacheOperation = Promise.resolve();
 let captionEngineAutoStartInFlight = null;
 let captionEngineAutoStartCooldownUntil = 0;
 const captionResolutionInflight = new Map();
@@ -157,10 +158,23 @@ const ALLOWED_FETCH_URLS = [
   /^http:\/\/localhost(:\d+)?\//
 ];
 
+let settingsSaveOperation = Promise.resolve();
+
 chrome.runtime.onInstalled.addListener(() => {
-  getStoredSettings().then((settings) => {
-    chrome.storage.sync.set(sanitizeSettings(settings));
+  const result = settingsSaveOperation.then(async () => {
+    await chrome.storage.sync.set(sanitizeSettings(await getStoredSettings()));
   });
+  settingsSaveOperation = result.catch(() => {});
+});
+
+chrome.storage.onChanged?.addListener(async (changes, areaName) => {
+  if (areaName !== "sync" || changes.microsoftTtsConsent?.oldValue !== true || changes.microsoftTtsConsent.newValue === true) {
+    return;
+  }
+  const tabs = await chrome.tabs.query({ url: ["https://www.youtube.com/*", "https://youtube.com/*"] });
+  await Promise.allSettled(tabs.map((tab) => chrome.tabs.sendMessage(tab.id, {
+    type: "localtube.settingsChanged", settings: { microsoftTtsConsent: false }
+  })));
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -176,7 +190,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "localtube.setSettings") {
-    saveSettings(message.settings || {})
+    saveSettings(message.settings || {}, {
+      consentChanged: message.consentChanged === true,
+      expectedVoiceSettings: message.expectedVoiceSettings
+    })
       .then((settings) => buildSettingsResponse(settings.provider))
       .then((response) => sendResponse(response))
       .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
@@ -434,8 +451,27 @@ async function buildSettingsResponse(providerHint) {
   };
 }
 
-async function saveSettings(rawSettings) {
+function saveSettings(rawSettings, options = {}) {
+  const result = settingsSaveOperation.then(() => persistSettings(rawSettings, options));
+  settingsSaveOperation = result.catch(() => {});
+  return result;
+}
+
+async function persistSettings(rawSettings, { consentChanged = false, expectedVoiceSettings } = {}) {
+  if (expectedVoiceSettings) {
+    const current = sanitizeSettings(await getStoredSettings());
+    const expected = sanitizeSettings(expectedVoiceSettings);
+    if (["targetLanguage", "ttsEngine", "voiceId"].some((key) => current[key] !== expected[key])) return current;
+    // Automatic corrections own only these fields, never another tab's preferences or consent.
+    const corrected = sanitizeSettings({ ...current, ...rawSettings });
+    const patch = Object.fromEntries(["ttsEngine", "voiceId"]
+      .filter((key) => Object.hasOwn(rawSettings, key)).map((key) => [key, corrected[key]]));
+    await chrome.storage.sync.set(patch);
+    return { ...current, ...patch };
+  }
   const settings = sanitizeSettings(rawSettings);
+  // Only the consent checkbox may change consent; ordinary saves carry stale snapshots.
+  if (!consentChanged) delete settings.microsoftTtsConsent;
   const secretProvider = sanitizeProvider(rawSettings.provider || settings.provider);
   const apiKey = String(rawSettings.apiKey || "").trim();
   const transcriptionApiKey = String(rawSettings.transcriptionApiKey || "").trim();
@@ -548,49 +584,64 @@ async function makeBackgroundTimelineCacheRequest(payload, settings) {
   };
 }
 
-async function getCachedTranslationTimeline(payload = {}, settings = {}) {
-  const storedSettings = sanitizeSettings({ ...(await getStoredSettings()), ...settings });
-  if (!storedSettings.cacheTranslations) {
-    return { ok: true, payload: { hit: false, disabled: true } };
-  }
-  const request = await makeBackgroundTimelineCacheRequest(payload, storedSettings);
-  const stored = await chrome.storage.local.get(TIMELINE_CACHE_STORAGE_KEY);
-  const result = LocalTubeDubBackgroundHelpers.findTimelineCache(stored[TIMELINE_CACHE_STORAGE_KEY], request);
-  await chrome.storage.local.set({ [TIMELINE_CACHE_STORAGE_KEY]: result.cache });
-  return {
-    ok: true,
-    payload: {
-      hit: Boolean(result.entry),
-      entry: result.entry || null,
-      count: result.cache.entries.length
-    }
-  };
+function serializeTimelineCache(operation) {
+  const result = timelineCacheOperation.then(operation);
+  timelineCacheOperation = result.catch(() => {});
+  return result;
 }
 
-async function saveCachedTranslationTimeline(payload = {}, settings = {}) {
-  const storedSettings = sanitizeSettings({ ...(await getStoredSettings()), ...settings });
-  if (!storedSettings.cacheTranslations) {
-    return { ok: true, payload: { saved: false, disabled: true } };
-  }
-  const request = await makeBackgroundTimelineCacheRequest(payload, storedSettings);
-  const stored = await chrome.storage.local.get(TIMELINE_CACHE_STORAGE_KEY);
-  const cache = LocalTubeDubBackgroundHelpers.upsertTimelineCache(
-    stored[TIMELINE_CACHE_STORAGE_KEY],
-    request,
-    {
-      sourceLanguage: payload.sourceLanguage,
-      trackLanguage: payload.trackLanguage,
-      cues: payload.cues
+function getCachedTranslationTimeline(payload = {}, settings = {}) {
+  return serializeTimelineCache(async () => {
+    const storedSettings = sanitizeSettings({ ...(await getStoredSettings()), ...settings });
+    if (!storedSettings.cacheTranslations) {
+      return { ok: true, payload: { hit: false, disabled: true } };
     }
-  );
-  await chrome.storage.local.set({ [TIMELINE_CACHE_STORAGE_KEY]: cache });
-  const entry = LocalTubeDubBackgroundHelpers.findTimelineCache(cache, request).entry;
-  return { ok: true, payload: { saved: Boolean(entry), count: cache.entries.length } };
+    const request = await makeBackgroundTimelineCacheRequest(payload, storedSettings);
+    const stored = await chrome.storage.local.get(TIMELINE_CACHE_STORAGE_KEY);
+    const result = LocalTubeDubBackgroundHelpers.findTimelineCache(stored[TIMELINE_CACHE_STORAGE_KEY], request);
+    const previous = stored[TIMELINE_CACHE_STORAGE_KEY];
+    if (previous?.version !== result.cache.version || previous?.entries?.length !== result.cache.entries.length) {
+      await chrome.storage.local.set({ [TIMELINE_CACHE_STORAGE_KEY]: result.cache });
+    }
+    return {
+      ok: true,
+      payload: {
+        hit: Boolean(result.entry),
+        entry: result.entry || null,
+        count: result.cache.entries.length
+      }
+    };
+  });
 }
 
-async function clearTranslationTimelineCache() {
-  await chrome.storage.local.remove(TIMELINE_CACHE_STORAGE_KEY);
-  return { ok: true, payload: { cleared: true } };
+function saveCachedTranslationTimeline(payload = {}, settings = {}) {
+  return serializeTimelineCache(async () => {
+    const storedSettings = sanitizeSettings({ ...(await getStoredSettings()), ...settings });
+    if (!storedSettings.cacheTranslations) {
+      return { ok: true, payload: { saved: false, disabled: true } };
+    }
+    const request = await makeBackgroundTimelineCacheRequest(payload, storedSettings);
+    const stored = await chrome.storage.local.get(TIMELINE_CACHE_STORAGE_KEY);
+    const cache = LocalTubeDubBackgroundHelpers.upsertTimelineCache(
+      stored[TIMELINE_CACHE_STORAGE_KEY],
+      request,
+      {
+        sourceLanguage: payload.sourceLanguage,
+        trackLanguage: payload.trackLanguage,
+        cues: payload.cues
+      }
+    );
+    await chrome.storage.local.set({ [TIMELINE_CACHE_STORAGE_KEY]: cache });
+    const entry = LocalTubeDubBackgroundHelpers.findTimelineCache(cache, request).entry;
+    return { ok: true, payload: { saved: Boolean(entry), count: cache.entries.length } };
+  });
+}
+
+function clearTranslationTimelineCache() {
+  return serializeTimelineCache(async () => {
+    await chrome.storage.local.remove(TIMELINE_CACHE_STORAGE_KEY);
+    return { ok: true, payload: { cleared: true } };
+  });
 }
 
 function sanitizeVoiceId(voiceId) {
@@ -1039,11 +1090,14 @@ async function synthesizeSpeechWithEngine(payload = {}, settings = {}) {
     }
     failures.push(
       LocalTubeDubBackgroundHelpers.classifyTtsEngineFailure({
-        code: response.payload?.code,
+        code: response.payload?.code || response.code,
         status: response.status,
         error: response.error || "没有返回音频"
       })
     );
+    if (response.status !== 404) {
+      return LocalTubeDubBackgroundHelpers.resolveTtsEngineFailure(failures);
+    }
   } catch (error) {
     failures.push(
       LocalTubeDubBackgroundHelpers.classifyTtsEngineFailure(
@@ -1051,6 +1105,9 @@ async function synthesizeSpeechWithEngine(payload = {}, settings = {}) {
         { transportFailure: true }
       )
     );
+    if (!LocalTubeDubBackgroundHelpers.shouldAutoStartCaptionEngine({ error: error.message || String(error) })) {
+      return LocalTubeDubBackgroundHelpers.resolveTtsEngineFailure(failures);
+    }
   }
 
   try {
@@ -1542,6 +1599,7 @@ async function transcribeTabAudio(payload = {}, settings = {}, tabId) {
     throwIfAborted(signal, "转写已取消");
     const recording = await chrome.runtime.sendMessage({
       type: "localtube.offscreenRecordTabAudio",
+      requestId,
       streamId: streamIdResult.streamId,
       durationMs: Math.round(durationSeconds * 1000)
     });
@@ -1724,7 +1782,15 @@ async function cancelFullTranscript(jobId, settings = {}) {
 }
 
 async function startDubTrack(payload = {}, settings = {}) {
-  const storedSettings = sanitizeSettings({ ...(await getStoredSettings()), ...settings });
+  const persistedSettings = await getStoredSettings();
+  const storedSettings = sanitizeSettings({ ...persistedSettings, ...settings });
+  if (storedSettings.ttsEngine === "edge" && !persistedSettings.microsoftTtsConsent) {
+    return {
+      ok: false,
+      code: "MICROSOFT_TTS_CONSENT_REQUIRED",
+      error: "请先在扩展界面同意 Microsoft 在线配音的数据传输说明。"
+    };
+  }
   const cues = normalizeDubTrackCues(payload.cues);
   if (!cues.length) {
     return { ok: false, code: "INVALID_DUB_TRACK_CUES", error: "没有可导出的翻译字幕。" };
@@ -2004,7 +2070,8 @@ async function ensureOffscreenDocument() {
   await creatingOffscreenDocument;
 }
 
-async function cancelOffscreenRecording() {
+async function cancelOffscreenRecording(requestId) {
+  if (!requestId) return { ok: true, cancelled: false };
   const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
   const contexts = chrome.runtime.getContexts
     ? await chrome.runtime.getContexts({
@@ -2017,13 +2084,13 @@ async function cancelOffscreenRecording() {
     return { ok: true, cancelled: false };
   }
 
-  const response = await chrome.runtime.sendMessage({ type: "localtube.offscreenCancelTabAudio" }).catch(() => null);
+  const response = await chrome.runtime.sendMessage({ type: "localtube.offscreenCancelTabAudio", requestId }).catch(() => null);
   return response || { ok: true, cancelled: false };
 }
 
 async function cancelTabAudioRecording(requestId) {
   const transcriptionCancelled = cancelTranscriptionRequest(requestId);
-  const recordingResult = await cancelOffscreenRecording();
+  const recordingResult = await cancelOffscreenRecording(requestId);
   return {
     ok: true,
     cancelled: Boolean(recordingResult.cancelled || transcriptionCancelled),
@@ -2181,7 +2248,7 @@ async function transcribeRecordingWithOpenAICompatible(recording, options) {
     signal: options.signal
   }, 75000, `${options.provider.label} 转写请求超时`);
 
-  const text = await response.text();
+  const text = response.text;
   let payload = {};
   try {
     payload = text ? JSON.parse(text) : {};
@@ -2231,7 +2298,7 @@ async function transcribeRecordingWithDeepgram(recording, options) {
     signal: options.signal
   }, 75000, "Deepgram 转写请求超时");
 
-  const text = await response.text();
+  const text = response.text;
   let payload = {};
   try {
     payload = text ? JSON.parse(text) : {};
@@ -2773,7 +2840,7 @@ async function fetchProviderJson(url, request = {}) {
     abortMessage: request.abortMessage || "翻译已取消"
   }, 90000, "AI 翻译请求超时");
 
-  const text = await response.text();
+  const text = response.text;
   let payload = {};
   try {
     payload = text ? JSON.parse(text) : {};
@@ -3045,7 +3112,7 @@ async function fetchForExtension(request = {}) {
     abortMessage: request.abortMessage || "操作已取消"
   }, request.timeoutMs || 30000, request.timeoutMessage || "扩展网络请求超时");
 
-  const text = await response.text();
+  const text = response.text;
   return {
     ok: response.ok,
     status: response.status,
@@ -3066,10 +3133,12 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 60000, timeoutMes
   }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...fetchOptions,
       signal: controller.signal
     });
+    const text = await response.text();
+    return { ok: response.ok, status: response.status, url: response.url, text };
   } catch (error) {
     if (error?.name === "AbortError") {
       if (externalSignal?.aborted) {

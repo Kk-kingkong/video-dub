@@ -35,8 +35,8 @@ REGISTRY_ROOT = (
     r"HKCU\Software\Google\Chrome\NativeMessagingHosts"
     rf"\{NATIVE_HOST_NAME}"
 )
-WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.8-Windows-x64.zip"
-WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.8-Windows-x64-SHA256SUMS.txt"
+WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.9-Windows-x64.zip"
+WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.9-Windows-x64-SHA256SUMS.txt"
 WINDOWS_TEMPLATES = {
     "launcher": ROOT_DIR / "packaging" / "windows" / "Install LocalTube Dub Engine.cmd.in",
     "installer": ROOT_DIR / "packaging" / "windows" / "install-engine.ps1.in",
@@ -197,7 +197,7 @@ def verify_native_health_identity() -> None:
     runtime_root = ROOT_DIR / "Windows Runtime 路径"
     identity = {
         "service": "localtube-dub",
-        "engineVersion": "0.2.8",
+        "engineVersion": "0.2.9",
         "protocolVersion": 2,
         "platform": "windows",
         "architecture": "x64",
@@ -513,7 +513,7 @@ def wait_for_exact_health(
                 health = json.loads(response.read())
             expected = {
                 "service": "localtube-dub",
-                "engineVersion": "0.2.8",
+                "engineVersion": "0.2.9",
                 "protocolVersion": 2,
                 "platform": "windows",
                 "architecture": "x64",
@@ -551,7 +551,7 @@ def invoke_manager(
             "-Action",
             action,
             "-ExpectedVersion",
-            "0.2.8",
+            "0.2.9",
             "-ExpectedRuntimeRoot",
             str(runtime_root),
             "-StateRootOverride",
@@ -594,8 +594,10 @@ def task_fixture_exists(env: dict[str, str]) -> bool:
     return completed.returncode == 0
 
 
-def invoke_native_launcher(launcher: Path, env: dict[str, str]) -> dict[str, Any]:
-    request = json.dumps({"type": "start"}).encode("utf-8")
+def invoke_native_launcher(
+    launcher: Path, env: dict[str, str], message_type: str = "start"
+) -> dict[str, Any]:
+    request = json.dumps({"type": message_type}).encode("utf-8")
     framed = struct.pack("<I", len(request)) + request
     timed_out = False
     with tempfile.TemporaryFile(mode="w+b") as stdin_file:
@@ -757,6 +759,21 @@ def verify_install_smoke(package: Path) -> None:
                 require(completed.returncode != 0, "fault-injected installer unexpectedly passed")
             return completed
 
+        def require_registry_absent() -> None:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey):
+                    pass
+            except FileNotFoundError:
+                return
+            raise VerificationError("rollback recreated an originally absent Native registry key")
+
+        def fail_manual_install() -> None:
+            failed = run_installer({"LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE": "1"},
+                                   expect_success=False, extension_id="c" * 32)
+            require("Injected installer failure after activation." in failed.stdout + failed.stderr,
+                    f"manual failure fixture did not reach activation/complete rollback:\n{failed.stdout}\n{failed.stderr}")
+            require(not state_path.exists(), "manual rollback left Engine running")
+
         def cleanup() -> None:
             for manager in (runtime_root / "manage-engine.ps1", managers[0]):
                 if not manager.is_file():
@@ -773,7 +790,7 @@ def verify_install_smoke(package: Path) -> None:
                         "-Action",
                         "Stop",
                         "-ExpectedVersion",
-                        "0.2.8",
+                        "0.2.9",
                         "-ExpectedRuntimeRoot",
                         str(runtime_root),
                         "-StateRootOverride",
@@ -838,6 +855,11 @@ def verify_install_smoke(package: Path) -> None:
                 run_installer(expect_success=False, extension_id=invalid_id)
                 require(not runtime_root.exists() and not native_manifest_path.exists(),
                         "invalid extension ID modified the installation")
+            print("Windows smoke: failed first install restores absent registration", flush=True)
+            fail_manual_install()
+            require(not runtime_root.exists() and not native_manifest_path.exists(),
+                    "failed first installation left a runtime or Native manifest")
+            require_registry_absent()
             print("Windows smoke: initial install", flush=True)
             create_legacy_task_fixture(env)
             require(task_fixture_exists(env), "legacy login-start fixture was not registered")
@@ -853,7 +875,7 @@ def verify_install_smoke(package: Path) -> None:
                 runtime_root,
                 state_path,
             )
-            require(health["engineVersion"] == "0.2.8", "wrong Engine version accepted")
+            require(health["engineVersion"] == "0.2.9", "wrong Engine version accepted")
 
             stale_state = dict(initial_state)
             stale_state["pid"] = os.getpid()
@@ -950,6 +972,45 @@ def verify_install_smoke(package: Path) -> None:
                     "manually migrated Native Host did not restart Engine")
             _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
 
+            print("Windows smoke: repair through the installed Native Host", flush=True)
+            repair_marker = runtime_root / "native-repair-fixture.txt"
+            repair_marker.write_text("same runtime", encoding="utf-8")
+            original_runtime_id = runtime_root.stat().st_ino
+            original_origins = json.loads(native_manifest_path.read_bytes())["allowed_origins"]
+            create_legacy_task_fixture(env)
+            repaired = invoke_native_launcher(
+                runtime_root / "companion" / "native_host_launcher.exe", env, "install-autostart")
+            require(repaired.get("ok") is True, f"installed Native repair failed: {repaired}")
+            require(runtime_root.stat().st_ino == original_runtime_id
+                    and repair_marker.read_text(encoding="utf-8") == "same runtime",
+                    "Native repair replaced the runtime directory held by its caller")
+            require(json.loads(native_manifest_path.read_bytes())["allowed_origins"] == original_origins,
+                    "Native repair lost existing extension bindings")
+            require(not task_fixture_exists(env) and not state_path.exists(),
+                    "Native repair left login startup or a running trial Engine")
+
+            print("Windows smoke: installed Native repair failure restores registration", flush=True)
+            original_registration = native_manifest_path.read_bytes()
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey) as registry_key:
+                original_registry_value = winreg.QueryValueEx(registry_key, None)
+            failed_repair = invoke_native_launcher(
+                runtime_root / "companion" / "native_host_launcher.exe",
+                {**env, "LOCAL_DUB_INSTALL_FAIL_AFTER_MOVE": "1"}, "repair-autostart")
+            require(failed_repair.get("ok") is False
+                    and "Injected installer failure after activation." in failed_repair.get("error", ""),
+                    f"Native repair did not reach the rollback fixture: {failed_repair}")
+            require(runtime_root.stat().st_ino == original_runtime_id
+                    and repair_marker.read_text(encoding="utf-8") == "same runtime"
+                    and native_manifest_path.read_bytes() == original_registration,
+                    "failed Native repair moved the runtime or lost original registration bytes")
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey) as registry_key:
+                require(winreg.QueryValueEx(registry_key, None) == original_registry_value,
+                        "failed Native repair changed the original registry binding")
+            require(not state_path.exists(), "failed Native repair left a trial Engine running")
+            require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
+                    "Native repair rollback did not leave a working Engine")
+            _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
+
             owned_registration = json.loads(native_manifest_path.read_bytes())
             foreign_registration = {**owned_registration, "path": str(root / "foreign-launcher.exe")}
             native_manifest_path.write_text(json.dumps(foreign_registration), encoding="utf-8")
@@ -960,6 +1021,61 @@ def verify_install_smoke(package: Path) -> None:
             native_manifest_path.write_text(json.dumps(owned_registration), encoding="utf-8")
             require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
                     "manually repaired Native Host did not restart Engine")
+            _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
+
+            print("Windows smoke: manual rollback restores exact bindings and registry value", flush=True)
+            original_registration = (json.dumps(owned_registration, indent=3) + "\n").encode("utf-8")
+            native_manifest_path.write_bytes(original_registration)
+            marker = runtime_root / "rollback-fixture.txt"
+            marker.write_text("previous runtime", encoding="utf-8")
+            original_default = (r"%LOCALAPPDATA%\prior-native.json", winreg.REG_EXPAND_SZ)
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey, 0, winreg.KEY_SET_VALUE) as registry_key:
+                winreg.SetValueEx(registry_key, "", 0, original_default[1], original_default[0])
+                winreg.SetValueEx(registry_key, "retained-value", 0, winreg.REG_SZ, "keep")
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, registry_subkey + r"\retained-subkey") as registry_key:
+                winreg.SetValueEx(registry_key, "", 0, winreg.REG_SZ, "keep child")
+            fail_manual_install()
+            require(native_manifest_path.read_bytes() == original_registration
+                    and marker.read_text(encoding="utf-8") == "previous runtime",
+                    "manual rollback lost original Native bytes or previous runtime")
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey) as registry_key:
+                require(winreg.QueryValueEx(registry_key, None) == original_default,
+                        "manual rollback changed the original registry value/type or expanded its data")
+                require(winreg.QueryValueEx(registry_key, "retained-value") == ("keep", winreg.REG_SZ),
+                        "manual install cleared an unrelated registry value")
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey + r"\retained-subkey") as registry_key:
+                require(winreg.QueryValueEx(registry_key, None) == ("keep child", winreg.REG_SZ),
+                        "manual install cleared an unrelated registry subkey")
+
+            print("Windows smoke: manual rollback preserves a key without its default value", flush=True)
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey, 0, winreg.KEY_SET_VALUE) as registry_key:
+                winreg.DeleteValue(registry_key, "")
+            fail_manual_install()
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_subkey) as registry_key:
+                try:
+                    winreg.QueryValueEx(registry_key, None)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise VerificationError("manual rollback recreated an originally absent registry default value")
+                require(winreg.QueryValueEx(registry_key, "retained-value") == ("keep", winreg.REG_SZ),
+                        "manual rollback lost the original registry key contents")
+            require(native_manifest_path.read_bytes() == original_registration,
+                    "manual rollback without a default value lost original Native bytes")
+
+            print("Windows smoke: manual rollback restores absent registration for an existing runtime", flush=True)
+            native_manifest_path.unlink()
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, registry_subkey + r"\retained-subkey")
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, registry_subkey)
+            fail_manual_install()
+            require(not native_manifest_path.exists() and marker.read_text(encoding="utf-8") == "previous runtime",
+                    "manual rollback recreated missing registration or lost the previous runtime")
+            require_registry_absent()
+            native_manifest_path.write_bytes(original_registration)
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, registry_subkey) as registry_key:
+                winreg.SetValueEx(registry_key, "", 0, registry_type, registered_manifest)
+            require(invoke_native_launcher(runtime_root / "companion" / "native_host_launcher.exe", env).get("ok"),
+                    "manual rollback did not restore a working Engine")
             _, repaired_state = wait_for_exact_health(port, runtime_root, state_path)
 
             print("Windows smoke: automatic update preserves existing extension bindings", flush=True)

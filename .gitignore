@@ -27,3 +27,9 @@ ggml-*.bin
 .idea/
 .vscode/
 .worktrees/
+.local/
+.pycache/
+
+# AOCI agent host integration (machine-bound; do not commit)
+.codex/config.toml
+.codex/config.toml.backup.*

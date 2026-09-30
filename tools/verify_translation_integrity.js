@@ -15,7 +15,10 @@ const context = vm.createContext({
   crypto: require("node:crypto").webcrypto,
   chrome: {
     storage: {
-      sync: { get: async (defaults) => ({ ...defaults, ...syncData }) },
+      sync: {
+        get: async (defaults) => ({ ...defaults, ...syncData }),
+        set: async (values) => Object.assign(syncData, structuredClone(values))
+      },
       local: {
         get: async (key) => ({ [key]: structuredClone(localData[key]) }),
         set: async (values) => Object.assign(localData, structuredClone(values)),
@@ -25,7 +28,7 @@ const context = vm.createContext({
     runtime: {
       getManifest: () => ({ version: "test" }),
       onInstalled: { addListener() {} },
-      onMessage: { addListener() {} }
+      onMessage: { addListener(listener) { context.onMessage = listener; } }
     }
   },
   importScripts(...names) {
@@ -35,6 +38,65 @@ const context = vm.createContext({
   }
 });
 vm.runInContext(fs.readFileSync(path.join(extension, "background.js"), "utf8"), context);
+
+async function verifyAutomaticVoiceSettingWrites() {
+  const send = (message) => new Promise((resolve) => context.onMessage(message, {}, resolve));
+  const page = vm.createContext({
+    LocalTubeDubHelpers: contentHelpers, LocalTubeDubVoiceHelpers: require("../extension/voice_helpers.js"),
+    location: new URL("https://www.youtube.com/watch?v=voice-settings"),
+    chrome: { runtime: { getManifest: () => ({ version: "test" }) } }
+  });
+  vm.runInContext(fs.readFileSync(path.join(extension, "content.js"), "utf8").replace("\nboot();", ""), page);
+  const state = vm.runInContext("state", page);
+  Object.assign(page, { sendRuntimeMessage: send, renderAvailableVoiceOptions() {}, renderAvailableTtsEngineOptions() {}, setStatus() {} });
+  const old = { ...state.settings, provider: "native", targetLanguage: "zh-CN", ttsEngine: "kokoro", voiceId: "zf_002" };
+  state.settings = { ...old };
+  await send({ type: "localtube.setSettings", settings: { ...old, provider: "deepseek", targetLanguage: "en-US", voiceId: "af_maple" } });
+  await page.applyKokoroVoiceFallback({ voiceFallback: true, actualVoice: "zf_003" }, "zf_002");
+  assert.equal(syncData.provider, "deepseek", "an inactive tab cannot restore its old translation provider");
+  assert.equal(syncData.targetLanguage, "en-US");
+  assert.equal(syncData.voiceId, "af_maple", "an old-language fallback cannot replace a newly selected voice");
+
+  // Matching voice identity permits only a voice patch, preserving unrelated newer preferences.
+  state.settings = { ...old };
+  await send({ type: "localtube.setSettings", settings: { ...old, provider: "deepseek", originalVolume: 0.7 } });
+  await page.applyKokoroVoiceFallback({ voiceFallback: true, actualVoice: "zf_003" }, "zf_002");
+  assert.equal(syncData.voiceId, "zf_003");
+  assert.equal(syncData.provider, "deepseek");
+  assert.equal(syncData.originalVolume, 0.7);
+  assert.equal(state.settings.provider, "native", "the page must not import another tab's settings response");
+
+  state.settings = { ...old, ttsEngine: "system", voiceId: "Tingting" };
+  state.renderedTtsEngine = "system";
+  page.applyEnginePlatformPolicy("windows");
+  await new Promise(setImmediate);
+  assert.equal(syncData.ttsEngine, "kokoro", "an old platform correction cannot replace the current engine");
+  assert.equal(syncData.voiceId, "zf_003");
+
+  const sync = context.chrome.storage.sync;
+  const originalGet = sync.get;
+  let finishRead;
+  let signalRead;
+  const started = new Promise((resolve) => { signalRead = resolve; });
+  const gate = new Promise((resolve) => { finishRead = resolve; });
+  let gated = false;
+  sync.get = async (defaults) => {
+    const snapshot = await originalGet(defaults);
+    if (!gated) { gated = true; signalRead(); await gate; }
+    return snapshot;
+  };
+  try {
+    const expected = { ...syncData };
+    const correction = context.saveSettings({ voiceId: "zf_002" }, { expectedVoiceSettings: expected });
+    await started;
+    const userSave = context.saveSettings({ ...expected, targetLanguage: "ja-JP", ttsEngine: "edge", voiceId: "auto" });
+    finishRead();
+    await Promise.all([correction, userSave]);
+    assert.equal(syncData.targetLanguage, "ja-JP", "a correction read/write must serialize with user saves");
+    assert.equal(syncData.ttsEngine, "edge");
+    assert.equal(syncData.voiceId, "auto");
+  } finally { sync.get = originalGet; }
+}
 
 async function verifyContentCacheIdentity(failures) {
   let failNextApi = false;
@@ -143,8 +205,119 @@ async function verifyContentCacheIdentity(failures) {
   });
 }
 
+async function verifyConcurrentCacheOperations() {
+  const local = context.chrome.storage.local;
+  const originalGet = local.get;
+  const originalSet = local.set;
+  const payload = (videoId) => ({ videoId, provider: "youtube-captions", targetLanguage: "zh-CN",
+    cues: [{ start: 0, end: 1, text: "你好", translatedText: "你好" }] });
+  try {
+    await context.clearTranslationTimelineCache();
+    let releaseRead;
+    let readStarted;
+    const started = new Promise((resolve) => { readStarted = resolve; });
+    const gate = new Promise((resolve) => { releaseRead = resolve; });
+    let gated = false;
+    local.get = async (key) => {
+      const snapshot = await originalGet(key);
+      if (key === "translationTimelineCacheV1" && !gated) {
+        gated = true;
+        readStarted();
+        await gate;
+      }
+      return snapshot;
+    };
+    const first = context.saveCachedTranslationTimeline(payload("video-A"));
+    await started;
+    const second = context.saveCachedTranslationTimeline(payload("video-B"));
+    const lookup = context.getCachedTranslationTimeline(payload("video-B"));
+    releaseRead();
+    assert.ok((await first).payload.saved);
+    assert.ok((await second).payload.saved);
+    assert.ok((await lookup).payload.hit);
+    assert.equal(localData.translationTimelineCacheV1.entries.length, 2, "concurrent tabs retain both timelines");
+
+    await Promise.all([context.saveCachedTranslationTimeline(payload("video-C")), context.clearTranslationTimelineCache()]);
+    assert.equal(localData.translationTimelineCacheV1, undefined, "clear is ordered after pending saves");
+    local.set = async () => { throw new Error("storage full"); };
+    await assert.rejects(context.saveCachedTranslationTimeline(payload("failed")), /storage full/);
+    local.set = originalSet;
+    assert.ok((await context.saveCachedTranslationTimeline(payload("recovered"))).payload.saved, "failed writes do not poison the queue");
+    let writes = 0;
+    local.set = async (values) => { writes++; return originalSet(values); };
+    assert.ok((await context.getCachedTranslationTimeline(payload("recovered"))).payload.hit);
+    assert.equal(writes, 0, "unchanged reads do not rewrite stored timelines");
+  } finally {
+    local.get = originalGet;
+    local.set = originalSet;
+    await context.clearTranslationTimelineCache();
+  }
+}
+
+async function verifyPopupSaveOwnership() {
+  let form = { provider: "chrome-translator", targetLanguage: "ja" };
+  const notifications = [];
+  const pending = [];
+  const popup = vm.createContext({
+    console, clearTimeout, setTimeout,
+    LocalTubeDubVoiceHelpers: require("../extension/voice_helpers.js"),
+    LocalTubeDubPermissionHelpers: require("../extension/permission_helpers.js"),
+    document: { querySelector: () => ({ options: [] }), querySelectorAll: () => [] },
+    chrome: { runtime: {
+      getManifest: () => ({ version: "test" }),
+      sendMessage: (message) => new Promise((resolve) => pending.push({ ...message, resolve }))
+    } }
+  });
+  vm.runInContext(fs.readFileSync(path.join(extension, "popup.js"), "utf8").replace("\ninit();", ""), popup);
+  popup.buildSettingsFromForm = () => ({ ...form });
+  popup.normalizeMode = (settings) => settings;
+  popup.applyProviderRegistry = () => {};
+  popup.notifyActiveTab = (settings) => notifications.push(settings.targetLanguage);
+  popup.render = (settings) => { form = { ...settings }; };
+  popup.ensureSelectedPermissions = async () => {};
+  const first = popup.saveFromForm({ requestPermissions: false });
+  form.targetLanguage = "de";
+  const second = popup.saveFromForm({ requestPermissions: false });
+  pending[1].resolve({ ok: true, settings: pending[1].settings });
+  await second;
+  pending[0].resolve({ ok: true, settings: pending[0].settings });
+  assert.equal(await first, null, "superseded saves cannot trigger follow-up key validation");
+  assert.equal(form.targetLanguage, "de");
+  assert.equal(notifications.at(-1), "de", "late save cannot restore the older page configuration");
+
+  let releasePermission;
+  popup.ensureSelectedPermissions = () => new Promise((resolve) => { releasePermission = resolve; });
+  form.targetLanguage = "ja";
+  const delayed = popup.saveFromForm();
+  form.targetLanguage = "en-US";
+  const newest = popup.saveFromForm({ requestPermissions: false });
+  pending[2].resolve({ ok: true, settings: pending[2].settings });
+  await newest;
+  releasePermission();
+  assert.equal(await delayed, null);
+  assert.equal(pending.length, 3, "a stale permission prompt must not issue a late settings write");
+  assert.equal(form.targetLanguage, "en-US");
+  const explicitConsent = popup.saveFromForm({ requestPermissions: false, target: vm.runInContext("nodes.microsoftTtsConsent", popup) });
+  assert.equal(pending[3].consentChanged, true, "only the consent checkbox explicitly changes consent");
+  assert.equal(pending[2].consentChanged, false, "ordinary form saves cannot replay stale consent");
+  pending[3].resolve({ ok: true, settings: pending[3].settings });
+  await explicitConsent;
+  popup.ensureSelectedPermissions = async () => { throw new Error("unrelated permission was denied"); };
+  form.microsoftTtsConsent = false;
+  const revoking = popup.saveFromForm({ target: vm.runInContext("nodes.microsoftTtsConsent", popup) });
+  assert.equal(pending[4]?.consentChanged, true, "revoking consent must persist before any unrelated permission prompt");
+  const ordinary = popup.saveFromForm({ requestPermissions: false });
+  pending[5].resolve({ ok: true, settings: pending[5].settings });
+  await ordinary;
+  pending[4].resolve({ ok: true, settings: pending[4].settings });
+  await revoking;
+  assert.equal(form.microsoftTtsConsent, false, "a newer ordinary save must not lose an explicit revocation");
+}
+
 async function main() {
+  await verifyPopupSaveOwnership();
   const failures = [];
+  await verifyConcurrentCacheOperations();
   try {
     const responses = ['["第一段","额外重复","第二段"]', '["第一段"]', '["第二段"]'];
     context.translateBatchWithApiProvider = async (cues) => context.parseTranslationArray(responses.shift(), cues.length);
@@ -198,14 +371,19 @@ async function main() {
 
   try {
     const request = { videoId: "video", targetLanguage: "zh-CN", provider: "custom", model: "model-a" };
-    const legacyCache = {
-      version: 1,
-      entries: [{ key: helpers.timelineCacheKey(request), updatedAt: Date.now(), cues: [{ start: 0, end: 1, text: "stale", translatedText: "错配" }] }]
-    };
-    localData.translationTimelineCacheV1 = legacyCache;
-    assert.equal(helpers.findTimelineCache(legacyCache, request).cache.entries.length, 0, "legacy entries are removed even if their keys would match");
-    assert.equal((await context.getCachedTranslationTimeline(request)).payload.hit, false, "legacy timelines with untrustworthy identity must expire automatically");
-    assert.equal(localData.translationTimelineCacheV1.entries.length, 0, "migration removes only obsolete caption entries");
+    for (const version of [1, 2]) {
+      const legacyCache = {
+        version,
+        entries: [{ key: helpers.timelineCacheKey(request), updatedAt: Date.now(), cues: [{ start: 0, end: 1, text: "stale", translatedText: "错配" }] }]
+      };
+      localData.translationTimelineCacheV1 = legacyCache;
+      assert.equal(helpers.findTimelineCache(legacyCache, request).cache.entries.length, 0, "old caption identities are removed even if their keys match");
+      assert.equal((await context.getCachedTranslationTimeline(request)).payload.hit, false, "v1/v2 timelines with untrustworthy language identity must expire");
+      assert.equal(localData.translationTimelineCacheV1.entries.length, 0, "migration removes only obsolete caption entries");
+    }
+    const currentCache = helpers.upsertTimelineCache({}, request, { cues: [{ start: 0, end: 1, text: "hello", translatedText: "你好" }] });
+    assert.equal(currentCache.version, 3);
+    assert.equal(helpers.findTimelineCache(currentCache, request).entry.cues[0].translatedText, "你好");
     assert.equal(localData.apiKey_custom, "private-api-key", "cache migration preserves API keys");
     assert.deepEqual(syncData, { provider: "custom", sourceLanguage: "auto", cacheTranslations: true }, "cache migration preserves settings");
   } catch (error) {
@@ -272,6 +450,7 @@ async function main() {
   }
 
   await verifyContentCacheIdentity(failures);
+  try { await verifyAutomaticVoiceSettingWrites(); } catch (error) { failures.push(error); }
   for (const error of failures) console.error(error);
   assert.equal(failures.length, 0, "translation integrity regressions");
   console.log("translation integrity checks ok");

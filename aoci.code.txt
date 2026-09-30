@@ -1,0 +1,159 @@
+#AOCI-CODE-VOLUME: 1
+
+===/Users/kk/Documents/code/localtube-dub/===
+.gitattributes[FC5T]: F:统一文本检出为LF以稳定跨平台源码指纹 | R:- | A:Git text=auto eol=lf | S:二进制自动识别并保留原字节
+.gitignore[FC5T]: F:排除私有环境密钥模型媒体发行产物和机器绑定AOCI配置 | R:- | A:Git忽略规则 | S:dist包含私钥及生成安装包，均不得进入源码版本控制
+AGENTS.md[SC6S]: F:规定AOCI认知读取证据绑定创作和稳定状态维护流程 | R:- | A:aoci_rules、Overview、Guide及完整批次提交 | S:索引语义由模型读取证据后创作；工具收据不得伪造，恢复及批准边界不可跳过
+CHANGELOG.md[SV5L]: F:记录字幕配音同步Engine交付及版本演进 | R:code:extension/manifest.json | A:按版本和日期记录用户可见变化 | S:历史行为与当前行为可能不同，当前实现需结合源码核实
+CODE_OF_CONDUCT.md[SG3T]: F:规定社区行为及违规私密报告渠道 | R:code:SECURITY.md | A:适用于项目交流和官方代表行为 | S:-
+CONTRIBUTING.md[SQ5T]: F:约束贡献范围隐私依赖说明验证和发版要求 | R:code:docs/release-process.md,code:THIRD_PARTY_NOTICES.md | A:变更需相应回归检查及PR验证说明 | S:禁止遥测广告和远程可执行代码；不得提交用户凭证或媒体
+LICENSE[SG5M]: F:提供项目Apache2.0许可证与贡献者版权声明 | R:code:THIRD_PARTY_NOTICES.md | A:发行包携带完整许可证文本 | S:项目许可不替代外部依赖各自许可
+README.md[SG6S]: F:提供英文产品入口安装方式更新机制隐私及开发验证导航 | R:code:README.zh-CN.md,code:companion/README.md,code:docs/release-process.md | A:源码加载extension目录；当前版本0.2.9 | S:Engine自动更新与商店扩展更新独立；未完成系统签名公证
+README.zh-CN.md[SG6S]: F:提供中文产品入口现有字幕优先流程及安装验证说明 | R:code:README.md,code:companion/README.md,code:docs/privacy-policy.md | A:目标字幕优先、按需翻译、可选本地转写和配音 | S:低于0.2.8的Engine须手动迁移一次；解压扩展仍需手动覆盖重新加载
+SECURITY.md[SS6T]: F:定义漏洞私密报告范围与敏感数据处理约束 | R:- | A:GitHub私密漏洞报告；支持最新源码及发布版 | S:不得公开密钥Cookie完整音频或私人字幕；缺少私密渠道时只提出联络请求
+SUPPORT.md[SU4T]: F:指导版本Engine排查与公开支持渠道分流 | R:code:SECURITY.md,code:docs/support.md | A:报告版本系统Engine状态和复现步骤 | S:发日志截图前去除凭证及私人内容
+THIRD_PARTY_NOTICES.md[SS5T]: F:披露运行时模型及外部服务的许可归属与用途 | R:code:LICENSE,code:packaging/runtime-manifest.json | A:扩展与Engine发行包均附带第三方说明 | S:模型不打入Engine包，FFmpeg许可取决于具体构建
+
+===/Users/kk/Documents/code/localtube-dub/.github/ISSUE_TEMPLATE/===
+bug_report.yml[SQ3T]: F:收集版本平台Engine状态与可复现故障信息 | R:code:SECURITY.md | A:GitHub必填问题表单 | S:公开报告禁止附带密钥Cookie和私人媒体
+feature_request.yml[SQ3T]: F:收集翻译转写配音需求及新增权限隐私影响 | R:- | A:GitHub功能提案必填表单 | S:-
+
+===/Users/kk/Documents/code/localtube-dub/.github/===
+PULL_REQUEST_TEMPLATE.md[SQ4T]: F:要求贡献说明验证数据权限变化与发版元数据 | R:code:CONTRIBUTING.md | A:PR检查清单 | S:-
+
+===/Users/kk/Documents/code/localtube-dub/.github/workflows/===
+cross-platform-engine.yml[OV8S]: F:在macOS双架构及Windows运行验证构建和安装冒烟并上传发行包 | R:code:scripts/build_release_macos.sh,code:scripts/build_release_windows.py,code:tools/verify_windows_package.py | A:push main和codex分支、PR及手动触发 | S:Windows实际安装测试在隔离环境验证；两种macOS架构分别构建，产物路径固定为0.2.9
+publish-engine-update.yml[OV8T]: F:仅在草稿签名资产和对应提交CI通过后发布Engine更新，并只读复核外部发布 | R:code:tools/promote_engine_release.py,code:.github/workflows/cross-platform-engine.yml | A:默认分支workflow_dispatch接收tag；release.published触发只读审计 | S:只有手动晋升作业有contents写权限；管理员手动发布仍可绕过，仓库权限须独立管理
+
+===/Users/kk/Documents/code/localtube-dub/.superpowers/sdd/2026-07-30-cross-platform-kokoro-tts/===
+task-6-report.md[SV3T]: F:记录固定macOS运行时打包迁移与历史冒烟证据 | R:code:scripts/assemble_engine_runtime.py | A:0.1.99打包实现报告 | S:历史登录启动描述不代表当前按需生命周期
+task-7-report.md[SV3T]: F:记录Windows原生通信生命周期与隔离安装验收要求 | R:code:tools/verify_windows_package.py | A:0.2.0Windows交付报告 | S:macOS源码检查不能替代Windows实机冒烟
+
+===/Users/kk/Documents/code/localtube-dub/companion/===
+README.md[SV6S]: F:说明三平台Engine安装原生通信绑定按需运行与升级迁移 | R:code:companion/native_host.py,code:docs/release-process.md,code:server/local_dub_server.py | A:客户安装包、源码Native注册与LOCAL_DUB_EXTENSION_ID绑定命令 | S:同运行时Native注册可热读取，环境ID变更需重启；Native拒绝常源于ID不符；自动更新只作用于安装版
+install_native_host_macos.sh[OE7T]: F:准备用户私有Engine运行时并为指定Chrome扩展登记macOS Native Messaging入口 | R:code:scripts/install_engine_autostart_macos.sh,code:companion/native_host_launcher_macos.sh | A:位置参数为32位a-p扩展ID；输出stdio manifest和私有Python路径 | S:仅当旧manifest的名称、类型、绝对启动路径和全部origin均可信时保留既有扩展授权
+install_native_host_windows.ps1[OE4T]: F:将源码目录中的Python Native Host登记到当前Windows用户的Chrome注册表 | R:code:companion/native_host.py | A:必填ExtensionId；写入同目录manifest和HKCU NativeMessagingHosts默认值 | S:-
+native_host.py[EE9L]: F:处理Chrome二进制Native Messaging请求，复用配音服务并管理持久HTTP Engine及模型操作转发 | R:code:server/local_dub_server.py,code:server/engine_updates.py,code:packaging/windows/manage-engine.ps1.in,code:scripts/install_engine_autostart_macos.sh | A:四字节原生无符号长度加UTF-8 JSON；health/voices、字幕/翻译/转写/TTS、启动/重启及模型管理消息；--health、--demo | S:stdout只承载协议帧；模型安装必须转发常驻HTTP所有者；更新期间有副作用请求登记进程租约；Windows通过版本、运行目录和实例ID确认Engine身份
+native_host_launcher_macos.sh[RE6T]: F:选择私有或显式配置的Python并exec Native Host，补齐桌面应用启动时的工具搜索路径 | R:code:companion/native_host.py,code:companion/install_native_host_macos.sh | A:LOCALTUBE_DUB_PYTHON覆盖；其次私有.venv、记录的Python路径和PATH python3 | S:标准输出留给Native Messaging；找不到解释器时仅向stderr报告并退出127
+uninstall_native_host_macos.sh[OV6T]: F:移除macOS旧自启动、已识别的Chrome Native Host登记和Engine私有目录 | R:code:scripts/uninstall_engine_autostart_macos.sh | A:--purge额外清理缓存和日志；支持路径覆盖与干运行 | S:删除manifest前验证宿主名称；默认保留模型，purge也不删除Whisper模型
+
+===/Users/kk/Documents/code/localtube-dub/docs/===
+2026-09-05-code-review.zh-CN.md[SQ5T]: F:记录重复配音根因修复及字幕缓存生命周期改进证据 | R:code:extension/content_helpers.js,code:tools/verify_translation_integrity.js | A:0.2.5审查和0.2.6修复验收 | S:合成媒体复现不等于用户特定视频的听感验收
+_config.yml[FC3T]: F:配置GitHub Pages项目名称说明和最小主题 | R:code:docs/index.md | A:Jekyll主题jekyll-theme-minimal | S:-
+chrome-web-store-permissions.md[SS6T]: F:对照扩展权限解释用途授权时点与数据流 | R:code:extension/manifest.json,code:docs/privacy-policy.md | A:商店权限申报和隐私字段映射 | S:云端按精确origin授权；Microsoft语音经独立同意；更新器不新增Chrome权限
+chrome-web-store-roadmap.md[SG4T]: F:列出扩展Provider路由Engine和商店发行阶段 | R:code:docs/release-process.md | A:历史规划与交付路线 | S:阶段规划不等于全部功能已实现
+development-audit.md[SQ6L]: F:汇总历代回归证据产品边界和发布前验收项 | R:code:docs/2026-09-05-code-review.zh-CN.md,code:docs/2026-09-30-aoci-audit.zh-CN.md,code:docs/2026-09-30-second-review.zh-CN.md,code:docs/2026-09-30-third-review.zh-CN.md,code:docs/release-process.md | A:源码媒体生命周期与发行验证清单；0.2.9工作区修复及本机检查记录 | S:历史实测不能充当本次证据；本节的0.2.9发版前记录尚未验收三平台CI、真实YouTube和生产Kokoro；旧常驻要求已被按需启动取代
+index.md[SU4T]: F:提供双语项目主页及安装隐私支持入口 | R:code:docs/privacy-policy.md,code:docs/support.md | A:GitHub Pages公开产品说明 | S:-
+privacy-policy.md[SS7S]: F:披露字幕音频凭证存储第三方传输及Engine更新行为 | R:code:extension/background.js,code:server/engine_updates.py | A:扩展与配套Engine公开隐私政策 | S:无项目托管后台；同步偏好与仅本地凭证分离；用户选择及同意决定云端传输
+release-process.md[SV7S]: F:规定商店身份三平台打包签名草稿晋升与发行验收流程 | R:code:tools/sign_engine_update.py,code:tools/promote_engine_release.py,code:.github/workflows/publish-engine-update.yml | A:正式Store ID、草稿资产清单、默认分支手动晋升及独立商店提交 | S:私钥只保留本地；签名更新清单不等于安装器代码签名；不得并发修改晋升中的草稿；管理员绕过不受源码门禁约束
+store-listing-draft.md[SU4T]: F:准备商店单一用途功能限制宣传资产及审核步骤 | R:code:docs/chrome-web-store-permissions.md | A:商店中英文说明和审核材料草稿 | S:须展示实际版本界面且不得带私人凭证
+support.md[SU4T]: F:提供双语Engine更新迁移解压扩展绑定与故障报告帮助 | R:code:SUPPORT.md,code:docs/privacy-policy.md | A:GitHub Pages公开支持页面 | S:重启旧Engine不等于安装自动更新器
+2026-09-30-aoci-audit.zh-CN.md[SQ6S]: F:记录0.2.8接手建档、九项原始缺陷及后续性能优化与复查修复证据 | R:code:server/local_dub_server.py,code:extension/content.js,code:extension/background.js | A:基线5f8884a；初审复现、四项优化、原问题及额外修复、14项检查与验收边界 | S:初审行号和故障输出属于修复前证据；源码及隔离测试不等于真实Chrome或Windows验收，本次未发布
+2026-09-30-second-review.zh-CN.md[SQ6S]: F:记录第二轮九项缺陷的复现、修复行为、交叉复查与验收边界 | R:code:extension/background.js,code:extension/content.js,code:server/local_dub_server.py,code:packaging/macos/Install LocalTube Dub Engine.command.in | A:0.2.8工作区；初审证据；修复映射及14项检查结果 | S:九节为修复前证据；Windows仅源码验证，安装待CI；未验真实Chrome或生产模型；健康自测两次启动超时后原样复跑通过
+2026-09-30-third-review.zh-CN.md[SQ6T]: F:记录第三轮七项缺陷的复现、根因修复和验证边界 | R:code:extension/content.js,code:extension/background.js,code:server/kokoro_tts.py,code:server/engine_updates.py,code:packaging/windows/install-engine.ps1.in | A:0.2.8工作区；七项修复映射、14项检查及交叉复查 | S:隔离回归不等于真实Chrome或生产模型验收；Windows新增安装用例待CI；源码未提交发布
+
+===/Users/kk/Documents/code/localtube-dub/docs/superpowers/plans/===
+2026-07-14-open-source-store-compliance.md[SW3T]: F:记录开源治理与商店材料的实施和验证任务 | R:code:docs/store-listing-draft.md | A:0.1.95历史实施计划 | S:仅文档及元数据范围，不重构运行时
+2026-07-30-cross-platform-kokoro-tts.md[SW4L]: F:拆解Kokoro模型协议推理前端控制及三平台包实现任务 | R:code:server/kokoro_tts.py | A:0.2.0历史测试与交付计划 | S:计划中的断言示例不证明当前测试已执行
+2026-07-31-engine-lightweight-fallback.md[SW4L]: F:拆解轻量运行策略字幕浏览器语音与恢复界面实施步骤 | R:code:extension/content_helpers.js | A:0.2.1历史分步验证计划 | S:临时降级不能覆盖持久Provider音色设置
+2026-09-11-engine-auto-update.md[SW5T]: F:划分签名更新器安装回滚界面打包和发布验证职责 | R:code:server/engine_updates.py,code:tools/sign_engine_update.py | A:0.2.8自动更新实施计划 | S:商店提交是独立动作；签名私钥不交GitHub
+
+===/Users/kk/Documents/code/localtube-dub/docs/superpowers/specs/===
+2026-07-14-open-source-store-compliance-design.md[SG3T]: F:界定开源许可商店隐私与发布材料改造范围 | R:code:CONTRIBUTING.md | A:历史合规设计约束 | S:不得从其他扩展复制代码素材或宣传
+2026-07-30-cross-platform-kokoro-tts-design.md[SG5S]: F:定义可选离线Kokoro资源预算模型安全和跨平台交付约束 | R:code:server/kokoro_tts.py,code:extension/voice_helpers.js | A:模型操作、健康能力、语音回退及验收约定 | S:Kokoro只能明确回退到同语言本Provider音色，不可静默转云端
+2026-07-31-engine-lightweight-fallback-design.md[SG5S]: F:定义Engine失效时临时页面字幕本地翻译浏览器语音方案 | R:code:extension/content_helpers.js,code:extension/content.js | A:full与lightweight状态及用户可见恢复 | S:视频无字幕限流或Provider鉴权错误不能当作Engine故障激活轻量模式
+2026-09-11-engine-auto-update-design.md[SG6T]: F:定义签名更新信任链空闲交接和安装失败回滚契约 | R:code:server/engine_updates.py,code:companion/native_host.py | A:固定GitHub正式更新源、协议平台版本校验 | S:被动健康检查不能触发更新；保留扩展绑定模型与设置；不修改浏览器扩展文件
+
+===/Users/kk/Documents/code/localtube-dub/extension/assets/===
+icon-128.png[ZU4T]: F:提供扩展管理页及弹窗、安装页和视频浮层使用的128像素标志 | R:code:extension/manifest.json,code:tools/generate_extension_icons.py | A:128×128 PNG | S:-
+icon-16.png[ZU3T]: F:提供扩展清单声明的16像素应用标志 | R:code:extension/manifest.json,code:tools/generate_extension_icons.py | A:16×16 PNG | S:-
+icon-32.png[ZU3T]: F:提供扩展清单声明的32像素应用标志 | R:code:extension/manifest.json,code:tools/generate_extension_icons.py | A:32×32 PNG | S:-
+icon-48.png[ZU3T]: F:提供扩展清单声明的48像素应用标志 | R:code:extension/manifest.json,code:tools/generate_extension_icons.py | A:48×48 PNG | S:-
+icon-master.png[ZU4T]: F:作为应用和工具栏各尺寸图标的原始位图，绘制字幕、声波及语言转换图案 | R:code:tools/generate_extension_icons.py | A:图标生成器读取的PNG源图 | S:-
+icon.svg[ZU2T]: F:保留渐变播放三角、字幕线条与翻译符号组成的矢量标志 | R:- | A:128×128 SVG | S:-
+toolbar-icon-128.png[ZU3T]: F:提供浏览器工具栏动作使用的128像素放大标志 | R:code:extension/manifest.json,code:tools/generate_extension_icons.py | A:128×128 PNG | S:-
+toolbar-icon-16.png[ZU4T]: F:提供浏览器工具栏动作使用的16像素放大标志 | R:code:extension/manifest.json,code:tools/generate_extension_icons.py | A:16×16 PNG | S:-
+toolbar-icon-32.png[ZU3T]: F:提供浏览器工具栏动作使用的32像素放大标志 | R:code:extension/manifest.json,code:tools/generate_extension_icons.py | A:32×32 PNG | S:-
+toolbar-icon-48.png[ZU3T]: F:提供浏览器工具栏动作使用的48像素放大标志 | R:code:extension/manifest.json,code:tools/generate_extension_icons.py | A:48×48 PNG | S:-
+
+===/Users/kk/Documents/code/localtube-dub/extension/===
+background.js[AN9L]: F:调度扩展消息设置与凭证，连接翻译商和本机Engine并管理转写录音字幕缓存及导出任务 | R:code:extension/background_helpers.js,code:extension/permission_helpers.js,code:extension/content.js,code:extension/popup.js,code:extension/offscreen.js,code:server/local_dub_server.py,code:companion/native_host.py | A:localtube.*消息；HTTP和Native回退；requestId录音取消；consentChanged授权保存及撤回广播；expectedVoiceSettings条件音色补丁 | S:偏好sync、密钥local且仅回存在标志；设置写入含初始化串行，自动修正须匹配旧语言/引擎/音色且仅补丁引擎/音色；在线TTS含整轨核验持久同意，普通快照不能改授权；超时覆盖正文；缓存串行、脱敏身份哈希；TTS仅连接失败或旧404可Native回退，业务失败或超时不重放；Chrome翻译在页面执行
+background_helpers.js[DR7M]: F:提供请求取消登记、Engine兼容性和服务错误分类，以及有容量与有效期限制的字幕时间轴缓存 | R:code:extension/background.js | A:LocalTubeDubBackgroundHelpers与CommonJS；取消注册表和纯函数缓存接口 | S:先取消后开始保留60秒墓碑；complete仅清同控制器请求；只接纳version 3缓存，旧版可能错标语言或截断
+content.css[FU5L]: F:定义YouTube浮动控制面板、引擎及模型状态、折叠按钮和同步字幕覆盖层的暗色样式 | R:code:extension/content.js,code:extension/manifest.json | A:localtube-dub-root与ltd-*选择器，窄屏浮层布局 | S:-
+content.js[AU9L]: F:在YouTube页面编排字幕发现翻译和转写，同步实时配音原声音量完整音轨预览及字幕导出 | R:code:extension/content_helpers.js,code:extension/voice_helpers.js,code:extension/background.js,code:extension/page_probe.js,code:extension/content.css | A:浮层及settingsChanged共享设置过渡；expectedVoiceSettings条件音色修正；字幕事件桥；完整转写及整轨start/status/cancel轮询 | S:切换先用旧端点取消；启动先验代次并保留期间新设置；自动音色仅发字段补丁不合并回包；任务与播放代次隔离，迟到job取消、旧音频丢弃；仅缓存完整时间轴，tlang优先，降级废弃身份；补翻间隔10秒最多3次，永久错误停；不可变时间轴支撑键及前缀最大end缓存，重叠cue按start二分回扫；轻量限页面字幕/Chrome翻译/浏览器语音；导航还原音量；Kokoro单路其余三路
+content_helpers.js[DB8L]: F:解析去重字幕，构建播放优先翻译批次及语义配音段，计算预取媒体同步降级策略和导出格式 | R:code:extension/content.js | A:LocalTubeDubHelpers与CommonJS；JSON3/XML/VTT解析；SRT/VTT序列化；按容量选择预取段 | S:简繁中文及巴西葡语保留字幕身份；扩展音段保留已有分组；预取填满即停，重叠段end不单调不可直接二分；轻量降级排除内容和Provider错误；普通播放微调速率，仅显式跳转定位音频
+install.css[FU3S]: F:定义Engine安装说明页的暗色排版、命令块和复制按钮，并按发布渠道显示对应内容 | R:code:extension/install.html,code:extension/install.js | A:data-release-channel与data-audience控制显示 | S:-
+install.html[EU5S]: F:提供客户和开发者Engine安装、扩展绑定、启动修复、本地转写及诊断说明页面 | R:code:extension/install.js,code:extension/install.css,code:extension/install_helpers.js | A:安装操作按钮、动态下载列表和可复制命令占位节点 | S:-
+install.js[AU6M]: F:按发布清单填充安装包和支持链接，生成当前扩展ID绑定命令，并执行Engine启动修复与Whisper安装反馈 | R:code:extension/install.html,code:extension/install_helpers.js,code:extension/release-info.json,code:extension/background.js | A:页面按钮调用localtube.*消息；复制命令到剪贴板 | S:开发版命令假定仓库位于用户Documents/code/localtube-dub；Native Host拒绝访问时显示ID绑定修复区
+install_helpers.js[DV5S]: F:校验发布渠道、下载链接及平台安装包，缺失包列表时生成同版本默认文件名 | R:code:extension/install.js,code:extension/release-info.json | A:LocalTubeDubInstallHelpers与CommonJS导出；normalizeReleaseInfo | S:只接纳macOS arm64/x64和Windows x64包；下载索引链接不能直指ZIP；外部链接限定HTTPS
+manifest.json[FE8T]: F:声明Chrome MV3扩展入口、图标、YouTube注入范围及本机和可选网络权限 | R:code:extension/background.js,code:extension/content.js,code:extension/page_probe.js,code:extension/popup.html | A:版本0.2.9；最低Chrome 116；service_worker；MAIN及隔离世界内容脚本；action弹窗 | S:页面探针及其助手在document_start的MAIN世界先加载；控制脚本在document_idle隔离世界运行；tabCapture/offscreen和外部HTTPS主机权限均需按需申请
+offscreen.html[EU4T]: F:承载扩展后台标签页录音所需的无界面文档 | R:code:extension/offscreen.js,code:extension/background.js | A:加载offscreen.js的Chrome offscreen文档入口 | S:-
+offscreen.js[IM6S]: F:消费标签页音频流并保持回放，使用MediaRecorder录音后返回data URL或取消结果 | R:code:extension/background.js,code:extension/offscreen.html | A:offscreenRecordTabAudio要求streamId和requestId；offscreenCancelTabAudio按requestId取消 | S:单槽在取流前占用并拒绝并发；只有拥有者能取消；取消时晚到流也须停止，finally释放轨道与音频上下文
+page_probe.js[IE7M]: F:在YouTube主世界读取播放器与Innertube状态，捕获字幕网络响应并请求播放器加载字幕，通过事件桥交付隔离脚本 | R:code:extension/page_probe_helpers.js,code:extension/content.js,code:extension/manifest.json | A:localtube-dub页面状态及播放器字幕请求/响应事件；同源window消息 | S:字幕捕获包装fetch与XMLHttpRequest，须保留原调用行为；字幕响应仅按videoId缓存；激活字幕会操作播放器字幕轨道
+page_probe_helpers.js[IE6T]: F:归一化播放器响应和字幕轨道，选择当前视频候选并校验字幕URL | R:code:extension/page_probe.js | A:LocalTubeDubPageProbeHelpers与CommonJS导出 | S:只允许HTTPS YouTube域/api/timedtext；优先当前视频有字幕响应，但无匹配时仍可返回其他候选，消费端需核对videoId
+permission_helpers.js[DS6T]: F:把服务端点映射为去重的可选主机权限，并提供录音所需Chrome权限列表 | R:code:extension/background.js,code:extension/popup.js | A:optionalOriginForEndpoint、collectOptionalOrigins、optionalCapturePermissions | S:本机HTTP和YouTube已在清单授权，无需额外请求；其他端点必须HTTPS；录音同时需要tabCapture和offscreen
+popup.css[FU5L]: F:定义扩展设置弹窗中的语言配音选项、服务表单、Engine及模型卡片和状态反馈样式 | R:code:extension/popup.html,code:extension/popup.js | A:680像素宽暗色弹窗；低高度布局调整；hidden强制隐藏 | S:-
+popup.html[EU6M]: F:提供扩展启用、翻译和转写服务密钥、目标语言、配音及模型下载管理的表单入口 | R:code:extension/popup.js,code:extension/popup.css,code:extension/permission_helpers.js,code:extension/voice_helpers.js | A:Chrome action弹窗DOM；密码输入框及Microsoft数据传输同意项；版本占位0.2.9 | S:-
+popup.js[AU7L]: F:保存扩展设置并申请权限，验证密钥，展示Engine及模型状态并通知当前视频页 | R:code:extension/popup.html,code:extension/background.js,code:extension/permission_helpers.js,code:extension/voice_helpers.js | A:localtube.*后台消息；settingsChanged通知；显式同意复选框标记 | S:保存及通知受代次保护，撤回同意不等权限；页面通知先去密钥；未知平台保留system，健康轮询不唤醒Engine；关闭清计时器
+release-info.json[FV5T]: F:提供安装页使用的发布渠道、版本、扩展身份、Engine包和支持链接元数据 | R:code:extension/install.js,code:extension/install_helpers.js | A:JSON发布信息；当前development渠道0.2.9且未配置下载地址 | S:-
+voice_helpers.js[DU6S]: F:按平台、目标语言和配音引擎归一化用户选择，合并可用音色并生成展示选项 | R:code:extension/content.js,code:extension/popup.js | A:LocalTubeDubVoiceHelpers与CommonJS导出 | S:模型未就绪不得取消Kokoro选择；system仅macOS可用，平台未知暂保留配置；Kokoro仅支持中英文；浏览器音色只在system选择下兼容
+
+===/Users/kk/Documents/code/localtube-dub/packaging/macos/===
+Install LocalTube Dub Engine.command.in[OV9M]: F:校验暂存macOS客户运行时，替换安装目录和登记Native Host，失败恢复旧运行时及注册 | R:code:scripts/build_release_macos.sh,code:scripts/install_engine_deps_macos.sh,code:companion/install_native_host_macos.sh,code:server/engine_updates.py | A:__EXTENSION_ID__/__VERSION__模板；可指定扩展ID；LOCAL_DUB_UPDATE_INSTALL自动升级模式 | S:手动及自动失败均恢复原manifest存在性和字节；自动升级须已有归属正确的注册并保留全部授权；新Engine须在临时端口通过版本、协议、实例及路径健康检查才删除备份
+Install No-Caption Whisper.command.in[OV5T]: F:包装可双击的macOS无字幕转写安装入口并保留失败提示 | R:code:scripts/install_local_whisper_macos.sh,code:scripts/build_release_macos.sh | A:执行Whisper安装脚本；成功或失败后等待回车关闭 | S:-
+README.md.in[SV4T]: F:向macOS安装包用户说明首次安装、扩展ID重绑定、可选Whisper和卸载步骤 | R:code:scripts/build_release_macos.sh | A:填充版本和商店扩展ID后随包交付 | S:-
+Uninstall LocalTube Dub Engine.command.in[OV5T]: F:提供macOS可双击卸载入口，确认后调用Native Host卸载脚本 | R:code:companion/uninstall_native_host_macos.sh,code:scripts/build_release_macos.sh | A:y或Y确认卸载；完成后等待回车关闭 | S:-
+
+===/Users/kk/Documents/code/localtube-dub/packaging/===
+runtime-manifest.json[FV9L]: F:固定三个受支持平台的私有CPython、ffmpeg和完整Python依赖制品及Kokoro模型身份 | R:code:scripts/assemble_engine_runtime.py,code:server/kokoro_tts.py,code:scripts/build_release_windows.py,code:scripts/build_release_macos.sh | A:schemaVersion=1；macOS arm64/x64、Windows x64；每个制品声明URL、精确字节数和SHA-256 | S:运行时基于CPython 3.11.15与sherpa-onnx 1.13.4；这里只绑定Kokoro模型摘要，客户Engine包不包含模型载荷
+
+===/Users/kk/Documents/code/localtube-dub/packaging/windows/===
+Install LocalTube Dub Engine.cmd.in[OV4T]: F:从双击入口调用同目录Windows安装器并向调用方返回安装退出码 | R:code:packaging/windows/install-engine.ps1.in | A:所有参数转发PowerShell；安装失败时暂停窗口 | S:-
+install-engine.ps1.in[OV9M]: F:验证安装Windows私有Engine、Native Host及注册表入口，停止已验证旧进程并在失败时回滚 | R:code:scripts/build_release_windows.py,code:packaging/windows/manage-engine.ps1.in,code:scripts/assemble_engine_runtime.py,code:server/engine_updates.py,code:companion/native_host.py | A:ExtensionId、Repair；环境变量覆盖运行时、状态、端口及自动升级模式 | S:同目录手动Repair原地修复，避免Native调用者锁目录；自动升级仍需外部包及可信注册；失败恢复manifest存在性与字节、注册表默认值类型和未展开内容，保留其他值子键；只创建缺失键；源包先验合同，替换须再验，健康通过并停止试运行才删备份
+manage-engine.ps1.in[RR8M]: F:串行管理Windows Engine启停及状态，通过进程归属和精确健康身份控制生命周期 | R:code:companion/native_host.py,code:packaging/windows/install-engine.ps1.in,code:packaging/windows/uninstall-engine.ps1.in | A:Start/Stop/Status；ExpectedVersion、ExpectedRuntimeRoot、ExpectedInstanceId、端口和目录覆盖；可输出JSON | S:端口级命名互斥锁保护生命周期操作；只终止解释器路径与带引号服务脚本路径吻合且拥有回环监听的进程；状态文件记录实例ID以拒绝旧实例
+native-host-launcher.cs[IE7S]: F:将Chrome单次Native Messaging请求桥接到捆绑Python宿主并回传完整响应帧 | R:code:companion/native_host.py,code:scripts/build_release_windows.py | A:stdio四字节长度帧；最大帧64MiB；私有python.exe执行native_host.py | S:关闭子进程stdin后读取一个响应；响应完成后最多等待5秒并清理子进程；错误仅输出stderr
+uninstall-engine.ps1.in[OV6T]: F:确认后停止受管理Windows Engine，清理当前用户的任务、注册表、Native Host、运行时和状态目录 | R:code:packaging/windows/manage-engine.ps1.in,code:scripts/build_release_windows.py | A:Yes跳过交互；支持运行时、状态、manifest及端口覆盖 | S:停进程仍通过生命周期管理器确认归属；模型和产品缓存不在本脚本删除范围
+
+===/Users/kk/Documents/code/localtube-dub/scripts/===
+assemble_engine_runtime.py[OV9L]: F:按固定清单下载验真制品并离线组装可搬迁私有Python运行时，生成和验证安装树合同 | R:code:packaging/runtime-manifest.json,code:scripts/build_release_macos.sh,code:scripts/build_release_windows.py,code:scripts/install_engine_deps_macos.sh | A:平台/架构/output组装；verify-runtime配release-metadata校验；self-test输出隔离合成运行时 | S:客户安装只能验证已捆绑运行时；轮子安装禁用索引和依赖解析；树摘要排除锁文件及Python字节码但纳入软链接目标；macOS入口去除构建机绝对解释器路径
+build_release_macos.sh[OV8M]: F:生成当前主机架构的macOS Engine包与Chrome扩展包，绑定发布信息并运行包验证与安装冒烟 | R:code:extension/manifest.json,code:scripts/assemble_engine_runtime.py,code:tools/verify_release_packages.py,code:tools/smoke_release_macos.sh | A:扩展ID及可选输出目录；store/private-beta渠道；输出版本ZIP和SHA256SUMS | S:store发布必须提供HTTPS平台中立下载页；Engine包带私有运行时和自动升级标记但不带Kokoro模型，当前包仍未签名公证
+build_release_windows.py[OV8M]: F:在Windows上组装固定版本私有运行时，编译Native桥接器并打包客户安装器与校验文件 | R:code:scripts/assemble_engine_runtime.py,code:packaging/windows/native-host-launcher.cs,code:packaging/windows/install-engine.ps1.in,code:packaging/windows/manage-engine.ps1.in | A:--output、--cache；输出Windows x64 Engine ZIP及SHA-256文件 | S:版本与扩展ID目前由常量固定为0.2.9及商店ID；PowerShell模板使用UTF-8 BOM和CRLF；明确禁止打包Kokoro模型载荷
+install_engine_autostart_macos.sh[OV7T]: F:把开发运行时复制到用户Engine目录、验证Native Host可导入，并移除旧登录自启动 | R:code:scripts/uninstall_engine_autostart_macos.sh,code:companion/native_host.py | A:LOCAL_DUB_RUNTIME_DIR、LOCAL_DUB_PYTHON及干运行覆盖 | S:脚本名为兼容旧repair客户端保留；现行安装采用按需启动而不创建LaunchAgent；源目录与目标相同时跳过复制
+install_engine_deps_macos.sh[OV8S]: F:区分客户包和显式源码开发模式，验证捆绑运行时或准备开发虚拟环境依赖 | R:code:scripts/assemble_engine_runtime.py,code:scripts/start_engine_macos.sh,code:packaging/macos/Install LocalTube Dub Engine.command.in | A:--source-development允许开发安装；客户模式要求release.json及runtime-lock.json完整匹配 | S:客户包禁止回退到联网安装；仅明确源码开发模式可使用Homebrew与pip；模型不在此阶段下载
+install_local_whisper_macos.sh[OV6T]: F:使用Homebrew安装whisper.cpp和ffmpeg，下载指定Whisper模型并使Engine重新发现转写能力 | R:code:scripts/start_engine_macos.sh,code:companion/native_host.py | A:模型名和模型目录环境覆盖；安装完成调用本地restart或启动脚本 | S:这是用户显式选择的可选安装流程，要求已有Homebrew；默认多语言base模型保留于用户数据目录
+start_engine_macos.sh[RR7T]: F:选择Python、探测当前Engine版本及端口占用，必要时停止旧服务并前台启动本地HTTP桥接 | R:code:server/local_dub_server.py,code:extension/manifest.json | A:LOCAL_DUB_HOST/PORT/PYTHON覆盖；已有匹配版本则直接返回 | S:只终止命令行包含local_dub_server.py的监听者；其他进程占用端口时拒绝启动并提示更换端口
+uninstall_engine_autostart_macos.sh[OV5T]: F:卸载历史macOS Engine LaunchAgent并移除其plist | R:code:scripts/install_engine_autostart_macos.sh,code:companion/uninstall_native_host_macos.sh | A:默认com.localtube.dub.engine.http；支持plist路径覆盖 | S:-
+
+===/Users/kk/Documents/code/localtube-dub/server/===
+engine_updates.py[OV9L]: F:验证固定GitHub发布源的签名更新，暂存兼容包并在Engine空闲时移交独立安装进程 | R:code:server/update-signing-cert.cer,code:server/local_dub_server.py,code:companion/native_host.py,code:packaging/macos/Install LocalTube Dub Engine.command.in,code:packaging/windows/install-engine.ps1.in | A:start_background_check、get_update_status、native_work_lease、begin_install_if_ready；--download下载子进程；--install安装助手 | S:仅捆绑且启用autoUpdate的支持平台参与；固定RSA-SHA256签名和包摘要、防降级及安全解压；安装前重验并重建可执行文件；HTTP工作与Native租约阻止切换；下载用当前Python子进程，300秒覆盖连接头部正文，超时kill并wait；partial仅成功才替换目标，失败清除并保留旧文件
+kokoro_tts.py[IB9L]: F:管理固定Kokoro模型下载验证和原子激活，提供懒加载CPU合成、同语言音色降级及有界装载恢复 | R:code:server/local_dub_server.py,code:packaging/runtime-manifest.json | A:模型安装/取消/卸载/状态；KokoroRuntime.synthesize、接收model_status的status及reset_after_model_uninstall；固定音色目录 | S:模型源路径摘要固定，1.1-int8绑定sherpa-onnx 1.13.4；单路2线程，闲置5分钟释放；音色只同语言本地回退；健康复用本次模型快照且不装载，ready包含冷加载资格；临时装载失败间隔30秒、连续最多3次，锁内复核；版本配置不兼容不重试；卸载重置预算及代次，拒收旧装载；耗尽须重启或重装
+local_dub_server.py[EB9L]: F:提供受来源约束的本地HTTP及可复用Native业务，协调字幕翻译转写三类TTS和完整音轨任务 | R:code:companion/native_host.py,code:server/kokoro_tts.py,code:server/engine_updates.py,code:extension/background.js | A:协议2；health/voices/captions/translate/transcribe/tts；完整转写及音轨start/status/cancel；模型管理；音轨Range/HEAD | S:HTTP限回环及实际Host，扩展Origin匹配包/同运行时注册/环境ID；本机无Origin可用JSON，YouTube只读音轨；POST限JSON及64MiB，拒绝不刷活跃；字幕地区键共用于缓存和单飞，失败缓存限TTL容量；重任务按FULL→DUB锁序准入，取消待worker退出，完成与取消同锁；Native模型归常驻HTTP，成功卸载重置Kokoro并淘汰旧装载；工作及租约保护升级；音轨旁车默认1小时过期
+update-signing-cert.cer[FS9T]: F:固定Engine自动升级清单的RSA验签信任锚 | R:code:server/engine_updates.py,code:tools/sign_engine_update.py | A:DER X.509证书，CN为LocalTube Dub Engine Updates；供openssl与Windows RSA验证清单签名 | S:发布包内仅含公钥证书；其SHA-256为0b874eb271e22e87ded67a0626c6735811a023737abc06789b2875afd9222b4c
+
+===/Users/kk/Documents/code/localtube-dub/tools/===
+benchmark_dub_track_parallel.py[TP4T]: F:用九段固定中文比较整轨单路与三路合成耗时并输出加速比 | R:code:server/local_dub_server.py | A:run_render构造并执行配音任务；main报告WAV时长与大小 | S:实际调用本机TTS和音频处理工具，非模拟性能测试
+benchmark_live_tts_prefetch.py[TP5T]: F:向运行中的Engine并发合成六段中文并检查实时预取耗时预算 | R:code:server/local_dub_server.py | A:synthesize请求/api/tts；wav_duration读取返回音频；main提供地址与耗时上限参数 | S:默认三路并发和十秒总预算；请求会实际生成语音，输出超过预算时以非零状态退出
+full_track_media_harness.html[TB4T]: F:提供整轨同步的浏览器交互测试页面与两路媒体元素 | R:code:tools/full_track_media_harness.js,code:extension/content_helpers.js | A:开始、暂停、恢复、跳转、倍速、结尾操作；状态输出区 | S:两路均为静音audio元素，页面不播放真实视频
+full_track_media_harness.js[TB6M]: F:生成十二秒WAV并在真实媒体元素上观测整轨暂停、拖动、倍速及结束同步 | R:code:extension/content_helpers.js,code:tools/full_track_media_harness.html | A:requestDubPlayback合并播放请求；sync调用生产同步函数；readFullTrackHarness暴露状态快照 | S:音频在浏览器内生成，无Engine请求；没有自动通过断言，需观察快照或驱动页面操作
+generate_extension_icons.py[XV3T]: F:从主图裁切并生成扩展与工具栏的四档PNG图标 | R:code:extension/assets/icon-master.png | A:square_image居中方裁；center_zoom放大工具栏主体；main写入16、32、48、128像素图 | S:依赖Pillow并覆盖现有图标；工具栏沿用普通图标透明度
+live_voice_media_harness.html[TB4T]: F:提供实时分段配音的正常启动、晚启动、暂停、跳转、倍速及媒体自检入口 | R:code:tools/live_voice_media_harness.js,code:extension/content_helpers.js | A:两路静音媒体元素；同步状态输出；两处脚本引用使用0.2.9缓存查询参数 | S:媒体自检需主动点击按钮，加载页面本身不执行
+live_voice_media_harness.js[TB7M]: F:用浏览器真实WAV媒体复核实时配音追赶速度、显式跳转与播放次数 | R:code:extension/content_helpers.js,code:tools/live_voice_media_harness.html | A:startAt重建播放计划；sync复用生产同步函数；readLiveVoiceHarness提供观测；selfTest检查晚启动、倍速、跳转 | S:媒体均本地生成；selfTest验证速率与定位，播放结束后是否重播仍需实际播放观察playCalls
+sign_engine_update.py[OS8S]: F:验证三平台Engine归档并在本地生成或校验稳定版自动更新清单与签名 | R:code:server/update-signing-cert.cer,code:server/engine_updates.py,code:tools/verify_update_publication.py,code:.github/workflows/publish-engine-update.yml | A:publish核对布局、版本、协议、证书、摘要并处理签名；main区分签名和只读验证模式 | S:签名必须匹配固定证书；已存在且内容不同的清单或签名拒绝覆盖；工具不上传GitHub，也不核验远端CI结果
+smoke_release_macos.sh[TV7S]: F:在临时目录验证macOS发行包安装完整性隔离属性回滚健康身份及卸载 | R:code:scripts/build_release_macos.sh,code:packaging/macos/Install LocalTube Dub Engine.command.in,code:tools/verify_release_packages.py,code:companion/uninstall_native_host_macos.sh | A:完整ZIP安装；损坏锁与文件拒绝；Native绑定检查；私有Python调用--health-smoke | S:需本机架构完整ZIP；注册为dry-run但会执行包内程序；关闭更新，临时端口健康检查要求版本路径实例和必要能力均吻合
+verify_engine_lifecycle.js[TR7M]: F:回归Engine唤醒重试、录音拥有者隔离、在线同意与响应体取消 | R:code:extension/background.js,code:extension/background_helpers.js,code:extension/offscreen.js | A:Chrome替身；被动健康及TTS不重放；录音资源释放；旧授权拒绝与撤回广播；真实Response流超时取消 | S:不启动真实Engine或录音；网络是替身；5秒真实看门狗防止未完成Promise导致Node静默成功
+verify_engine_lifecycle.py[TR8M]: F:验证Engine空闲退出工作保护关闭竞态及macOS按需注册和安装回滚 | R:code:server/local_dub_server.py,code:companion/native_host.py,code:tools/verify_local_engine.py,code:companion/install_native_host_macos.sh,code:packaging/macos/Install LocalTube Dub Engine.command.in | A:临时HTTP空闲忙碌检查；注册迁移；手动回滚四种运行时与manifest存在组合；无人值守更新及绑定保留 | S:需真实loopback及子进程；macOS临时运行时执行真实注册卸载，launchctl与依赖安装为替身，不登记用户实际Chrome配置
+verify_engine_updates.py[TS8M]: F:离线验证签名更新的信任链、下载硬期限、暂存安全及空闲安装互斥恢复 | R:code:server/engine_updates.py,code:tools/sign_engine_update.py | A:verify_download_deadlines验证真实子进程超时、回收停写及大小限制；main验证签名归档、后台排空、节流、工作租约、跨进程锁和安装失败 | S:socketpair与真实HTTPResponse驱动下载子进程，不连外网；RSA与锁真实，其余更新下载用本地复制；Windows密码库、其余OpenSSL；不替换真实Engine，跨平台分支须各平台执行
+verify_extension_flows.js[TE8L]: F:回归字幕翻译配音同步导出、异步设置与任务归属，校验重叠字幕查询及预取性能 | R:code:extension/content.js,code:extension/background.js,code:extension/content_helpers.js,code:extension/background_helpers.js,code:extension/page_probe.js,code:extension/voice_helpers.js,code:extension/install_helpers.js | A:helper与VM生产函数；设置切换及平台和启动迟到响应；任务取消、音色回退和播放代次；探针到翻译缓存链与补翻退避；字幕键、重叠区间及预取扫描计数；播放导出、安装引导及0.2.9版本接线 | S:部分接线仍用源码字符串；Chrome、媒体和Provider为替身；计数断言验证复杂度，不代表实际帧率；不等同真实Chrome、YouTube或安装链路端到端验收
+verify_kokoro_engine.py[TB7L]: F:验证Kokoro安装归档安全取消回滚、模型健康快照、受限推理及装载失败恢复 | R:code:server/kokoro_tts.py,code:server/local_dub_server.py | A:临时归档安装损坏恢复及扫描计数；FakeSherpaRuntime验证单路两线程、空闲卸载及音色策略；生产TTS入口验证冷却限次、不兼容拒绝、排队限流、卸载重装及迟到装载隔离 | S:合成库为替身，不下载生产模型或运行神经推理；归档激活及WAV写入真实；HTTP用例直调处理器，未经过真实网络
+verify_local_engine.py[TG8L]: F:验证Engine来源边界字幕语言隔离转写TTS音轨缓存及重任务并发和取消契约 | R:code:server/local_dub_server.py,code:server/kokoro_tts.py,code:companion/native_host.py | A:随机端口HTTP来源与媒体请求；字幕地区和失败缓存；确定性交错准入及取消排空；真实WAV与转写最终提交取消；Native分派 | S:HTTP边界用真实服务及临时模型；外部服务和多数合成为替身；FFmpeg存在才真实混音编码，缺失时跳过；不证明生产模型推理
+verify_native_messaging.py[TN7M]: F:通过真实Native启动器和临时HTTP模型拥有者验证二进制帧及持久任务转发 | R:code:companion/native_host.py,code:companion/native_host_launcher_macos.sh,code:tools/verify_local_engine.py | A:request_native发送长度前缀帧；FakePersistentKokoroOwner模拟异步模型；main检查状态、重复安装、取消和危险参数拒绝 | S:需loopback监听和子进程权限；默认执行仓库macOS启动器，可由环境覆盖；模型下载和激活均为模拟
+verify_open_source_compliance.py[TV6M]: F:静态检查开源文档、商店声明、版本元数据、CI产物命名及明显密钥泄露 | R:code:extension/manifest.json,code:extension/release-info.json,code:.github/workflows/cross-platform-engine.yml,code:docs/privacy-policy.md,code:docs/store-listing-draft.md | A:verify_repository_files检查必需文档；verify_public_claims匹配声明；verify_no_obvious_secrets扫描文本；当前版本期望0.2.9 | S:版本与商店ID固定在脚本；不访问公开网页或商店，文字匹配和有限密钥模式不能证明完整合规
+verify_provider_registry.js[TC6S]: F:比较后台、弹窗和页面的Provider注册与默认翻译转写设置 | R:code:extension/background.js,code:extension/popup.js,code:extension/content.js | A:extractBracedBody扫描对象体；extractObjectKeys提取注册项；核对用户可见选项与注册表接线 | S:通过源码解析和正则断言验证，未调用任何Provider；local-http刻意排除在页面用户选项之外
+verify_release_packages.py[TV8L]: F:审查扩展及macOS Engine包布局依赖锁和运行时完整性，并严格验证临时Engine健康身份 | R:code:packaging/runtime-manifest.json,code:scripts/assemble_engine_runtime.py,code:server/update-signing-cert.cer,code:scripts/build_release_macos.sh,code:tools/smoke_release_macos.sh | A:verify_extension及verify_engine；运行时树摘要；--health-smoke运行时路径和版本；--self-test组装及六类健康用例 | S:健康冒烟运行包内私有Python，必须匹配随机实例版本路径协议和必要能力，finally清进程；macOS自测有真实回环子进程；self-test不验证dist客户包，也不完成代码签名公证
+verify_translation_integrity.js[TD8L]: F:回归前后台翻译缓存、弹窗保存及跨标签自动音色修正，阻止错配截断和设置覆盖 | R:code:extension/background.js,code:extension/background_helpers.js,code:extension/content.js,code:extension/content_helpers.js,code:extension/popup.js,code:extension/voice_helpers.js | A:模拟存储与Provider；缓存身份迁移及并发队列；保存和权限乱序与即时撤权；自动音色条件补丁及用户保存交错 | S:内容与弹窗加载时移除启动入口，不依赖真实页面；密钥轮换保持缓存身份而视频及模型大小写必须隔离；正常查询不写回；自动修正须匹配原音色身份且不能携带旧页面整份设置
+verify_update_integration.py[TR8S]: F:验证HTTP服务与Native工作在自动更新检查、排空和交接期间的生命周期边界 | R:code:server/local_dub_server.py,code:server/engine_updates.py,code:companion/native_host.py,code:tools/verify_local_engine.py | A:模拟更新器与HTTP服务器；验证被动健康、排空顺序、Native排他；真实工作租约和失败后重新准入检查 | S:不会下载或替换Engine；打印服务启动信息时服务器也是替身，不能据此认定真实端口或安装链路可用
+verify_update_publication.py[TS8S]: F:用临时RSA与三平台样本包验证签发验签篡改拒绝及草稿发布门禁 | R:code:tools/sign_engine_update.py,code:tools/promote_engine_release.py | A:真实本地验签；14类晋升场景和非法标签；检查CI失败运行中、资产漂移、移动标签及只读复核 | S:GitHub接口由替身提供且不实际发布；样本ZIP只有元数据和证书，不能证明客户Engine完整或远端仓库权限正确
+verify_windows_package.py[TV8L]: F:检查Windows发行源码并在Windows实测安装、Native唤醒、健康身份、绑定保留、回滚和卸载 | R:code:scripts/build_release_windows.py,code:scripts/assemble_engine_runtime.py,code:packaging/windows/install-engine.ps1.in,code:packaging/windows/manage-engine.ps1.in,code:packaging/windows/uninstall-engine.ps1.in,code:packaging/windows/native-host-launcher.cs,code:companion/native_host.py | A:--source静态及身份函数检查；--install-smoke校验ZIP和隔离生命周期；编译Native入口同目录修复与失败回滚；手动注册快照及自动升级回滚 | S:--source可跨平台；--install-smoke仅Windows，真实创建测试HKCU注册及计划任务并运行Engine，finally隔离清理且关闭更新；同目录修复检查目录ID及多绑定不变，失败检查原注册字节和值类型
+voice_picker_harness.html[TU4T]: F:展示目标语言、可用音色选择与Engine发现诊断的浏览器测试页面 | R:code:tools/voice_picker_harness.js,code:extension/voice_helpers.js | A:中英日目标选择；音色列表；可访问状态输出区 | S:页面加载即请求本机Engine，不负责启动服务
+voice_picker_harness.js[TU5T]: F:读取本机Engine真实音色并使用生产helper筛选语言和报告发现结果 | R:code:extension/voice_helpers.js,code:tools/voice_picker_harness.html,code:server/local_dub_server.py | A:load请求/api/voices；render生成选项与统计；检查含空格系统音色是否保留 | S:固定请求127.0.0.1:8787；只有诊断输出，没有自动断言或合成听感验证
+promote_engine_release.py[OV8S]: F:通过GitHub CLI验证私有草稿的精确提交CI和签名资产后发布稳定Engine更新 | R:code:tools/sign_engine_update.py,code:.github/workflows/publish-engine-update.yml,code:.github/workflows/cross-platform-engine.yml | A:--tag vMAJOR.MINOR.PATCH与GH_REPO；--verify-only只读校验已发布版本；promote执行草稿晋升 | S:下载三平台包及清单签名并复用真实验签；发布前重核资产身份、标签提交和最新CI；仅成功后设latest；不执行包内代码，也不能阻止管理员手动绕过
