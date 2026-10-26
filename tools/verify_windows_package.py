@@ -35,8 +35,8 @@ REGISTRY_ROOT = (
     r"HKCU\Software\Google\Chrome\NativeMessagingHosts"
     rf"\{NATIVE_HOST_NAME}"
 )
-WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.9-Windows-x64.zip"
-WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.9-Windows-x64-SHA256SUMS.txt"
+WINDOWS_PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.10-Windows-x64.zip"
+WINDOWS_CHECKSUM_NAME = "LocalTube-Dub-v0.2.10-Windows-x64-SHA256SUMS.txt"
 WINDOWS_TEMPLATES = {
     "launcher": ROOT_DIR / "packaging" / "windows" / "Install LocalTube Dub Engine.cmd.in",
     "installer": ROOT_DIR / "packaging" / "windows" / "install-engine.ps1.in",
@@ -197,7 +197,7 @@ def verify_native_health_identity() -> None:
     runtime_root = ROOT_DIR / "Windows Runtime 路径"
     identity = {
         "service": "localtube-dub",
-        "engineVersion": "0.2.9",
+        "engineVersion": "0.2.10",
         "protocolVersion": 2,
         "platform": "windows",
         "architecture": "x64",
@@ -513,7 +513,7 @@ def wait_for_exact_health(
                 health = json.loads(response.read())
             expected = {
                 "service": "localtube-dub",
-                "engineVersion": "0.2.9",
+                "engineVersion": "0.2.10",
                 "protocolVersion": 2,
                 "platform": "windows",
                 "architecture": "x64",
@@ -551,7 +551,7 @@ def invoke_manager(
             "-Action",
             action,
             "-ExpectedVersion",
-            "0.2.9",
+            "0.2.10",
             "-ExpectedRuntimeRoot",
             str(runtime_root),
             "-StateRootOverride",
@@ -696,6 +696,7 @@ def verify_install_smoke(package: Path) -> None:
         )
         package_root = installers[0].parent
         require((package_root / "server/engine_updates.py").is_file(), "package is missing the Engine updater")
+        require((package_root / "server/edge_tts_updates.py").is_file(), "package is missing the speech dependency updater")
         require((package_root / "server/update-signing-cert.cer").read_bytes()
                 == (ROOT_DIR / "server/update-signing-cert.cer").read_bytes(),
                 "package update signing certificate does not match the pinned release key")
@@ -790,7 +791,7 @@ def verify_install_smoke(package: Path) -> None:
                         "-Action",
                         "Stop",
                         "-ExpectedVersion",
-                        "0.2.9",
+                        "0.2.10",
                         "-ExpectedRuntimeRoot",
                         str(runtime_root),
                         "-StateRootOverride",
@@ -875,7 +876,7 @@ def verify_install_smoke(package: Path) -> None:
                 runtime_root,
                 state_path,
             )
-            require(health["engineVersion"] == "0.2.9", "wrong Engine version accepted")
+            require(health["engineVersion"] == "0.2.10", "wrong Engine version accepted")
 
             stale_state = dict(initial_state)
             stale_state["pid"] = os.getpid()

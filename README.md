@@ -6,7 +6,7 @@ An open-source Chrome extension that translates YouTube captions into Chinese an
 
 LocalTube Dub prefers an existing Chinese YouTube caption track. When Chinese captions are unavailable, it can use Chrome's free on-device Translator or a translation Provider chosen by the user. Videos without captions can use the optional local Whisper Engine.
 
-> **Status:** `0.2.9` improves caption accuracy, settings synchronization, task cancellation, and Engine update reliability. Chrome Web Store publication remains separate; desktop installers still lack platform code signing and macOS notarization.
+> **Status:** `0.2.10` adds validated automatic Microsoft speech dependency updates and bundles `edge-tts 7.3.1`. Chrome Web Store publication remains separate; desktop installers still lack platform code signing and macOS notarization.
 
 ## Highlights
 
@@ -44,6 +44,8 @@ Users with an Engine older than `0.2.8` must install a matching `0.2.8` or newer
 Chrome manages updates for extensions installed from the same Chrome Web Store item after review and publication. Unpacked/source/ZIP extensions still need manual replacement and reload; the Engine updater never replaces extension files. Offline customers and continuously active sessions update later, not immediately when a release is published.
 
 The update feed signature verifies release authenticity and package checksums. It is separate from Apple/Windows code signing; those installer warnings remain.
+
+Engines containing the speech updater also check official PyPI for `edge-tts` when Microsoft speech is requested, at most once per six hours. Only stable universal wheels within the bundled client's major version qualify. SHA-256, Python/dependency compatibility, a fixed test sentence, and audio decoding must pass before subsequent speech requests use the update. Wheels live outside the bundled runtime; failed updates keep the working client, and playback falls back if the previous client succeeds. Passive health checks and local speech do not initiate this check. Source installs do not enable it by default.
 
 ## Privacy
 

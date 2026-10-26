@@ -8,7 +8,7 @@ Thanks for helping improve LocalTube Dub. Contributions should keep the extensio
 - Keep API keys, YouTube cookies, generated audio, local models, logs, and machine-specific paths out of commits.
 - Do not submit code, assets, or text copied from proprietary browser extensions or services.
 - Confirm that any new dependency has a license compatible with Apache-2.0 and record it in `THIRD_PARTY_NOTICES.md`.
-- Do not add telemetry, advertising, affiliate links, payment flows, or remote executable code.
+- Do not add telemetry, advertising, affiliate links, payment flows, or remotely executed Chrome extension code. Desktop Engine speech updates must stay within the validated official-PyPI wheel path and preserve the bundled runtime contract.
 
 ## Development setup
 

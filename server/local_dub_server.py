@@ -9,7 +9,6 @@ an explicit error instead of presenting original text as a successful result.
 
 from __future__ import annotations
 
-import asyncio
 from array import array
 import json
 import os
@@ -45,6 +44,12 @@ if _updates_spec is None or _updates_spec.loader is None:
 engine_updates = importlib.util.module_from_spec(_updates_spec)
 _updates_spec.loader.exec_module(engine_updates)
 
+_edge_updates_spec = importlib.util.spec_from_file_location("localtube_edge_tts_updates", Path(__file__).with_name("edge_tts_updates.py"))
+if _edge_updates_spec is None or _edge_updates_spec.loader is None:
+    raise ImportError("Speech dependency updater module is missing")
+edge_tts_updates = importlib.util.module_from_spec(_edge_updates_spec)
+_edge_updates_spec.loader.exec_module(edge_tts_updates)
+
 try:
     from .kokoro_tts import (
         KokoroModelManager,
@@ -79,6 +84,7 @@ HOST = os.environ.get("LOCAL_DUB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("LOCAL_DUB_PORT", "8787"))
 ENGINE_PROTOCOL_VERSION = 2
 ENGINE_ROOT = Path(__file__).resolve().parents[1]
+EDGE_TTS_UPDATER = edge_tts_updates.EdgeTtsUpdater(ENGINE_ROOT, engine_updates)
 ENGINE_INSTANCE_ID = os.environ.get("LOCAL_DUB_ENGINE_INSTANCE_ID", "").strip()
 ENGINE_RUNTIME_ROOT = os.environ.get("LOCAL_DUB_ENGINE_RUNTIME_ROOT", "").strip()
 ENGINE_VERSION_OVERRIDE = os.environ.get("LOCAL_DUB_ENGINE_VERSION", "").strip()
@@ -282,6 +288,7 @@ def engine_has_work() -> bool:
         worker = KOKORO_MODEL_SERVICE._worker
         return bool(ENGINE_ACTIVE_WORK or FULL_TRANSCRIPT_CANCEL_EVENTS or DUB_TRACK_CANCEL_EVENTS
                     or engine_updates.is_check_running()
+                    or EDGE_TTS_UPDATER.is_check_running()
                     or engine_updates.has_native_work(ENGINE_ROOT)
                     or (worker is not None and worker.is_alive()))
 
@@ -862,6 +869,7 @@ def build_health_payload(transport: str) -> dict[str, Any]:
         "instanceId": ENGINE_INSTANCE_ID,
         "runtimeRoot": ENGINE_RUNTIME_ROOT or str(ENGINE_ROOT.resolve()),
         "updates": engine_updates.get_update_status(ENGINE_ROOT),
+        "edgeTtsUpdate": EDGE_TTS_UPDATER.status(),
         "kokoroRuntime": runtime,
         "kokoroModel": str(model.get("state") or "not-installed"),
         "kokoroModelVersion": str(model.get("version") or ""),
@@ -1460,6 +1468,8 @@ def start_dub_track_job(payload: dict[str, Any]) -> dict[str, Any]:
             "code": "DUB_TRACK_ENGINE_NOT_READY",
             "error": "完整配音音轨需要当前配音引擎和 ffmpeg 均已就绪。",
         }
+    if tts_engine == "edge":
+        EDGE_TTS_UPDATER.start_check()
     video_id = sanitize_export_filename(str(payload.get("videoId") or "youtube-video"))
     key = dub_track_job_key(
         cues,
@@ -2375,6 +2385,8 @@ def build_tts_payload(payload: dict[str, Any], transport: str) -> dict[str, Any]
     except (TypeError, ValueError):
         return {"ok": False, "error": "Invalid TTS rate or target duration"}
 
+    if transport == "http" and tts_engine == "edge":
+        EDGE_TTS_UPDATER.start_check()
     try:
         audio = synthesize_speech_with_system(
             text,
@@ -3556,50 +3568,50 @@ def synthesize_edge_speech_to_wav_file(
     output_dir.mkdir(parents=True, exist_ok=True)
     compressed_path = output_dir / "voice-edge.mp3"
     output_path = output_dir / "voice-edge.wav"
-    if cancel_event:
+    convert_command = [ffmpeg, "-nostdin", "-y", "-loglevel", "error", "-i", str(compressed_path),
+                       "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(output_path)]
+    candidates = EDGE_TTS_UPDATER.choices()
+    attempts = [(candidate, edge_tts_updates.wheel_command(EDGE_TTS_UPDATER.path_for(candidate)))
+                for candidate in candidates[:1]]
+    fallback = candidates[1] if len(candidates) > 1 else None
+    attempts.append((fallback, edge_tts_updates.wheel_command(EDGE_TTS_UPDATER.path_for(fallback)) if fallback else edge_command))
+    deadline = time.monotonic() + TTS_TIMEOUT
+    for index, (candidate, selected_command) in enumerate(attempts):
+        compressed_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
         command = [
-            *edge_command,
+            *selected_command,
             "--voice",
             voice,
             f"--rate={edge_tts_rate_argument(rate)}",
-            "--text",
-            clean_translation(text),
+            f"--text={clean_translation(text)}",
             "--write-media",
             str(compressed_path),
         ]
-        completed = run_cancellable_command(command, TTS_TIMEOUT, cancel_event)
-        if completed.returncode != 0:
-            message = clean_translation(completed.stderr or completed.stdout or "在线语音没有生成音频")
-            raise RuntimeError(f"自然在线语音生成失败：{message}")
-    else:
-        generate_edge_tts_media(clean_translation(text), voice, edge_tts_rate_argument(rate), compressed_path)
-    if not compressed_path.is_file() or compressed_path.stat().st_size <= 0:
-        raise RuntimeError("自然在线语音没有生成音频。")
-
-    convert_command = [
-        ffmpeg,
-        "-nostdin",
-        "-y",
-        "-loglevel",
-        "error",
-        "-i",
-        str(compressed_path),
-        "-ac",
-        "1",
-        "-ar",
-        "24000",
-        "-c:a",
-        "pcm_s16le",
-        str(output_path),
-    ]
-    converted = (
-        run_cancellable_command(convert_command, TTS_TIMEOUT, cancel_event)
-        if cancel_event
-        else subprocess.run(convert_command, capture_output=True, text=True, timeout=TTS_TIMEOUT)
-    )
-    if converted.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 44:
-        message = clean_translation(converted.stderr or converted.stdout or "ffmpeg 没有生成 WAV")
-        raise RuntimeError(f"自然在线语音转换失败：{message}")
+        try:
+            completed = run_cancellable_command(command, max(0.1, (deadline - time.monotonic()) / (len(attempts) - index)), cancel_event)
+            if completed.returncode != 0:
+                message = clean_translation(completed.stderr or completed.stdout or "在线语音没有生成音频")
+                raise RuntimeError(f"自然在线语音生成失败：{message}")
+            if not compressed_path.is_file() or compressed_path.stat().st_size <= 0:
+                raise RuntimeError("自然在线语音没有生成音频。")
+            converted = run_cancellable_command(convert_command, max(0.1, deadline - time.monotonic()), cancel_event)
+            if converted.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 44:
+                message = clean_translation(converted.stderr or converted.stdout or "ffmpeg 没有生成 WAV")
+                raise RuntimeError(f"自然在线语音转换失败：{message}")
+            validate_wav_duration(output_path)
+        except FullTranscriptCancelled:
+            raise
+        except (RuntimeError, TimeoutError, wave.Error, EOFError):
+            if index + 1 < len(attempts) and time.monotonic() < deadline:
+                continue
+            raise
+        if index and candidates:
+            try:
+                EDGE_TTS_UPDATER.rollback(candidates[0])
+            except OSError as error:
+                print(f"Speech fallback succeeded but rollback state could not be saved: {error}", file=sys.stderr)
+        break
 
     trimmed_path, leading_trim_seconds = trim_wav_leading_silence(output_path, output_dir)
     original_duration = validate_wav_duration(trimmed_path)
@@ -3786,22 +3798,6 @@ def find_edge_tts_command() -> list[str] | None:
 
 def edge_tts_available() -> bool:
     return bool(find_edge_tts_command())
-
-
-def generate_edge_tts_media(text: str, voice: str, rate: str, output_path: Path) -> None:
-    try:
-        import edge_tts  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("自然在线语音尚未安装，请重新运行 Engine 一键依赖安装。") from exc
-
-    async def save_media() -> None:
-        communicator = edge_tts.Communicate(text=text, voice=voice, rate=rate)
-        await asyncio.wait_for(communicator.save(str(output_path)), timeout=TTS_TIMEOUT)
-
-    try:
-        asyncio.run(save_media())
-    except Exception as exc:
-        raise RuntimeError(f"自然在线语音连接失败：{exc}") from exc
 
 
 def edge_tts_rate_argument(rate: float) -> str:

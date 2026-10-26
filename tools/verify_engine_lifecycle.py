@@ -170,7 +170,7 @@ def check_macos_on_demand_registration() -> None:
         for name in ("scripts/install_engine_autostart_macos.sh", "scripts/uninstall_engine_autostart_macos.sh",
                      "companion/install_native_host_macos.sh", "companion/native_host_launcher_macos.sh",
                      "companion/native_host.py", "server/local_dub_server.py", "server/kokoro_tts.py",
-                     "server/engine_updates.py", "server/update-signing-cert.cer"):
+                     "server/engine_updates.py", "server/edge_tts_updates.py", "server/update-signing-cert.cer"):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, target)

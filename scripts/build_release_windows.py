@@ -22,10 +22,10 @@ from assemble_engine_runtime import assemble_runtime, load_runtime_manifest  # n
 
 
 EXTENSION_ID = "ikoenamldegccnhmjjnlkffocdkbbbmo"
-PACKAGE_VERSION = "0.2.9"
-PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.9-Windows-x64.zip"
-CHECKSUM_NAME = "LocalTube-Dub-v0.2.9-Windows-x64-SHA256SUMS.txt"
-ENGINE_FOLDER = "LocalTube-Dub-Engine-v0.2.9-Windows-x64"
+PACKAGE_VERSION = "0.2.10"
+PACKAGE_NAME = "LocalTube-Dub-Engine-v0.2.10-Windows-x64.zip"
+CHECKSUM_NAME = "LocalTube-Dub-v0.2.10-Windows-x64-SHA256SUMS.txt"
+ENGINE_FOLDER = "LocalTube-Dub-Engine-v0.2.10-Windows-x64"
 
 
 class WindowsBuildError(RuntimeError):
@@ -157,7 +157,7 @@ def build(output_dir: Path, cache_dir: Path) -> Path:
         stage.mkdir(parents=True)
         for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
             copy_file(ROOT_DIR / name, stage / name)
-        for name in ("local_dub_server.py", "kokoro_tts.py", "engine_updates.py", "update-signing-cert.cer"):
+        for name in ("local_dub_server.py", "kokoro_tts.py", "engine_updates.py", "edge_tts_updates.py", "update-signing-cert.cer"):
             copy_file(ROOT_DIR / "server" / name, stage / "server" / name)
         copy_file(ROOT_DIR / "companion" / "native_host.py", stage / "companion" / "native_host.py")
         copy_file(

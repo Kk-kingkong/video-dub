@@ -1,5 +1,10 @@
 # LocalTube Dub Changelog
 
+## 0.2.10 - 2026-10-26
+
+- Automatically check official PyPI for compatible stable `edge-tts` updates during Microsoft speech use, at most once per six hours. Validate the wheel, existing dependencies, real synthesis and audio decoding before selecting it from an independent directory. Preserve the bundled runtime and fall back to a working previous client on synthesis failure.
+- Pin new Engine builds to `edge-tts 7.3.1` to restore compatibility with the current Microsoft speech connection protocol. Existing released installers require a new Engine release to include this updater.
+
 ## 0.2.9 - 2026-09-30
 
 - Enforce local Engine request origins, loopback hosts, JSON body limits, and supported YouTube caption URLs before dispatching work.

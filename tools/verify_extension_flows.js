@@ -3550,7 +3550,7 @@ function testManifestAndFlowGuards() {
   assert.deepEqual(manifest.content_scripts[0].js, ["page_probe_helpers.js", "page_probe.js"]);
   assert.equal(manifest.content_scripts[0].world, "MAIN");
   assert.deepEqual(manifest.content_scripts[1].js, ["voice_helpers.js", "content_helpers.js", "content.js"]);
-  assert.equal(manifest.version, "0.2.9");
+  assert.equal(manifest.version, "0.2.10");
   assert.equal(manifest.permissions.includes("downloads"), false);
   assert.deepEqual(manifest.permissions, ["activeTab", "nativeMessaging", "storage"]);
   assert.deepEqual(manifest.optional_permissions, ["offscreen", "tabCapture"]);
@@ -4276,7 +4276,7 @@ function testManifestAndFlowGuards() {
   assert.match(popup, /localtube\.clearTranslationCache/);
   assert.match(popupHtml, /id="cacheTranslations"/);
   assert.match(popupHtml, /id="clearTranslationCache"/);
-  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.9<\/span>/);
+  assert.match(popupHtml, /LocalTube Dub <span id="appVersion">0\.2\.10<\/span>/);
   assert.match(popupHtml, /id="testProvider"[^>]*>验证翻译 Key<\/button>/);
   assert.match(popup, /saveAndValidateApiKey/);
   assert.match(popupHtml, /免费 \/ 自带 Key/);
@@ -4420,8 +4420,6 @@ function testManifestAndFlowGuards() {
   assert.match(server, /get_runtime_health/);
   assert.match(server, /EDGE_TTS_VOICES/);
   assert.match(server, /def synthesize_edge_speech_to_wav_file/);
-  assert.match(server, /def generate_edge_tts_media/);
-  assert.match(server, /edge_tts\.Communicate/);
   assert.match(server, /"edgeTts": edge_tts_available\(\)/);
   assert.match(server, /tts_engine=str\(job\.get\("ttsEngine"\)/);
   assert.match(server, /normalize_caption_language_identity/);
@@ -4490,8 +4488,8 @@ function testManifestAndFlowGuards() {
   const liveVoiceHarness = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.js"), "utf8");
   const liveVoiceHarnessHtml = fs.readFileSync(path.join(root, "tools", "live_voice_media_harness.html"), "utf8");
   assert.match(liveVoiceHarness, /syncLiveVoiceMediaElements/);
-  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.9/);
-  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.9/);
+  assert.match(liveVoiceHarnessHtml, /content_helpers\.js\?v=0\.2\.10/);
+  assert.match(liveVoiceHarnessHtml, /live_voice_media_harness\.js\?v=0\.2\.10/);
   assert.match(liveVoiceHarness, /data-action='self-test'/);
   assert.match(liveVoiceHarness, /late\.expectedEnd <= 5\.05/);
   assert.match(liveVoiceHarness, /late\.playbackRate <= 1\.2/);

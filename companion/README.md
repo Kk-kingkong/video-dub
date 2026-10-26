@@ -6,7 +6,7 @@ The extension can be installed from the store, but the local AI engine must be i
 
 ## Customer packages
 
-Version `0.2.9` prepares matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
+Version `0.2.10` prepares matching Engine archives for macOS Apple Silicon, macOS Intel, and Windows 10/11 x64. Each archive contains a pinned private runtime; customers do not need to install Python, pip, Homebrew, or a compiler.
 
 - macOS: unzip the matching architecture package and open `Install LocalTube Dub Engine.command`.
 - Windows: unzip the x64 package and run `Install LocalTube Dub Engine.cmd`.
@@ -38,6 +38,10 @@ Only newer releases with a matching protocol, platform, and architecture qualify
 Automatic installation keeps the original valid Native manifest, including any explicitly registered unpacked extension IDs, and preserves settings and models outside the runtime. New-runtime health must match the expected release before the backup is discarded. Activation failure restores the previous runtime and registration. Updates never replace Chrome extension code: Chrome manages Store installs, while ZIP/source extensions still require manual replacement and reload.
 
 Updates download from this project's GitHub releases without sending captions, video URLs, audio, credentials, or cookies. The signed update feed is separate from operating-system code signing; current desktop installers remain unsigned and unnotarized. See [release operations](../docs/release-process.md) and [privacy](../docs/privacy-policy.md).
+
+## Automatic speech dependency updates
+
+The separate speech dependency updater checks `pypi.org/pypi/edge-tts/json` and downloads only verified universal wheels from `files.pythonhosted.org`. It runs after an HTTP Microsoft TTS or full-track request, at most once per six hours; passive checks and Native-only synthesis do not start downloads. Both HTTP and Native synthesis can use an already verified wheel. The supported major version follows the bundled client, and all existing dependency requirements must remain satisfied. Before activation it synthesizes a fixed test sentence and asks the bundled FFmpeg to decode it. `updates/edge-tts` holds immutable wheels and activation/rollback state outside `.venv`; active jobs keep their chosen wheel. Health reports `edgeTtsUpdate`. `LOCAL_DUB_AUTO_UPDATE=0` disables checks and use of overrides. New incompatible major versions require an Engine release. These dependency updates trust the official PyPI project rather than the project's separate Engine-release signature.
 
 ## Development install on macOS
 
@@ -90,7 +94,7 @@ The release package is built and smoke-tested on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.9-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.10-Windows-x64.zip
 ```
 
 ## Smoke tests

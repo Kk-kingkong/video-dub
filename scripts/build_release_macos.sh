@@ -118,6 +118,7 @@ install -m 0644 "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$ENGINE_STAGE/THIRD_PARTY_NO
 install -m 0644 "$ROOT_DIR/server/local_dub_server.py" "$ENGINE_STAGE/server/local_dub_server.py"
 install -m 0644 "$ROOT_DIR/server/kokoro_tts.py" "$ENGINE_STAGE/server/kokoro_tts.py"
 install -m 0644 "$ROOT_DIR/server/engine_updates.py" "$ENGINE_STAGE/server/engine_updates.py"
+install -m 0644 "$ROOT_DIR/server/edge_tts_updates.py" "$ENGINE_STAGE/server/edge_tts_updates.py"
 install -m 0644 "$ROOT_DIR/server/update-signing-cert.cer" "$ENGINE_STAGE/server/update-signing-cert.cer"
 for script in \
   assemble_engine_runtime.py \

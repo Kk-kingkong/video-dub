@@ -27,7 +27,7 @@ Build the Windows x64 Engine on Windows:
 
 ```powershell
 py scripts\build_release_windows.py
-py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.9-Windows-x64.zip
+py tools\verify_windows_package.py --install-smoke dist\LocalTube-Dub-Engine-v0.2.10-Windows-x64.zip
 ```
 
 For a customer-facing build, inject a platform-neutral Engine download index and the support page at build time. The download URL must let users choose macOS Apple Silicon, macOS Intel, or Windows x64; it must not point every platform to one architecture-specific ZIP. Both values are optional for an offline private beta, but any configured URL must use HTTPS:
@@ -85,6 +85,8 @@ python3 tools/sign_engine_update.py \
 ```
 
 The signed manifest pins a stable version, compatible Engine protocol, and each platform archive's exact URL, size, and SHA-256. Its release signature authenticates the updater's input; it does **not** make the macOS/Windows executables code-signed or the macOS package notarized.
+
+Include `server/edge_tts_updates.py` in every Engine platform package and run `tools/verify_edge_tts_updates.py`. The speech updater stores PyPI wheels outside `.venv`, so automatic speech updates do not rewrite the bundled runtime contract. Keep the manifest's baseline speech version current when building a release; a newer baseline takes precedence over older overrides. This feature must first be delivered in an Engine release (or explicitly installed locally); existing 0.2.9 packages do not gain it from source edits alone.
 
 Only the manual promotion job receives `contents: write`; it needs no private signing key and executes the default-branch gate, not code from downloaded packages. The existing `release.published` path remains a read-only audit for releases published outside Actions. GitHub does not trigger another release workflow for publication using `GITHUB_TOKEN`, so the promotion job itself verifies the publication response. Repository administrators can still bypass this workflow and publish manually; repository permissions and release immutability are separate GitHub settings, not enforced or changed by this source workflow. Such a manual bypass can expose an unchecked update and is not a supported release path.
 
